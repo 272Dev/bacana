@@ -61,6 +61,7 @@ const emptyForm = {
 
 const platformOptions = ['Roblox', 'Discord', 'Steam', 'Epic Games', 'Google', 'Microsoft', 'Outro'];
 const authenticatorPeriodOptions = [10, 15, 20, 30, 45, 60, 90, 120];
+const ROBLOX_GENERATOR_PAGE_SIZE = 24;
 
 const historyLabels = {
   created: 'Conta criada',
@@ -88,7 +89,7 @@ function initials(name = 'N') {
 function Avatar({ src, name, size = 'md' }) {
   return (
     <div className={`avatar avatar-${size}`}>
-      {src ? <img src={src} alt="" /> : <span>{initials(name)}</span>}
+      {src ? <img src={src} alt="" loading="lazy" decoding="async" /> : <span>{initials(name)}</span>}
     </div>
   );
 }
@@ -342,6 +343,12 @@ function useDebouncedValue(value, delay = 220) {
   }, [value, delay]);
 
   return debouncedValue;
+}
+
+function mergeGeneratorAccounts(current, next) {
+  const byId = new Map(current.map((account) => [account.id, account]));
+  for (const account of next) byId.set(account.id, account);
+  return Array.from(byId.values());
 }
 
 function EmptyState({ icon: Icon, title }) {
@@ -903,35 +910,102 @@ function RobloxGeneratorPage({ user }) {
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [listLoading, setListLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pagination, setPagination] = useState({ nextOffset: 0, hasMore: true, total: null });
   const [importing, setImporting] = useState(false);
   const debouncedFilters = useDebouncedValue(filters, 240);
   const requestIdRef = useRef(0);
+  const loadMoreRef = useRef(null);
+  const loadingMoreRef = useRef(false);
   const canImport = ['owner', 'admin'].includes(user.role);
 
-  const loadAccounts = useCallback(async ({ silent = false } = {}) => {
+  const loadAccounts = useCallback(async ({
+    offset = 0,
+    mode = 'replace',
+    silent = false,
+    limit = ROBLOX_GENERATOR_PAGE_SIZE
+  } = {}) => {
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
-    if (!silent) setListLoading(true);
+    const shouldAppend = mode === 'append';
+
+    if (shouldAppend) {
+      loadingMoreRef.current = true;
+      setLoadingMore(true);
+    } else if (!silent) {
+      setListLoading(true);
+    }
 
     const query = new URLSearchParams();
     if (debouncedFilters.search) query.set('search', debouncedFilters.search);
     if (debouncedFilters.status) query.set('status', debouncedFilters.status);
+    query.set('limit', String(limit));
+    query.set('offset', String(offset));
 
     try {
       const payload = await api(`/roblox-generator/accounts?${query}`);
       if (requestId === requestIdRef.current) {
-        setAccounts(payload.accounts);
+        const nextAccounts = payload.accounts || [];
+        const page = payload.page || {};
+        setAccounts((current) => (
+          shouldAppend ? mergeGeneratorAccounts(current, nextAccounts) : nextAccounts
+        ));
+        setPagination({
+          nextOffset: Number.isFinite(Number(page.nextOffset)) ? Number(page.nextOffset) : offset + nextAccounts.length,
+          hasMore: Boolean(page.hasMore),
+          total: page.total ?? null
+        });
       }
     } finally {
       if (requestId === requestIdRef.current) {
-        setListLoading(false);
+        if (shouldAppend) {
+          loadingMoreRef.current = false;
+          setLoadingMore(false);
+        } else {
+          setListLoading(false);
+        }
+      } else if (shouldAppend) {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
       }
     }
   }, [debouncedFilters]);
 
   useEffect(() => {
-    loadAccounts().catch((error) => setMessage(error.message));
+    setAccounts([]);
+    setPagination({ nextOffset: 0, hasMore: true, total: null });
+    loadAccounts({ offset: 0, mode: 'replace' }).catch((error) => setMessage(error.message));
   }, [loadAccounts]);
+
+  const refreshVisibleAccounts = useCallback(async () => {
+    const visibleLimit = Math.min(80, Math.max(ROBLOX_GENERATOR_PAGE_SIZE, accounts.length || ROBLOX_GENERATOR_PAGE_SIZE));
+    await loadAccounts({ offset: 0, mode: 'replace', silent: true, limit: visibleLimit });
+  }, [accounts.length, loadAccounts]);
+
+  const loadMoreAccounts = useCallback(() => {
+    if (!pagination.hasMore || listLoading || loadingMoreRef.current) return;
+    loadAccounts({
+      offset: pagination.nextOffset,
+      mode: 'append',
+      silent: true
+    }).catch((error) => setMessage(error.message));
+  }, [listLoading, loadAccounts, pagination.hasMore, pagination.nextOffset]);
+
+  useEffect(() => {
+    const node = loadMoreRef.current;
+    if (!node || !pagination.hasMore) return undefined;
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) loadMoreAccounts();
+    }, {
+      root: null,
+      rootMargin: '520px 0px',
+      threshold: 0.01
+    });
+
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [accounts.length, loadMoreAccounts, pagination.hasMore]);
 
   async function importTxt(event) {
     const file = event.target.files?.[0];
@@ -949,7 +1023,8 @@ function RobloxGeneratorPage({ user }) {
       });
       const result = payload.result;
       setMessage(`${result.imported} conta(s) importada(s). ${result.created} nova(s), ${result.updated} atualizada(s).`);
-      await loadAccounts({ silent: true });
+      setAccounts([]);
+      await loadAccounts({ offset: 0, mode: 'replace', silent: true });
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -965,7 +1040,7 @@ function RobloxGeneratorPage({ user }) {
       const payload = await api(`/roblox-generator/accounts/${account.id}/select`, { method: 'POST' });
       setSelectedAccount(payload.account);
       setMessage('Conta selecionada.');
-      await loadAccounts({ silent: true });
+      await refreshVisibleAccounts();
       return payload.account;
     } catch (error) {
       setMessage(error.message);
@@ -995,7 +1070,7 @@ function RobloxGeneratorPage({ user }) {
       const payload = await api('/roblox-generator/random', { method: 'POST' });
       setSelectedAccount(payload.account);
       setMessage('Conta aleatoria selecionada.');
-      await loadAccounts({ silent: true });
+      await refreshVisibleAccounts();
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -1015,7 +1090,7 @@ function RobloxGeneratorPage({ user }) {
       setSelectedAccount(payload.account);
       await copyText(formatRobloxGeneratorData(payload.account));
       setMessage('Dados copiados.');
-      await loadAccounts({ silent: true });
+      await refreshVisibleAccounts();
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -1033,7 +1108,7 @@ function RobloxGeneratorPage({ user }) {
       if (selectedAccount?.id === account.id) setSelectedAccount(null);
       setMessage('Conta removida do gerador.');
       setAccounts((current) => current.filter((item) => item.id !== account.id));
-      await loadAccounts({ silent: true });
+      await refreshVisibleAccounts();
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -1044,6 +1119,7 @@ function RobloxGeneratorPage({ user }) {
   const availableCount = accounts.filter((account) => account.status === 'available').length;
   const inUseCount = accounts.filter((account) => account.status === 'in_use').length;
   const showSkeleton = listLoading && accounts.length === 0;
+  const totalCount = typeof pagination.total === 'number' ? pagination.total : null;
 
   return (
     <section className="page">
@@ -1091,7 +1167,7 @@ function RobloxGeneratorPage({ user }) {
       <div className="status-strip">
         <span><BadgeCheck size={15} /> {availableCount} offline</span>
         <span><Clock3 size={15} /> {inUseCount} online</span>
-        <span><Gamepad2 size={15} /> {accounts.length} carregadas</span>
+        <span><Gamepad2 size={15} /> {accounts.length}{totalCount ? `/${totalCount}` : ''} carregadas</span>
       </div>
       <div className="roblox-generator-layout">
         <section className="panel roblox-selected-panel">
@@ -1189,6 +1265,21 @@ function RobloxGeneratorPage({ user }) {
             </article>
           ))}
           {!listLoading && accounts.length === 0 && <EmptyState icon={Gamepad2} title="Nenhuma conta Roblox carregada" />}
+          {!showSkeleton && pagination.hasMore && (
+            <div className="roblox-generator-sentinel" ref={loadMoreRef}>
+              {loadingMore ? (
+                <>
+                  <RefreshCw size={17} />
+                  Carregando mais contas
+                </>
+              ) : (
+                <>
+                  <ChevronRight size={17} />
+                  Role para carregar mais
+                </>
+              )}
+            </div>
+          )}
         </section>
       </div>
     </section>

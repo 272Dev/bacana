@@ -887,11 +887,13 @@ app.post('/api/roblox/lookup', requireAuth, async (req, res, next) => {
 });
 
 app.get('/api/roblox-generator/accounts', requireAuth, async (req, res) => {
-  const accounts = await listRobloxGeneratorAccounts({
+  const result = await listRobloxGeneratorAccounts({
     search: req.query.search,
-    status: req.query.status
+    status: req.query.status,
+    limit: req.query.limit,
+    offset: req.query.offset
   });
-  res.json({ accounts });
+  res.json(result);
 });
 
 app.post('/api/roblox-generator/import', requireAuth, requireAdmin, async (req, res, next) => {

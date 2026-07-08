@@ -8,6 +8,8 @@ import { lookupRobloxPresences, lookupRobloxUsernames } from './roblox.js';
 const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,32}$/;
 const ROBLOX_PROFILE_IMPORT_BATCH_SIZE = 25;
 const ROBLOX_PROFILE_IMPORT_RETRIES = 3;
+const ROBLOX_GENERATOR_PAGE_SIZE = 24;
+const ROBLOX_GENERATOR_MAX_PAGE_SIZE = 80;
 
 function cleanText(value) {
   return String(value || '').trim();
@@ -160,6 +162,33 @@ async function getExistingByUsername(username) {
   return db.prepare('SELECT * FROM roblox_generator_accounts WHERE LOWER(username) = LOWER(?)').get(username);
 }
 
+function normalizePageNumber(value, fallback, max = Number.MAX_SAFE_INTEGER) {
+  const number = Number.parseInt(value, 10);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(Math.max(number, 0), max);
+}
+
+function buildListQuery({ search = '' } = {}) {
+  const cleanSearch = cleanText(search).toLowerCase();
+  const where = [];
+  const params = [];
+
+  if (cleanSearch) {
+    const pattern = `%${cleanSearch}%`;
+    where.push(`(
+      LOWER(username) LIKE ?
+      OR LOWER(COALESCE(display_name, '')) LIKE ?
+      OR CAST(user_id AS TEXT) LIKE ?
+    )`);
+    params.push(pattern, pattern, pattern);
+  }
+
+  return {
+    whereSql: where.length ? `WHERE ${where.join(' AND ')}` : '',
+    params
+  };
+}
+
 export async function importRobloxGeneratorText({ text, actorDiscordId = null, sourceLabel = 'txt' }) {
   const parsed = parseRobloxGeneratorText(text);
   const now = nowIso();
@@ -260,7 +289,82 @@ export async function importRobloxGeneratorFile({ actorDiscordId = null } = {}) 
   }
 }
 
-export async function listRobloxGeneratorAccounts({ search = '', status = '' } = {}) {
+export async function listRobloxGeneratorAccounts({ search = '', status = '', limit, offset } = {}) {
+  const pageLimit = normalizePageNumber(limit, ROBLOX_GENERATOR_PAGE_SIZE, ROBLOX_GENERATOR_MAX_PAGE_SIZE) || ROBLOX_GENERATOR_PAGE_SIZE;
+  const pageOffset = normalizePageNumber(offset, 0);
+  const shouldFilterStatus = status === 'available' || status === 'in_use';
+  const { whereSql, params } = buildListQuery({ search });
+
+  if (!shouldFilterStatus) {
+    const rows = await db.prepare(`
+      SELECT *
+      FROM roblox_generator_accounts
+      ${whereSql}
+      ORDER BY username ASC
+      LIMIT ? OFFSET ?
+    `).all(...params, pageLimit, pageOffset);
+    const totalRow = await db.prepare(`
+      SELECT COUNT(*) AS total
+      FROM roblox_generator_accounts
+      ${whereSql}
+    `).get(...params);
+    const total = Number(totalRow?.total || 0);
+    const presences = await getPresencesForRows(rows);
+
+    return {
+      accounts: rows.map((row) => mapStoredAccount(row, { presence: presences.get(String(row.user_id)) || null })),
+      page: {
+        limit: pageLimit,
+        offset: pageOffset,
+        nextOffset: pageOffset + rows.length,
+        hasMore: pageOffset + rows.length < total,
+        total
+      }
+    };
+  }
+
+  const accounts = [];
+  let scannedOffset = pageOffset;
+  let hasMore = true;
+
+  while (accounts.length < pageLimit && hasMore) {
+    const rows = await db.prepare(`
+      SELECT *
+      FROM roblox_generator_accounts
+      ${whereSql}
+      ORDER BY username ASC
+      LIMIT ? OFFSET ?
+    `).all(...params, pageLimit, scannedOffset);
+
+    if (rows.length === 0) {
+      hasMore = false;
+      break;
+    }
+
+    const presences = await getPresencesForRows(rows);
+    for (const row of rows) {
+      const account = mapStoredAccount(row, { presence: presences.get(String(row.user_id)) || null });
+      if (account.status === status) accounts.push(account);
+      if (accounts.length >= pageLimit) break;
+    }
+
+    scannedOffset += rows.length;
+    hasMore = rows.length === pageLimit;
+  }
+
+  return {
+    accounts,
+    page: {
+      limit: pageLimit,
+      offset: pageOffset,
+      nextOffset: scannedOffset,
+      hasMore,
+      total: null
+    }
+  };
+}
+
+export async function listAllRobloxGeneratorAccounts({ search = '', status = '' } = {}) {
   const rows = await db.prepare(`
     SELECT *
     FROM roblox_generator_accounts
