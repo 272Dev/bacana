@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { config, getMissingRuntimeConfig, hasDiscordOAuthConfig, requireRuntimeConfig } from './config.js';
 import { db, getAuthorizedUser, initDatabase, nowIso, seedAuthorizedUsers } from './db.js';
 import { encryptSecret, tryDecryptSecret } from './crypto.js';
-import { destroyCloudinaryImage, isCloudinaryEnabled, uploadCloudinaryImage } from './cloudinary.js';
+import { destroyCloudinaryMedia, isCloudinaryEnabled, uploadCloudinaryMedia } from './cloudinary.js';
 import { logAudit, writeAccountHistory } from './audit.js';
 import { lookupRobloxUsername } from './roblox.js';
 import {
@@ -61,7 +61,7 @@ app.use(cors({
   origin: config.clientUrl,
   credentials: true
 }));
-app.use(express.json({ limit: '8mb' }));
+app.use(express.json({ limit: '60mb' }));
 app.use((req, _res, next) => {
   req.cookies = Object.fromEntries(
     String(req.headers.cookie || '')
@@ -269,40 +269,45 @@ const uploadImageSchema = z.object({
   dataUrl: z.string().min(20)
 });
 
-const allowedImageTypes = new Map([
+const allowedMediaTypes = new Map([
   ['image/png', 'png'],
   ['image/jpeg', 'jpg'],
   ['image/webp', 'webp'],
-  ['image/gif', 'gif']
+  ['image/gif', 'gif'],
+  ['video/mp4', 'mp4'],
+  ['video/webm', 'webm'],
+  ['video/quicktime', 'mov']
 ]);
 
 function sanitizeFileBase(name) {
-  const parsed = path.parse(String(name || 'imagem'));
-  return (parsed.name || 'imagem')
+  const parsed = path.parse(String(name || 'midia'));
+  return (parsed.name || 'midia')
     .normalize('NFKD')
     .replace(/[^\w.-]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '')
-    .slice(0, 80) || 'imagem';
+    .slice(0, 80) || 'midia';
 }
 
-function parseImageDataUrl(dataUrl) {
-  const match = String(dataUrl).match(/^data:(image\/(?:png|jpeg|webp|gif));base64,([a-z0-9+/=\s]+)$/i);
+function parseMediaDataUrl(dataUrl) {
+  const match = String(dataUrl).match(/^data:((?:image\/(?:png|jpeg|webp|gif))|(?:video\/(?:mp4|webm|quicktime)));base64,([a-z0-9+/=\s]+)$/i);
   if (!match) {
-    const error = new Error('Imagem invalida. Use PNG, JPG, WEBP ou GIF.');
+    const error = new Error('Midia invalida. Use PNG, JPG, WEBP, GIF, MP4, WEBM ou MOV.');
     error.status = 400;
     throw error;
   }
   const mimeType = match[1].toLowerCase();
-  const ext = allowedImageTypes.get(mimeType);
+  const ext = allowedMediaTypes.get(mimeType);
   const base64 = match[2].replace(/\s/g, '');
   const buffer = Buffer.from(base64, 'base64');
-  if (buffer.length === 0 || buffer.length > 5 * 1024 * 1024) {
-    const error = new Error('Imagem deve ter ate 5 MB.');
+  const resourceType = mimeType.startsWith('video/') ? 'video' : 'image';
+  const maxBytes = resourceType === 'video' ? 40 * 1024 * 1024 : 5 * 1024 * 1024;
+  if (buffer.length === 0 || buffer.length > maxBytes) {
+    const error = new Error(resourceType === 'video' ? 'Video deve ter ate 40 MB.' : 'Imagem deve ter ate 5 MB.');
     error.status = 400;
     throw error;
   }
-  return { mimeType, ext, buffer, dataUrl: `data:${mimeType};base64,${base64}` };
+  return { mimeType, ext, buffer, resourceType, dataUrl: `data:${mimeType};base64,${base64}` };
 }
 
 function mapFolder(row) {
@@ -310,6 +315,7 @@ function mapFolder(row) {
     id: row.id,
     name: row.name,
     imageCount: Number(row.image_count || 0),
+    mediaCount: Number(row.image_count || 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -326,6 +332,7 @@ function mapImage(row) {
     folderId: row.folder_id,
     name: row.original_name,
     mimeType: row.mime_type,
+    kind: String(row.mime_type || '').startsWith('video/') ? 'video' : 'image',
     sizeBytes: row.size_bytes,
     url,
     createdAt: row.created_at,
@@ -333,8 +340,12 @@ function mapImage(row) {
   };
 }
 
-function isCloudinaryImage(row) {
+function isCloudinaryMedia(row) {
   return /^https:\/\/res\.cloudinary\.com\//i.test(String(row.url || ''));
+}
+
+function getCloudinaryResourceType(row) {
+  return String(row.mime_type || '').startsWith('video/') ? 'video' : 'image';
 }
 
 function getImageFilePath(row) {
@@ -625,22 +636,23 @@ app.post('/api/images', requireAuth, async (req, res, next) => {
       if (!folder) return res.status(404).json({ error: 'Pasta nao encontrada.' });
     }
 
-    const parsed = parseImageDataUrl(payload.dataUrl);
+    const parsed = parseMediaDataUrl(payload.dataUrl);
     const id = crypto.randomUUID();
-    const baseName = sanitizeFileBase(payload.name || `imagem-${id}`);
+    const baseName = sanitizeFileBase(payload.name || `midia-${id}`);
     let storedName = `${id}-${baseName}.${parsed.ext}`;
     let url = `${config.apiPublicUrl}/api/images/${id}/file`;
     let sizeBytes = parsed.buffer.length;
 
     if (isCloudinaryEnabled()) {
       const publicId = `${req.user.discordId}/${id}-${baseName}`;
-      const cloudinaryImage = await uploadCloudinaryImage({
+      const cloudinaryMedia = await uploadCloudinaryMedia({
         dataUrl: parsed.dataUrl,
-        publicId
+        publicId,
+        resourceType: parsed.resourceType
       });
-      storedName = cloudinaryImage.public_id || publicId;
-      url = cloudinaryImage.secure_url;
-      sizeBytes = cloudinaryImage.bytes || parsed.buffer.length;
+      storedName = cloudinaryMedia.public_id || publicId;
+      url = cloudinaryMedia.secure_url;
+      sizeBytes = cloudinaryMedia.bytes || parsed.buffer.length;
     } else {
       const folderPath = path.join(uploadsDir, req.user.discordId);
       fs.mkdirSync(folderPath, { recursive: true });
@@ -687,8 +699,8 @@ app.post('/api/images', requireAuth, async (req, res, next) => {
 
 app.get('/api/images/:id/file', async (req, res) => {
   const row = await db.prepare('SELECT * FROM images WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).send('Imagem nao encontrada.');
-  if (isCloudinaryImage(row)) {
+  if (!row) return res.status(404).send('Midia nao encontrada.');
+  if (isCloudinaryMedia(row)) {
     res.setHeader('Cache-Control', 'public, max-age=86400');
     return res.redirect(row.url);
   }
@@ -702,9 +714,9 @@ app.get('/api/images/:id/file', async (req, res) => {
 app.delete('/api/images/:id', requireAuth, async (req, res, next) => {
   try {
     const row = await db.prepare('SELECT * FROM images WHERE id = ?').get(req.params.id);
-    if (!row) return res.status(404).json({ error: 'Imagem nao encontrada.' });
-    if (isCloudinaryImage(row)) {
-      await destroyCloudinaryImage(row.stored_name);
+    if (!row) return res.status(404).json({ error: 'Midia nao encontrada.' });
+    if (isCloudinaryMedia(row)) {
+      await destroyCloudinaryMedia(row.stored_name, getCloudinaryResourceType(row));
     } else {
       const filePath = getImageFilePath(row);
       if (filePath && fs.existsSync(filePath)) {
