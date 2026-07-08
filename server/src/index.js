@@ -325,6 +325,14 @@ app.get('/api/health', (_req, res) => {
 });
 
 app.get('/api/config/status', (_req, res) => {
+  if (config.nodeEnv === 'production') {
+    return res.json({
+      ok: true,
+      cloudinaryEnabled: isCloudinaryEnabled(),
+      oauthReady: hasDiscordOAuthConfig()
+    });
+  }
+
   res.json({
     ok: true,
     envPath: config.envPath,
