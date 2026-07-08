@@ -28,7 +28,6 @@ import {
   importRobloxGeneratorFile,
   importRobloxGeneratorText,
   listRobloxGeneratorAccounts,
-  releaseRobloxGeneratorAccount,
   selectRandomRobloxGeneratorAccount,
   selectRobloxGeneratorAccount
 } from './robloxGenerator.js';
@@ -889,7 +888,7 @@ app.post('/api/roblox-generator/import', requireAuth, requireAdmin, async (req, 
 
 app.post('/api/roblox-generator/random', requireAuth, async (req, res, next) => {
   try {
-    const account = await selectRandomRobloxGeneratorAccount({ actorDiscordId: req.user.discordId });
+    const account = await selectRandomRobloxGeneratorAccount();
     await logAudit({
       actorDiscordId: req.user.discordId,
       action: 'roblox_generator.random_selected',
@@ -904,40 +903,17 @@ app.post('/api/roblox-generator/random', requireAuth, async (req, res, next) => 
 });
 
 app.get('/api/roblox-generator/accounts/:id', requireAuth, async (req, res) => {
-  const account = await getRobloxGeneratorAccount(req.params.id, { includePassword: true });
+  const account = await getRobloxGeneratorAccount(req.params.id);
   if (!account) return res.status(404).json({ error: 'Conta Roblox nao encontrada.' });
   res.json({ account });
 });
 
 app.post('/api/roblox-generator/accounts/:id/select', requireAuth, async (req, res, next) => {
   try {
-    const account = await selectRobloxGeneratorAccount({
-      id: req.params.id,
-      actorDiscordId: req.user.discordId
-    });
+    const account = await selectRobloxGeneratorAccount({ id: req.params.id });
     await logAudit({
       actorDiscordId: req.user.discordId,
       action: 'roblox_generator.selected',
-      targetType: 'roblox_generator_account',
-      targetId: account.id,
-      ip: req.ip
-    });
-    res.json({ account });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post('/api/roblox-generator/accounts/:id/release', requireAuth, async (req, res, next) => {
-  try {
-    const account = await releaseRobloxGeneratorAccount({
-      id: req.params.id,
-      actorDiscordId: req.user.discordId,
-      isAdmin: ['owner', 'admin'].includes(req.user.role)
-    });
-    await logAudit({
-      actorDiscordId: req.user.discordId,
-      action: 'roblox_generator.released',
       targetType: 'roblox_generator_account',
       targetId: account.id,
       ip: req.ip

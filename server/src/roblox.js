@@ -1,6 +1,8 @@
 const ROBLOX_USERS_URL = 'https://users.roblox.com/v1/usernames/users';
 const ROBLOX_THUMBNAILS_URL = 'https://thumbnails.roblox.com/v1/users/avatar-headshot';
+const ROBLOX_PRESENCE_URL = 'https://presence.roblox.com/v1/presence/users';
 const ROBLOX_BATCH_SIZE = 50;
+const ROBLOX_PRESENCE_BATCH_SIZE = 100;
 
 function normalizeUsername(username) {
   return String(username || '').trim();
@@ -80,4 +82,44 @@ export async function lookupRobloxUsername(username) {
   }
 
   return user;
+}
+
+export async function lookupRobloxPresences(userIds) {
+  const cleanIds = [...new Set(
+    userIds
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+      .filter((value) => /^\d+$/.test(value))
+  )];
+  const result = new Map();
+
+  for (let index = 0; index < cleanIds.length; index += ROBLOX_PRESENCE_BATCH_SIZE) {
+    const batch = cleanIds.slice(index, index + ROBLOX_PRESENCE_BATCH_SIZE);
+    const presenceResponse = await fetch(ROBLOX_PRESENCE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userIds: batch.map(Number) })
+    });
+
+    if (!presenceResponse.ok) {
+      const error = new Error('Nao foi possivel consultar presenca do Roblox agora.');
+      error.status = 502;
+      throw error;
+    }
+
+    const presencePayload = await presenceResponse.json();
+    for (const item of presencePayload?.userPresences || []) {
+      result.set(String(item.userId), {
+        userPresenceType: Number(item.userPresenceType || 0),
+        lastLocation: item.lastLocation || '',
+        placeId: item.placeId ? String(item.placeId) : null,
+        rootPlaceId: item.rootPlaceId ? String(item.rootPlaceId) : null,
+        gameId: item.gameId || null,
+        universeId: item.universeId ? String(item.universeId) : null,
+        lastOnline: item.lastOnline || null
+      });
+    }
+  }
+
+  return result;
 }

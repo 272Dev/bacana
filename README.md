@@ -107,6 +107,13 @@ Se o Username nao existir, a interface informa que a conta nao foi encontrada.
 
 A aba Gerador de Contas lista contas Roblox importadas por TXT em cards com avatar, username, display name, status e acoes para selecionar ou copiar os dados.
 
+O status vem da presenca publica do Roblox:
+
+- `Disponivel`: conta offline.
+- `Em uso`: conta online, em jogo ou no Studio.
+
+Selecionar ou copiar uma conta nao reserva a conta. Ela so aparece como em uso quando o Roblox informa que esta online.
+
 Formato aceito no TXT:
 
 ```text

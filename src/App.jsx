@@ -934,30 +934,17 @@ function RobloxGeneratorPage({ user }) {
   }
 
   async function copyAccountData(account) {
+    if (account.status !== 'available') {
+      setMessage('Essa conta esta online no Roblox agora.');
+      return;
+    }
     setLoading(true);
     setMessage('');
     try {
-      const payload = account.status === 'available'
-        ? await api(`/roblox-generator/accounts/${account.id}/select`, { method: 'POST' })
-        : await api(`/roblox-generator/accounts/${account.id}`);
+      const payload = await api(`/roblox-generator/accounts/${account.id}/select`, { method: 'POST' });
       setSelectedAccount(payload.account);
       await copyText(formatRobloxGeneratorData(payload.account));
       setMessage('Dados copiados.');
-      await loadAccounts();
-    } catch (error) {
-      setMessage(error.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function releaseAccount(account) {
-    setLoading(true);
-    setMessage('');
-    try {
-      const payload = await api(`/roblox-generator/accounts/${account.id}/release`, { method: 'POST' });
-      setSelectedAccount(payload.account);
-      setMessage('Conta liberada.');
       await loadAccounts();
     } catch (error) {
       setMessage(error.message);
@@ -983,7 +970,7 @@ function RobloxGeneratorPage({ user }) {
                 <input type="file" accept=".txt,text/plain" onChange={importTxt} />
               </label>
             )}
-            <button className="primary-button" onClick={randomAccount} disabled={loading || availableCount === 0}>
+            <button className="primary-button" onClick={randomAccount} disabled={loading}>
               <Shuffle size={18} />
               Gerar Conta Aleatoria
             </button>
@@ -1007,14 +994,14 @@ function RobloxGeneratorPage({ user }) {
             onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}
           >
             <option value="">Todas</option>
-            <option value="available">Disponiveis</option>
-            <option value="in_use">Em uso</option>
+            <option value="available">Offline / disponiveis</option>
+            <option value="in_use">Online / em uso</option>
           </select>
         </label>
       </div>
       <div className="status-strip">
-        <span><BadgeCheck size={15} /> {availableCount} disponiveis</span>
-        <span><Clock3 size={15} /> {inUseCount} em uso</span>
+        <span><BadgeCheck size={15} /> {availableCount} offline</span>
+        <span><Clock3 size={15} /> {inUseCount} online</span>
         <span><Gamepad2 size={15} /> {accounts.length} carregadas</span>
       </div>
       <div className="roblox-generator-layout">
@@ -1030,8 +1017,8 @@ function RobloxGeneratorPage({ user }) {
                 <h3>{selectedAccount.username}</h3>
                 <p className="muted">{selectedAccount.displayName || 'Sem Display Name'}</p>
                 <div className="tag-line">
-                  <span className={selectedAccount.status === 'available' ? 'tag success' : 'tag warning'}>
-                    {selectedAccount.status === 'available' ? 'Disponivel' : 'Em uso'}
+                  <span className={getRobloxStatusClass(selectedAccount)}>
+                    {getRobloxStatusLabel(selectedAccount)}
                   </span>
                   {selectedAccount.userId && <span className="tag">UserId {selectedAccount.userId}</span>}
                 </div>
@@ -1042,10 +1029,10 @@ function RobloxGeneratorPage({ user }) {
               </div>
               <div className="secret-box">
                 <span>Senha</span>
-                <strong>{selectedAccount.password || 'Nao carregada'}</strong>
+                <strong>{selectedAccount.password || 'Selecione ou copie quando estiver offline'}</strong>
               </div>
               <div className="card-actions">
-                <button className="primary-button" onClick={() => copyAccountData(selectedAccount)}>
+                <button className="primary-button" onClick={() => copyAccountData(selectedAccount)} disabled={loading || selectedAccount.status !== 'available'}>
                   <Copy size={17} />
                   Copiar Dados
                 </button>
@@ -1054,12 +1041,6 @@ function RobloxGeneratorPage({ user }) {
                     <Gamepad2 size={17} />
                     Perfil
                   </a>
-                )}
-                {selectedAccount.status === 'in_use' && (
-                  <button className="ghost-button" onClick={() => releaseAccount(selectedAccount)}>
-                    <Clock3 size={17} />
-                    Liberar
-                  </button>
                 )}
               </div>
             </div>
@@ -1078,8 +1059,8 @@ function RobloxGeneratorPage({ user }) {
                 </span>
               </button>
               <div className="tag-line">
-                <span className={account.status === 'available' ? 'tag success' : 'tag warning'}>
-                  {account.status === 'available' ? 'Disponivel' : 'Em uso'}
+                <span className={getRobloxStatusClass(account)}>
+                  {getRobloxStatusLabel(account)}
                 </span>
                 {account.userId && <span className="tag">UserId {account.userId}</span>}
               </div>
@@ -1088,7 +1069,7 @@ function RobloxGeneratorPage({ user }) {
                   <BadgeCheck size={17} />
                   Selecionar
                 </button>
-                <button className="primary-button" onClick={() => copyAccountData(account)} disabled={loading}>
+                <button className="primary-button" onClick={() => copyAccountData(account)} disabled={loading || account.status !== 'available'}>
                   <Copy size={17} />
                   Copiar Dados
                 </button>
@@ -1383,6 +1364,15 @@ function getFileExtension(name = '') {
   const parts = String(name).split('.');
   const ext = parts.length > 1 ? parts.pop() : 'arquivo';
   return ext.slice(0, 8).toUpperCase();
+}
+
+function getRobloxStatusLabel(account) {
+  if (account?.status === 'available') return 'Disponivel';
+  return account?.presence?.label || 'Em uso';
+}
+
+function getRobloxStatusClass(account) {
+  return account?.status === 'available' ? 'tag success' : 'tag warning';
 }
 
 function formatFileSize(bytes = 0) {

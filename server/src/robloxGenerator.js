@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import { config } from './config.js';
 import { db, nowIso } from './db.js';
 import { encryptSecret, tryDecryptSecret } from './crypto.js';
-import { lookupRobloxUsernames } from './roblox.js';
+import { lookupRobloxPresences, lookupRobloxUsernames } from './roblox.js';
 
 const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,32}$/;
 const ROBLOX_PROFILE_IMPORT_BATCH_SIZE = 25;
@@ -13,8 +13,16 @@ function cleanText(value) {
   return String(value || '').trim();
 }
 
-function normalizeStatus(status) {
-  return status === 'in_use' ? 'in_use' : 'available';
+const presenceLabels = {
+  0: 'Offline',
+  1: 'Online',
+  2: 'Em jogo',
+  3: 'No Studio'
+};
+
+function statusFromPresence(presence) {
+  const presenceType = Number(presence?.userPresenceType || 0);
+  return presenceType > 0 ? 'in_use' : 'available';
 }
 
 function parseRobloxAccountLine(line) {
@@ -104,10 +112,20 @@ async function enrichRobloxAccounts(accounts) {
   };
 }
 
-function mapStoredAccount(row, { includePassword = false } = {}) {
+async function getPresencesForRows(rows) {
+  try {
+    return await lookupRobloxPresences(rows.map((row) => row.user_id));
+  } catch {
+    return new Map();
+  }
+}
+
+function mapStoredAccount(row, { includePassword = false, presence = null } = {}) {
   const passwordResult = includePassword
     ? tryDecryptSecret(row.password_encrypted)
     : { value: null, ok: true };
+  const presenceType = Number(presence?.userPresenceType || 0);
+  const status = statusFromPresence(presence);
 
   return {
     id: row.id,
@@ -120,7 +138,16 @@ function mapStoredAccount(row, { includePassword = false } = {}) {
     userId: row.user_id,
     profileUrl: row.profile_url,
     avatarUrl: row.avatar_url,
-    status: normalizeStatus(row.status),
+    status,
+    statusLabel: status === 'in_use' ? 'Em uso' : 'Disponivel',
+    presence: {
+      type: presenceType,
+      label: presenceLabels[presenceType] || 'Offline',
+      lastLocation: presence?.lastLocation || '',
+      lastOnline: presence?.lastOnline || null,
+      placeId: presence?.placeId || null,
+      universeId: presence?.universeId || null
+    },
     selectedByDiscordId: row.selected_by_discord_id,
     selectedAt: row.selected_at,
     sourceLabel: row.source_label,
@@ -237,29 +264,34 @@ export async function listRobloxGeneratorAccounts({ search = '', status = '' } =
   const rows = await db.prepare(`
     SELECT *
     FROM roblox_generator_accounts
-    ORDER BY status ASC, username ASC
+    ORDER BY username ASC
   `).all();
+  const presences = await getPresencesForRows(rows);
   const cleanSearch = cleanText(search).toLowerCase();
-  const cleanStatus = normalizeStatus(status);
   const shouldFilterStatus = status === 'available' || status === 'in_use';
 
   return rows
-    .filter((row) => !shouldFilterStatus || normalizeStatus(row.status) === cleanStatus)
+    .map((row) => mapStoredAccount(row, { presence: presences.get(String(row.user_id)) || null }))
+    .filter((account) => !shouldFilterStatus || account.status === status)
     .filter((row) => {
       if (!cleanSearch) return true;
-      return [row.username, row.display_name, row.user_id]
+      return [row.username, row.displayName, row.userId]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(cleanSearch));
-    })
-    .map((row) => mapStoredAccount(row));
+    });
 }
 
 export async function getRobloxGeneratorAccount(id, options = {}) {
   const row = await db.prepare('SELECT * FROM roblox_generator_accounts WHERE id = ?').get(id);
-  return row ? mapStoredAccount(row, options) : null;
+  if (!row) return null;
+  const presences = await getPresencesForRows([row]);
+  return mapStoredAccount(row, {
+    ...options,
+    presence: presences.get(String(row.user_id)) || null
+  });
 }
 
-export async function selectRobloxGeneratorAccount({ id, actorDiscordId }) {
+export async function selectRobloxGeneratorAccount({ id }) {
   const row = await db.prepare('SELECT * FROM roblox_generator_accounts WHERE id = ?').get(id);
   if (!row) {
     const error = new Error('Conta Roblox nao encontrada.');
@@ -267,77 +299,40 @@ export async function selectRobloxGeneratorAccount({ id, actorDiscordId }) {
     throw error;
   }
 
-  if (normalizeStatus(row.status) === 'in_use' && row.selected_by_discord_id !== actorDiscordId) {
+  const presences = await getPresencesForRows([row]);
+  const presence = presences.get(String(row.user_id)) || null;
+  if (statusFromPresence(presence) === 'in_use') {
     const error = new Error('Conta Roblox ja esta em uso.');
     error.status = 409;
     throw error;
   }
 
-  if (normalizeStatus(row.status) === 'available') {
-    const now = nowIso();
-    await db.prepare(`
-      UPDATE roblox_generator_accounts
-      SET status = 'in_use', selected_by_discord_id = ?, selected_at = ?, updated_at = ?
-      WHERE id = ? AND status = 'available'
-    `).run(actorDiscordId, now, now, id);
-  }
-
-  return getRobloxGeneratorAccount(id, { includePassword: true });
+  return mapStoredAccount(row, { includePassword: true, presence });
 }
 
-export async function selectRandomRobloxGeneratorAccount({ actorDiscordId }) {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const row = await db.prepare(`
-      SELECT *
-      FROM roblox_generator_accounts
-      WHERE status = 'available'
-      ORDER BY RANDOM()
-      LIMIT 1
-    `).get();
-
-    if (!row) {
-      const error = new Error('Nenhuma conta Roblox disponivel.');
-      error.status = 404;
-      throw error;
-    }
-
-    const now = nowIso();
-    const result = await db.prepare(`
-      UPDATE roblox_generator_accounts
-      SET status = 'in_use', selected_by_discord_id = ?, selected_at = ?, updated_at = ?
-      WHERE id = ? AND status = 'available'
-    `).run(actorDiscordId, now, now, row.id);
-
-    if ((result?.changes || 0) > 0) {
-      return getRobloxGeneratorAccount(row.id, { includePassword: true });
-    }
+export async function selectRandomRobloxGeneratorAccount() {
+  const rows = await db.prepare(`
+    SELECT *
+    FROM roblox_generator_accounts
+    ORDER BY RANDOM()
+  `).all();
+  if (rows.length === 0) {
+    const error = new Error('Nenhuma conta Roblox disponivel.');
+    error.status = 404;
+    throw error;
   }
+  const presences = await getPresencesForRows(rows);
+  const availableRows = rows.filter((row) => statusFromPresence(presences.get(String(row.user_id)) || null) === 'available');
 
-  const error = new Error('Nao foi possivel reservar uma conta agora.');
-  error.status = 409;
-  throw error;
-}
-
-export async function releaseRobloxGeneratorAccount({ id, actorDiscordId, isAdmin = false }) {
-  const row = await db.prepare('SELECT * FROM roblox_generator_accounts WHERE id = ?').get(id);
-  if (!row) {
-    const error = new Error('Conta Roblox nao encontrada.');
+  if (availableRows.length === 0) {
+    const error = new Error('Nenhuma conta Roblox offline disponivel agora.');
     error.status = 404;
     throw error;
   }
 
-  if (!isAdmin && row.selected_by_discord_id && row.selected_by_discord_id !== actorDiscordId) {
-    const error = new Error('Apenas quem selecionou pode liberar esta conta.');
-    error.status = 403;
-    throw error;
-  }
-
-  const now = nowIso();
-  await db.prepare(`
-    UPDATE roblox_generator_accounts
-    SET status = 'available', selected_by_discord_id = NULL, selected_at = NULL, updated_at = ?
-    WHERE id = ?
-  `).run(now, id);
-
-  return getRobloxGeneratorAccount(id);
+  const row = availableRows[Math.floor(Math.random() * availableRows.length)];
+  return mapStoredAccount(row, {
+    includePassword: true,
+    presence: presences.get(String(row.user_id)) || null
+  });
 }
