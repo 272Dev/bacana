@@ -1379,7 +1379,7 @@ function TempEmailPage() {
 
   return (
     <section className="page">
-      <PageHeader eyebrow="Mail.tm / Guerrilla Mail" title="Temp Email" />
+      <PageHeader eyebrow="Firemail" title="Temp Email" />
       {notice && <div className="notice">{notice}</div>}
       <div className="temp-email-layout">
         <section className="panel">
@@ -1411,11 +1411,7 @@ function TempEmailPage() {
           </form>
           <div className="temp-email-source">
             <MailOpen size={17} />
-            <span>
-              <a href="https://mail.tm" target="_blank" rel="noreferrer">Mail.tm</a>
-              {' / '}
-              <a href="https://www.guerrillamail.com/GuerrillaMailAPI.html" target="_blank" rel="noreferrer">Guerrilla Mail</a>
-            </span>
+            <a href="https://firemail.com.br/api" target="_blank" rel="noreferrer">Powered by Firemail</a>
           </div>
         </section>
 
