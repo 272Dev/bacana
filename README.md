@@ -140,6 +140,23 @@ Recursos:
 - excluir autenticador
 - pesquisa por nome, emissor ou usuario
 
+## Temp Email
+
+A aba Temp Email cria caixas temporarias usando a API publica da Mail.tm. Se a Mail.tm estiver instavel, o backend usa Guerrilla Mail como fallback automatico.
+
+Recursos:
+
+- criar email temporario com prefixo e dominio
+- copiar endereco com um clique
+- atualizar caixa de entrada
+- abrir mensagens recebidas
+- copiar texto da mensagem ou links detectados
+- excluir caixa temporaria
+
+Nao precisa configurar API key no Render. A Mail.tm informa que a API e gratuita, nao exige chave e possui limite geral de 8 requisicoes por segundo por IP. O Guerrilla Mail tambem oferece API publica, mas depende de sessao/cookie e pode ter rate limit sem publicar numeros fixos. O Nexus mostra a atribuicao `Powered by Mail.tm` na interface.
+
+O Nexus armazena apenas endereco, id da caixa e credenciais tecnicas criptografadas para conseguir consultar a caixa depois. As mensagens sao buscadas na Mail.tm quando a aba e aberta ou atualizada.
+
 ## Midia com Cloudflare R2 ou Cloudinary
 
 Para hospedar no Render, prefira Cloudflare R2 para imagens e videos nao dependerem do disco local do servidor.

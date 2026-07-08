@@ -28,6 +28,14 @@ import {
   getAuthenticator,
   listAuthenticators
 } from './authenticator.js';
+import {
+  createTempEmailInbox,
+  deleteTempEmailInbox,
+  getTempEmailMessage,
+  listTempEmailDomains,
+  listTempEmailInboxes,
+  listTempEmailMessages
+} from './tempEmail.js';
 import { lookupRobloxUsername } from './roblox.js';
 import {
   getRobloxGeneratorAccount,
@@ -312,6 +320,12 @@ const authenticatorCreateSchema = z.object({
   algorithm: z.enum(['SHA1', 'SHA256', 'SHA512']).optional().default('SHA1'),
   digits: z.union([z.literal(6), z.literal(8)]).optional().default(6),
   period: z.number().int().min(10).max(120).optional().default(30)
+});
+
+const tempEmailCreateSchema = z.object({
+  label: z.string().trim().max(120).optional().or(z.literal('')),
+  prefix: z.string().trim().max(40).optional().or(z.literal('')),
+  domain: z.string().trim().max(180).optional().or(z.literal(''))
 });
 
 const previewImageTypes = new Set([
@@ -1011,6 +1025,66 @@ app.delete('/api/authenticators/:id', requireAuth, async (req, res, next) => {
   }
 });
 
+app.get('/api/temp-email/domains', requireAuth, async (_req, res) => {
+  const domains = await listTempEmailDomains();
+  res.json({ domains, provider: 'mail.tm' });
+});
+
+app.get('/api/temp-email/inboxes', requireAuth, async (req, res) => {
+  const inboxes = await listTempEmailInboxes({ search: req.query.search });
+  res.json({ inboxes, provider: 'mail.tm' });
+});
+
+app.post('/api/temp-email/inboxes', requireAuth, async (req, res, next) => {
+  try {
+    const payload = tempEmailCreateSchema.parse(req.body);
+    const inbox = await createTempEmailInbox({
+      payload,
+      actorDiscordId: req.user.discordId
+    });
+    await logAudit({
+      actorDiscordId: req.user.discordId,
+      action: 'temp_email.created',
+      targetType: 'temp_email',
+      targetId: inbox.id,
+      metadata: { address: inbox.address, provider: inbox.provider },
+      ip: req.ip
+    });
+    res.status(201).json({ inbox });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete('/api/temp-email/inboxes/:id', requireAuth, async (req, res, next) => {
+  try {
+    await deleteTempEmailInbox(req.params.id);
+    await logAudit({
+      actorDiscordId: req.user.discordId,
+      action: 'temp_email.deleted',
+      targetType: 'temp_email',
+      targetId: req.params.id,
+      ip: req.ip
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/temp-email/inboxes/:id/messages', requireAuth, async (req, res) => {
+  const messages = await listTempEmailMessages(req.params.id);
+  res.json({ messages });
+});
+
+app.get('/api/temp-email/inboxes/:id/messages/:messageId', requireAuth, async (req, res) => {
+  const message = await getTempEmailMessage({
+    inboxId: req.params.id,
+    messageId: req.params.messageId
+  });
+  res.json({ message });
+});
+
 app.get('/api/accounts', requireAuth, async (req, res) => {
   const rows = await db.prepare(`
     SELECT a.*, CASE WHEN a.owner_discord_id = ? THEN 'owner' ELSE 'edit' END AS permission
@@ -1385,6 +1459,7 @@ app.get('/api/backup', requireAuth, requireOwner, async (req, res) => {
     accounts: await db.prepare('SELECT * FROM accounts').all(),
     robloxGeneratorAccounts: await db.prepare('SELECT * FROM roblox_generator_accounts').all(),
     authenticators: await db.prepare('SELECT * FROM authenticators').all(),
+    tempEmailInboxes: await db.prepare('SELECT * FROM temp_email_inboxes').all(),
     shares: await db.prepare('SELECT * FROM account_shares').all(),
     history: await db.prepare('SELECT * FROM account_history').all(),
     audit: await db.prepare('SELECT * FROM audit_logs').all()

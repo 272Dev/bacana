@@ -616,6 +616,145 @@ textarea {
   transition: width 160ms linear;
 }
 
+.temp-email-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.28fr) minmax(280px, 0.32fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.temp-email-form {
+  display: grid;
+  gap: 12px;
+}
+
+.temp-email-source {
+  margin-top: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.temp-email-search {
+  margin-bottom: 14px;
+}
+
+.temp-email-inbox-list,
+.temp-email-messages {
+  display: grid;
+  gap: 10px;
+}
+
+.temp-email-inbox {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.temp-email-inbox.active,
+.temp-email-message.active {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+}
+
+.temp-email-inbox > button,
+.temp-email-message {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  color: var(--text);
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+
+.temp-email-inbox > button {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.temp-email-inbox span,
+.temp-email-message span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.temp-email-inbox strong,
+.temp-email-inbox small,
+.temp-email-message strong,
+.temp-email-message small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.temp-email-inbox small,
+.temp-email-message small,
+.temp-email-message p {
+  color: var(--muted);
+}
+
+.temp-email-messages-panel {
+  min-height: 420px;
+}
+
+.temp-email-message {
+  display: grid;
+  gap: 8px;
+  min-height: 92px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.temp-email-message p {
+  margin: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.temp-email-reader {
+  grid-column: 1 / -1;
+}
+
+.temp-email-reader-body {
+  display: grid;
+  gap: 14px;
+}
+
+.temp-email-reader-body pre {
+  max-height: 420px;
+  overflow: auto;
+  margin: 0;
+  padding: 16px;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.temp-email-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .roblox-selected-card {
   box-shadow: none;
   background: var(--surface-2);
@@ -1305,6 +1444,7 @@ label {
   .media-layout,
   .roblox-generator-layout,
   .authenticator-layout,
+  .temp-email-layout,
   .settings-grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -1339,7 +1479,8 @@ label {
   .folder-form,
   .media-layout,
   .roblox-generator-layout,
-  .authenticator-layout {
+  .authenticator-layout,
+  .temp-email-layout {
     grid-template-columns: 1fr;
   }
 

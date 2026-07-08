@@ -24,9 +24,12 @@ import {
   Lock,
   LogIn,
   LogOut,
+  Mail,
+  MailOpen,
   Moon,
   Palette,
   Plus,
+  RefreshCw,
   Save,
   Search,
   Settings,
@@ -128,6 +131,7 @@ function Shell({ user, theme, resolvedTheme, onToggleTheme, onLogout, view, setV
     { id: 'accounts', label: 'Cofre', icon: KeyRound },
     { id: 'roblox-generator', label: 'Gerador', icon: Gamepad2 },
     { id: 'authenticator', label: 'Codigos', icon: Lock },
+    { id: 'temp-email', label: 'Temp Email', icon: Mail },
     { id: 'images', label: 'Midia', icon: Film },
     { id: 'history', label: 'Historico', icon: History },
     { id: 'users', label: 'Usuarios', icon: Users, admin: true },
@@ -1251,6 +1255,268 @@ function AuthenticatorPage() {
   );
 }
 
+function formatSender(sender = {}) {
+  if (!sender.name) return sender.address || 'Remetente desconhecido';
+  if (!sender.address) return sender.name;
+  return `${sender.name} <${sender.address}>`;
+}
+
+function TempEmailPage() {
+  const [inboxes, setInboxes] = useState([]);
+  const [domains, setDomains] = useState([]);
+  const [search, setSearch] = useState('');
+  const [form, setForm] = useState({ label: '', prefix: '', domain: '' });
+  const [selectedInbox, setSelectedInbox] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [selectedMessage, setSelectedMessage] = useState(null);
+  const [notice, setNotice] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  const loadInboxes = useCallback(async () => {
+    const query = search ? `?search=${encodeURIComponent(search)}` : '';
+    const payload = await api(`/temp-email/inboxes${query}`);
+    setInboxes(payload.inboxes);
+    setSelectedInbox((current) => {
+      if (!current) return payload.inboxes[0] || null;
+      return payload.inboxes.find((inbox) => inbox.id === current.id) || payload.inboxes[0] || null;
+    });
+  }, [search]);
+
+  useEffect(() => {
+    api('/temp-email/domains')
+      .then((payload) => {
+        setDomains(payload.domains);
+        setForm((current) => ({ ...current, domain: current.domain || payload.domains[0]?.domain || '' }));
+      })
+      .catch((error) => setNotice(error.message));
+  }, []);
+
+  useEffect(() => {
+    loadInboxes().catch((error) => setNotice(error.message));
+  }, [loadInboxes]);
+
+  const loadMessages = useCallback(async (inbox = selectedInbox) => {
+    if (!inbox) {
+      setMessages([]);
+      setSelectedMessage(null);
+      return;
+    }
+    setLoading(true);
+    setNotice('');
+    try {
+      const payload = await api(`/temp-email/inboxes/${inbox.id}/messages`);
+      setMessages(payload.messages);
+      setSelectedMessage((current) => {
+        if (!current) return null;
+        return payload.messages.find((message) => message.id === current.id) ? current : null;
+      });
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [selectedInbox]);
+
+  useEffect(() => {
+    loadMessages().catch(() => {});
+  }, [selectedInbox, loadMessages]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      loadMessages().catch(() => {});
+    }, 12000);
+    return () => window.clearInterval(timer);
+  }, [loadMessages]);
+
+  function updateForm(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  async function createInbox(event) {
+    event.preventDefault();
+    setCreating(true);
+    setNotice('');
+    try {
+      const payload = await api('/temp-email/inboxes', { method: 'POST', body: form });
+      setForm((current) => ({ label: '', prefix: '', domain: current.domain }));
+      setSelectedInbox(payload.inbox);
+      setNotice('Email temporario criado.');
+      await loadInboxes();
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function deleteInbox(inbox) {
+    const confirmed = window.confirm(`Excluir ${inbox.address}?`);
+    if (!confirmed) return;
+    await api(`/temp-email/inboxes/${inbox.id}`, { method: 'DELETE' });
+    setSelectedInbox(null);
+    setSelectedMessage(null);
+    setMessages([]);
+    setNotice('Email temporario removido.');
+    await loadInboxes();
+  }
+
+  async function openMessage(message) {
+    if (!selectedInbox) return;
+    setLoading(true);
+    setNotice('');
+    try {
+      const payload = await api(`/temp-email/inboxes/${selectedInbox.id}/messages/${message.id}`);
+      setSelectedMessage(payload.message);
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const mailText = selectedMessage?.text || selectedMessage?.intro || '';
+
+  return (
+    <section className="page">
+      <PageHeader eyebrow="Mail.tm / Guerrilla Mail" title="Temp Email" />
+      {notice && <div className="notice">{notice}</div>}
+      <div className="temp-email-layout">
+        <section className="panel">
+          <div className="panel-title">
+            <h3>Criar email</h3>
+            <Mail size={18} />
+          </div>
+          <form className="temp-email-form" onSubmit={createInbox}>
+            <label>
+              Nome
+              <input value={form.label} onChange={(event) => updateForm('label', event.target.value)} placeholder="Roblox teste" />
+            </label>
+            <label>
+              Prefixo
+              <input value={form.prefix} onChange={(event) => updateForm('prefix', event.target.value)} placeholder="nexus-conta" />
+            </label>
+            <label>
+              Dominio
+              <select value={form.domain} onChange={(event) => updateForm('domain', event.target.value)}>
+                {domains.map((domain) => (
+                  <option key={domain.id || domain.domain} value={domain.domain}>{domain.domain}</option>
+                ))}
+              </select>
+            </label>
+            <button className="primary-button" disabled={creating || domains.length === 0}>
+              <Plus size={17} />
+              {creating ? 'Criando' : 'Criar email'}
+            </button>
+          </form>
+          <div className="temp-email-source">
+            <MailOpen size={17} />
+            <span>
+              <a href="https://mail.tm" target="_blank" rel="noreferrer">Mail.tm</a>
+              {' / '}
+              <a href="https://www.guerrillamail.com/GuerrillaMailAPI.html" target="_blank" rel="noreferrer">Guerrilla Mail</a>
+            </span>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-title">
+            <h3>Caixas</h3>
+            <IconButton label="Atualizar caixas" onClick={loadInboxes}>
+              <RefreshCw size={16} />
+            </IconButton>
+          </div>
+          <label className="search-box temp-email-search">
+            <Search size={18} />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Pesquisar email" />
+          </label>
+          <div className="temp-email-inbox-list">
+            {inboxes.map((inbox) => (
+              <article className={selectedInbox?.id === inbox.id ? 'temp-email-inbox active' : 'temp-email-inbox'} key={inbox.id}>
+                <button onClick={() => setSelectedInbox(inbox)}>
+                  <span>
+                    <strong>{inbox.label || inbox.address}</strong>
+                    <small>{inbox.address}</small>
+                  </span>
+                  <Mail size={18} />
+                </button>
+                <div className="card-actions">
+                  <IconButton label="Copiar email" onClick={() => copyText(inbox.address)}>
+                    <Copy size={16} />
+                  </IconButton>
+                  <IconButton label="Excluir email" onClick={() => deleteInbox(inbox)}>
+                    <Trash2 size={16} />
+                  </IconButton>
+                </div>
+              </article>
+            ))}
+            {inboxes.length === 0 && <EmptyState icon={Mail} title="Nenhum email temporario" />}
+          </div>
+        </section>
+
+        <section className="panel temp-email-messages-panel">
+          <div className="panel-title">
+            <div>
+              <h3>{selectedInbox?.address || 'Mensagens'}</h3>
+              <small>{selectedInbox?.lastCheckedAt ? `Atualizado ${formatDate(selectedInbox.lastCheckedAt)}` : 'Aguardando caixa'}</small>
+            </div>
+            <button className="ghost-button" onClick={() => loadMessages()} disabled={!selectedInbox || loading}>
+              <RefreshCw size={17} />
+              {loading ? 'Atualizando' : 'Atualizar'}
+            </button>
+          </div>
+          <div className="temp-email-messages">
+            {messages.map((message) => (
+              <button className={selectedMessage?.id === message.id ? 'temp-email-message active' : 'temp-email-message'} key={message.id} onClick={() => openMessage(message)}>
+                <span>
+                  <strong>{message.subject}</strong>
+                  <small>{formatSender(message.from)}</small>
+                </span>
+                <small>{message.createdAt ? formatDate(message.createdAt) : ''}</small>
+                {message.intro && <p>{message.intro}</p>}
+              </button>
+            ))}
+            {selectedInbox && messages.length === 0 && <EmptyState icon={MailOpen} title="Nenhuma mensagem ainda" />}
+            {!selectedInbox && <EmptyState icon={Mail} title="Crie ou selecione um email" />}
+          </div>
+        </section>
+
+        <section className="panel temp-email-reader">
+          <div className="panel-title">
+            <div>
+              <h3>{selectedMessage?.subject || 'Leitor'}</h3>
+              <small>{selectedMessage ? formatSender(selectedMessage.from) : 'Abra uma mensagem'}</small>
+            </div>
+            {selectedMessage && (
+              <button className="primary-button" onClick={() => copyText(mailText)}>
+                <Copy size={17} />
+                Copiar
+              </button>
+            )}
+          </div>
+          {selectedMessage ? (
+            <div className="temp-email-reader-body">
+              <pre>{mailText || 'Mensagem sem texto.'}</pre>
+              {selectedMessage.links?.length > 0 && (
+                <div className="temp-email-links">
+                  {selectedMessage.links.map((link) => (
+                    <button className="ghost-button" key={link} onClick={() => copyText(link)}>
+                      <Copy size={16} />
+                      Copiar link
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <EmptyState icon={MailOpen} title="Nenhuma mensagem aberta" />
+          )}
+        </section>
+      </div>
+    </section>
+  );
+}
+
 function MediaPage() {
   const [folders, setFolders] = useState([]);
   const [media, setMedia] = useState([]);
@@ -1755,6 +2021,7 @@ export default function App() {
       {view === 'history' && <HistoryPage history={history} />}
       {view === 'roblox-generator' && <RobloxGeneratorPage user={session.user} />}
       {view === 'authenticator' && <AuthenticatorPage />}
+      {view === 'temp-email' && <TempEmailPage />}
       {view === 'images' && <MediaPage />}
       {view === 'users' && <UsersPage users={authorizedUsers} reloadUsers={loadAuthorizedUsers} />}
       {view === 'settings' && <SettingsPage theme={theme} resolvedTheme={resolvedTheme} setTheme={setTheme} onBackup={exportBackup} />}
