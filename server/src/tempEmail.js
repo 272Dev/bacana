@@ -21,8 +21,7 @@ function sanitizePrefix(value) {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9._-]/g, '')
-    .replace(/^[._-]+|[._-]+$/g, '')
+    .replace(/[^a-z0-9]/g, '')
     .slice(0, 40);
   return clean || '';
 }
@@ -151,7 +150,7 @@ export async function createTempEmailInbox({ payload = {}, actorDiscordId }) {
     response = await firemailRequest('/email/create', { method: 'POST' });
   } else {
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const suffix = attempt === 0 ? '' : `-${crypto.randomBytes(2).toString('hex')}`;
+      const suffix = attempt === 0 ? '' : crypto.randomBytes(2).toString('hex');
       try {
         response = await firemailRequest('/email/create', {
           method: 'POST',
@@ -165,7 +164,13 @@ export async function createTempEmailInbox({ payload = {}, actorDiscordId }) {
     }
   }
 
-  if (!response) throw lastError || makeHttpError('Nao foi possivel criar o email temporario.', 502);
+  if (!response) {
+    try {
+      response = await firemailRequest('/email/create', { method: 'POST' });
+    } catch {
+      throw lastError || makeHttpError('Nao foi possivel criar o email temporario.', 502);
+    }
+  }
   const address = response?.data?.email;
   if (!address) throw makeHttpError('A Firemail nao retornou um endereco temporario.', 502);
 

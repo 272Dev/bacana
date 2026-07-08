@@ -1027,12 +1027,12 @@ app.delete('/api/authenticators/:id', requireAuth, async (req, res, next) => {
 
 app.get('/api/temp-email/domains', requireAuth, async (_req, res) => {
   const domains = await listTempEmailDomains();
-  res.json({ domains, provider: 'mail.tm' });
+  res.json({ domains, provider: 'firemail' });
 });
 
 app.get('/api/temp-email/inboxes', requireAuth, async (req, res) => {
   const inboxes = await listTempEmailInboxes({ search: req.query.search });
-  res.json({ inboxes, provider: 'mail.tm' });
+  res.json({ inboxes, provider: 'firemail' });
 });
 
 app.post('/api/temp-email/inboxes', requireAuth, async (req, res, next) => {

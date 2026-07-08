@@ -1394,7 +1394,7 @@ function TempEmailPage() {
             </label>
             <label>
               Prefixo
-              <input value={form.prefix} onChange={(event) => updateForm('prefix', event.target.value)} placeholder="nexus-conta" />
+              <input value={form.prefix} onChange={(event) => updateForm('prefix', event.target.value)} placeholder="nexusconta" />
             </label>
             <label>
               Dominio
