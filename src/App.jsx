@@ -196,7 +196,7 @@ function Shell({ user, theme, resolvedTheme, onToggleTheme, onLogout, view, setV
       </header>
       <main className="content">{children}</main>
       <nav className="mobile-nav">
-        {navItems.slice(0, 5).map((item) => {
+        {navItems.map((item) => {
           const Icon = item.icon;
           return (
             <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => setView(item.id)}>

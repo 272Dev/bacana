@@ -11,10 +11,11 @@
   --text: #f8faf7;
   --muted: rgba(236, 241, 232, 0.62);
   --line: rgba(255, 255, 255, 0.10);
-  --accent: #24d17e;
-  --accent-2: #ef5761;
-  --danger: #ff4e59;
-  --shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
+  --accent: #ff4058;
+  --accent-2: #b71328;
+  --danger: #ff3048;
+  --shadow: 0 28px 80px rgba(0, 0, 0, 0.46);
+  --red-glow: 0 0 28px rgba(255, 48, 72, 0.18);
   --glass-blur: blur(22px) saturate(128%);
 }
 
@@ -71,6 +72,41 @@ a {
   color: inherit;
 }
 
+@keyframes bgDrift {
+  from {
+    transform: translate3d(-8px, 0, 0) scale(1);
+    opacity: 0.72;
+  }
+
+  to {
+    transform: translate3d(10px, -8px, 0) scale(1.04);
+    opacity: 0.95;
+  }
+}
+
+@keyframes cardReveal {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes redPulse {
+  0%,
+  100% {
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.34), 0 10px 22px rgba(255, 48, 72, 0.24);
+  }
+
+  50% {
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.42), 0 14px 32px rgba(255, 48, 72, 0.38);
+  }
+}
+
 .loading-screen,
 .login-screen {
   min-height: 100vh;
@@ -92,8 +128,9 @@ a {
   border: 1px solid rgba(255, 255, 255, 0.14);
   background: rgba(12, 13, 12, 0.76);
   backdrop-filter: var(--glass-blur);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow), var(--red-glow);
   border-radius: 26px;
+  animation: cardReveal 420ms ease both;
 }
 
 .brand-mark {
@@ -105,7 +142,7 @@ a {
   color: white;
   background:
     radial-gradient(circle at 34% 28%, rgba(255, 255, 255, 0.28), transparent 24%),
-    linear-gradient(145deg, #272727, #0f1010 46%, #13331f);
+    linear-gradient(145deg, #3a1118, #111010 46%, #6c1020);
   border: 1px solid rgba(255, 255, 255, 0.10);
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.14), 0 10px 24px rgba(0, 0, 0, 0.22);
 }
@@ -173,9 +210,10 @@ small {
 .primary-button {
   padding: 0 16px;
   color: #fff;
-  background: linear-gradient(180deg, #ff6a70, #e84e58);
+  background: linear-gradient(180deg, #ff6778, #ff3048 46%, #b71328);
   font-weight: 800;
-  box-shadow: inset 0 1px rgba(255, 255, 255, 0.38), 0 10px 22px rgba(232, 78, 88, 0.28);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.38), 0 10px 22px rgba(255, 48, 72, 0.30);
+  animation: redPulse 4.8s ease-in-out infinite;
 }
 
 .ghost-button {
@@ -217,7 +255,8 @@ small {
 .text-button:hover,
 .icon-button:hover {
   transform: translateY(-1px);
-  border-color: rgba(255, 255, 255, 0.20);
+  border-color: rgba(255, 76, 98, 0.42);
+  box-shadow: var(--red-glow);
 }
 
 .primary-button:disabled,
@@ -246,11 +285,11 @@ small {
   border: 0;
   border-radius: 0;
   background:
-    radial-gradient(circle at 54% 20%, rgba(113, 190, 225, 0.26), transparent 16%),
-    radial-gradient(circle at 20% 78%, rgba(100, 160, 49, 0.44), transparent 32%),
-    linear-gradient(180deg, rgba(11, 12, 12, 0.62), rgba(6, 8, 7, 0.96)),
+    radial-gradient(circle at 54% 20%, rgba(255, 63, 88, 0.24), transparent 18%),
+    radial-gradient(circle at 18% 80%, rgba(119, 12, 29, 0.54), transparent 34%),
+    linear-gradient(180deg, rgba(14, 9, 10, 0.70), rgba(5, 5, 6, 0.98)),
     repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.045) 0 1px, transparent 1px 9px),
-    linear-gradient(90deg, #17211b, #07100e 52%, #111b18);
+    linear-gradient(90deg, #16070a, #070707 52%, #17090d);
   box-shadow: none;
 }
 
@@ -261,9 +300,10 @@ small {
   pointer-events: none;
   background:
     linear-gradient(180deg, rgba(0, 0, 0, 0.24), transparent 24%, rgba(0, 0, 0, 0.74)),
-    radial-gradient(ellipse at 50% 8%, rgba(170, 183, 194, 0.18), transparent 40%),
+    radial-gradient(ellipse at 50% 8%, rgba(255, 70, 96, 0.16), transparent 40%),
     repeating-linear-gradient(90deg, transparent 0 92px, rgba(255, 255, 255, 0.035) 92px 94px);
   opacity: 0.8;
+  animation: bgDrift 18s ease-in-out infinite alternate;
 }
 
 .app-shell::after {
@@ -273,8 +313,9 @@ small {
   height: 48%;
   pointer-events: none;
   background:
-    linear-gradient(180deg, transparent, rgba(34, 67, 23, 0.38) 34%, rgba(14, 24, 12, 0.72)),
+    linear-gradient(180deg, transparent, rgba(92, 12, 24, 0.42) 34%, rgba(14, 6, 8, 0.80)),
     repeating-linear-gradient(110deg, rgba(255, 255, 255, 0.025) 0 2px, transparent 2px 10px);
+  animation: bgDrift 14s ease-in-out infinite alternate-reverse;
 }
 
 .sidebar {
@@ -288,7 +329,7 @@ small {
   gap: 14px;
   border-right: 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  background: linear-gradient(180deg, rgba(18, 19, 19, 0.96), rgba(12, 13, 13, 0.86));
+  background: linear-gradient(180deg, rgba(17, 10, 11, 0.98), rgba(9, 9, 10, 0.90));
   backdrop-filter: var(--glass-blur);
 }
 
@@ -339,16 +380,17 @@ small {
   background: rgba(255, 255, 255, 0.075);
   border: 1px solid rgba(255, 255, 255, 0.045);
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.06);
+  transition: width 180ms ease, transform 160ms ease, background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
 
 .nav-list button.active,
 .nav-list button:hover {
   color: var(--text);
   background:
-    radial-gradient(circle at 16% 16%, rgba(255, 71, 222, 0.35), transparent 25%),
-    linear-gradient(135deg, rgba(47, 218, 133, 0.24), rgba(17, 29, 44, 0.82));
-  border-color: rgba(58, 240, 142, 0.22);
-  box-shadow: inset 0 1px rgba(255, 255, 255, 0.16), 0 12px 28px rgba(0, 0, 0, 0.20);
+    radial-gradient(circle at 16% 16%, rgba(255, 118, 130, 0.42), transparent 28%),
+    linear-gradient(135deg, rgba(255, 48, 72, 0.32), rgba(28, 10, 14, 0.88));
+  border-color: rgba(255, 76, 98, 0.38);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.16), 0 12px 28px rgba(0, 0, 0, 0.24), var(--red-glow);
 }
 
 .nav-list button span {
@@ -478,6 +520,23 @@ small {
     rgba(20, 21, 20, 0.52);
   backdrop-filter: var(--glass-blur);
   box-shadow: var(--shadow);
+  animation: cardReveal 340ms ease both;
+  transition: transform 170ms ease, border-color 170ms ease, box-shadow 170ms ease, background 170ms ease;
+}
+
+.metric-card:hover,
+.account-card:hover,
+.user-card:hover,
+.panel:hover,
+.roblox-generator-card:hover,
+.roblox-selected-card:hover,
+.authenticator-card:hover,
+.image-card:hover,
+.temp-email-inbox:hover,
+.temp-email-message:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 76, 98, 0.24);
+  box-shadow: var(--shadow), var(--red-glow);
 }
 
 .metric-card {
@@ -709,6 +768,8 @@ textarea {
     rgba(21, 22, 21, 0.56);
   backdrop-filter: var(--glass-blur);
   box-shadow: var(--shadow);
+  animation: cardReveal 340ms ease both;
+  transition: transform 170ms ease, border-color 170ms ease, box-shadow 170ms ease, background 170ms ease;
 }
 
 .roblox-generator-card {
@@ -767,7 +828,7 @@ textarea {
   height: 100%;
   display: block;
   border-radius: inherit;
-  background: linear-gradient(90deg, #21d977, #33efa0);
+  background: linear-gradient(90deg, #ff3048, #ff8b98);
   transition: width 160ms linear;
 }
 
@@ -1299,6 +1360,8 @@ label {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.065);
+  animation: cardReveal 340ms ease both;
+  transition: transform 170ms ease, border-color 170ms ease, box-shadow 170ms ease, background 170ms ease;
 }
 
 .media-thumb {
@@ -1337,7 +1400,7 @@ label {
   align-items: center;
   justify-content: center;
   padding: 0 8px;
-  color: #05221f;
+  color: white;
   background: var(--accent);
   border-radius: 999px;
   font-size: 0.78rem;
@@ -1354,7 +1417,7 @@ label {
   gap: 6px;
   padding: 0 9px;
   border-radius: 999px;
-  color: #05221f;
+  color: white;
   background: var(--accent);
   font-size: 0.78rem;
   font-weight: 900;
@@ -1403,8 +1466,8 @@ label {
 
 .segmented button.active {
   color: var(--text);
-  background: linear-gradient(180deg, rgba(36, 209, 126, 0.90), rgba(23, 167, 89, 0.92));
-  box-shadow: inset 0 1px rgba(255, 255, 255, 0.32), 0 10px 24px rgba(0, 0, 0, 0.22);
+  background: linear-gradient(180deg, rgba(255, 64, 88, 0.92), rgba(183, 19, 40, 0.94));
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.32), 0 10px 24px rgba(255, 48, 72, 0.20);
 }
 
 .theme-segmented {
@@ -1591,7 +1654,7 @@ label {
   }
 
   .content {
-    padding: 18px 18px 92px;
+    padding: 18px 18px 104px;
   }
 
   .mobile-nav {
@@ -1600,18 +1663,29 @@ label {
     right: 12px;
     bottom: 12px;
     z-index: 40;
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 4px;
-    padding: 6px;
-    border: 1px solid rgba(255, 255, 255, 0.10);
-    border-radius: 20px;
-    background: rgba(18, 19, 18, 0.76);
-    box-shadow: var(--shadow);
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 7px;
+    border: 1px solid rgba(255, 76, 98, 0.22);
+    border-radius: 22px;
+    background:
+      linear-gradient(135deg, rgba(38, 8, 14, 0.84), rgba(7, 7, 8, 0.86)),
+      rgba(18, 19, 18, 0.76);
+    box-shadow: var(--shadow), var(--red-glow);
     backdrop-filter: var(--glass-blur);
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .mobile-nav::-webkit-scrollbar {
+    display: none;
   }
 
   .mobile-nav button {
+    flex: 0 0 74px;
     min-height: 56px;
     display: grid;
     place-items: center;
@@ -1620,11 +1694,16 @@ label {
     background: transparent;
     border-radius: 16px;
     font-size: 0.7rem;
+    scroll-snap-align: center;
+    transition: transform 160ms ease, background 160ms ease, color 160ms ease, box-shadow 160ms ease;
   }
 
   .mobile-nav button.active {
     color: var(--text);
-    background: linear-gradient(135deg, rgba(36, 209, 126, 0.28), rgba(255, 255, 255, 0.08));
+    background:
+      radial-gradient(circle at 30% 18%, rgba(255, 134, 146, 0.38), transparent 32%),
+      linear-gradient(135deg, rgba(255, 48, 72, 0.35), rgba(255, 255, 255, 0.08));
+    box-shadow: inset 0 1px rgba(255, 255, 255, 0.18), 0 8px 20px rgba(255, 48, 72, 0.18);
   }
 
   .metric-grid,
@@ -1724,5 +1803,16 @@ label {
   .media-viewer-body img,
   .media-viewer-body video {
     max-height: calc(100vh - 132px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
   }
 }
