@@ -10,8 +10,10 @@ import {
   Clock3,
   Copy,
   DatabaseBackup,
+  Download,
   Eye,
   EyeOff,
+  File as FileIcon,
   Film,
   FolderPlus,
   Gamepad2,
@@ -918,8 +920,9 @@ function MediaPage() {
   }
 
   const selectedFolder = folders.find((folder) => folder.id === selectedFolderId);
-  const imageCount = media.filter((item) => !isVideoMedia(item)).length;
+  const imageCount = media.filter(isImageMedia).length;
   const videoCount = media.filter(isVideoMedia).length;
+  const fileCount = media.filter(isFileMedia).length;
 
   return (
     <section className="page">
@@ -958,12 +961,12 @@ function MediaPage() {
           <div className="panel-title">
             <div>
               <h3>{selectedFolder?.name || 'Sem pasta'}</h3>
-              <small>{media.length} arquivo(s) - {imageCount} imagem(ns) - {videoCount} video(s)</small>
+              <small>{media.length} arquivo(s) - {imageCount} imagem(ns) - {videoCount} video(s) - {fileCount} anexo(s)</small>
             </div>
             <label className="upload-button">
               <Upload size={17} />
               {uploading ? 'Enviando' : 'Enviar'}
-              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,video/quicktime" multiple onChange={uploadFiles} />
+              <input type="file" multiple onChange={uploadFiles} />
             </label>
           </div>
           <div className="image-grid">
@@ -975,8 +978,13 @@ function MediaPage() {
                       <video src={item.url} muted playsInline preload="metadata" />
                       <span className="media-type"><Film size={15} /> Video</span>
                     </>
-                  ) : (
+                  ) : isImageMedia(item) ? (
                     <img src={item.url} alt="" />
+                  ) : (
+                    <span className="file-thumb">
+                      <FileIcon size={38} />
+                      <small>{getFileExtension(item.name)}</small>
+                    </span>
                   )}
                 </button>
                 <span>
@@ -1020,8 +1028,18 @@ function MediaPage() {
             <div className="media-viewer-body">
               {isVideoMedia(selectedMedia) ? (
                 <video src={selectedMedia.url} controls autoPlay playsInline />
-              ) : (
+              ) : isImageMedia(selectedMedia) ? (
                 <img src={selectedMedia.url} alt={selectedMedia.name} />
+              ) : (
+                <div className="media-viewer-file">
+                  <FileIcon size={54} />
+                  <strong>{selectedMedia.name}</strong>
+                  <small>{formatFileSize(selectedMedia.sizeBytes)}</small>
+                  <a className="primary-button" href={selectedMedia.url} download={selectedMedia.name}>
+                    <Download size={17} />
+                    Baixar arquivo
+                  </a>
+                </div>
               )}
             </div>
           </section>
@@ -1089,6 +1107,20 @@ function copyText(text) {
 
 function isVideoMedia(item) {
   return item?.kind === 'video' || String(item?.mimeType || '').startsWith('video/');
+}
+
+function isImageMedia(item) {
+  return item?.kind === 'image' || String(item?.mimeType || '').startsWith('image/');
+}
+
+function isFileMedia(item) {
+  return !isImageMedia(item) && !isVideoMedia(item);
+}
+
+function getFileExtension(name = '') {
+  const parts = String(name).split('.');
+  const ext = parts.length > 1 ? parts.pop() : 'arquivo';
+  return ext.slice(0, 8).toUpperCase();
 }
 
 function formatFileSize(bytes = 0) {

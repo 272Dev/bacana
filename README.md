@@ -103,9 +103,21 @@ Quando a plataforma for Roblox, informe o Username e use a busca. O backend cons
 
 Se o Username nao existir, a interface informa que a conta nao foi encontrada.
 
-## Imagens com Cloudinary
+## Midia com Cloudflare R2 ou Cloudinary
 
-Para hospedar no Render, configure o Cloudinary para as imagens nao dependerem do disco local do servidor.
+Para hospedar no Render, prefira Cloudflare R2 para imagens e videos nao dependerem do disco local do servidor.
+
+```env
+R2_ACCOUNT_ID=seu_account_id
+R2_ENDPOINT=https://seu_account_id.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=sua_access_key_id
+R2_SECRET_ACCESS_KEY=sua_secret_access_key
+R2_BUCKET=nexus-media
+```
+
+Quando as variaveis R2 existem, todo upload feito pela tela de Midia vai para o R2. O backend serve os arquivos por `/api/images/:id/file`, entao o bucket nao precisa ficar publico.
+
+Cloudinary ainda funciona como fallback se o R2 nao estiver configurado:
 
 ```env
 CLOUDINARY_CLOUD_NAME=seu_cloud_name
@@ -114,7 +126,7 @@ CLOUDINARY_API_SECRET=sua_api_secret
 CLOUDINARY_FOLDER=nexus
 ```
 
-Quando essas variaveis existem, todo upload feito pela tela de Imagens ou pelo formulario de conta vai para o Cloudinary. Se elas ficarem vazias, o app continua usando `data/uploads` localmente.
+Se R2 e Cloudinary ficarem vazios, o app salva em `data/uploads` localmente.
 
 ## Produção
 
@@ -157,11 +169,16 @@ CLOUDINARY_CLOUD_NAME=seu_cloud_name
 CLOUDINARY_API_KEY=sua_api_key
 CLOUDINARY_API_SECRET=sua_api_secret
 CLOUDINARY_FOLDER=nexus
+R2_ACCOUNT_ID=seu_account_id
+R2_ENDPOINT=https://seu_account_id.r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=sua_access_key_id
+R2_SECRET_ACCESS_KEY=sua_secret_access_key
+R2_BUCKET=nexus-media
 REQUIRE_HTTPS=true
 TRUST_PROXY=true
 ```
 
-Importante: no plano gratis do Render, o disco do Web Service nao deve ser usado como armazenamento permanente. O Cloudinary resolve as imagens, mas o SQLite em `./data/nexus.db` ainda pode ser perdido em reinicios, redeploys ou quando o servico dormir. Para guardar contas de forma permanente em producao, migre o banco para Postgres/Supabase ou use um disco persistente pago.
+Importante: no plano gratis do Render, o disco do Web Service nao deve ser usado como armazenamento permanente. R2/Cloudinary resolvem as midias, mas o SQLite em `./data/nexus.db` ainda pode ser perdido em reinicios, redeploys ou quando o servico dormir. Para guardar contas de forma permanente em producao, migre o banco para Postgres/Neon ou use um disco persistente pago.
 
 ### Neon Postgres
 

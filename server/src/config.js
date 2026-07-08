@@ -66,6 +66,13 @@ export const config = {
     apiSecret: env('CLOUDINARY_API_SECRET'),
     folder: env('CLOUDINARY_FOLDER', 'nexus')
   },
+  r2: {
+    accountId: env('R2_ACCOUNT_ID'),
+    endpoint: env('R2_ENDPOINT'),
+    accessKeyId: env('R2_ACCESS_KEY_ID'),
+    secretAccessKey: env('R2_SECRET_ACCESS_KEY'),
+    bucket: env('R2_BUCKET')
+  },
   discord: {
     clientId: env('DISCORD_CLIENT_ID'),
     clientSecret: env('DISCORD_CLIENT_SECRET'),
@@ -103,6 +110,13 @@ export function hasCloudinaryConfig() {
   return !missingEnv(config.cloudinary.cloudName)
     && !missingEnv(config.cloudinary.apiKey)
     && !missingEnv(config.cloudinary.apiSecret);
+}
+
+export function hasR2Config() {
+  return (!missingEnv(config.r2.accountId) || !missingEnv(config.r2.endpoint))
+    && !missingEnv(config.r2.accessKeyId)
+    && !missingEnv(config.r2.secretAccessKey)
+    && !missingEnv(config.r2.bucket);
 }
 
 export function requireRuntimeConfig() {
