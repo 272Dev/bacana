@@ -12,6 +12,7 @@ import {
   DatabaseBackup,
   Eye,
   EyeOff,
+  Film,
   FolderPlus,
   Gamepad2,
   History,
@@ -22,6 +23,7 @@ import {
   LogIn,
   LogOut,
   Moon,
+  Palette,
   Plus,
   Save,
   Search,
@@ -36,6 +38,7 @@ import {
   Upload,
   UserCog,
   Users,
+  Maximize2,
   X
 } from 'lucide-react';
 import { api, DISCORD_LOGIN_URL, formatDate } from './api.js';
@@ -116,11 +119,11 @@ function LoginScreen() {
   );
 }
 
-function Shell({ user, theme, onToggleTheme, onLogout, view, setView, children }) {
+function Shell({ user, theme, resolvedTheme, onToggleTheme, onLogout, view, setView, children }) {
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'accounts', label: 'Cofre', icon: KeyRound },
-    { id: 'images', label: 'Imagens', icon: ImageIcon },
+    { id: 'images', label: 'Midia', icon: Film },
     { id: 'history', label: 'Historico', icon: History },
     { id: 'users', label: 'Usuarios', icon: Users, admin: true },
     { id: 'settings', label: 'Ajustes', icon: Settings },
@@ -158,8 +161,8 @@ function Shell({ user, theme, onToggleTheme, onLogout, view, setView, children }
             </span>
           </button>
           <div className="footer-actions">
-            <IconButton label={theme === 'dark' ? 'Tema claro' : 'Tema escuro'} onClick={onToggleTheme}>
-              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+            <IconButton label={resolvedTheme === 'dark' ? 'Tema claro' : 'Tema escuro'} onClick={onToggleTheme}>
+              {resolvedTheme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
             </IconButton>
             <IconButton label="Sair" onClick={onLogout}>
               <LogOut size={18} />
@@ -167,6 +170,20 @@ function Shell({ user, theme, onToggleTheme, onLogout, view, setView, children }
           </div>
         </div>
       </aside>
+      <header className="mobile-topbar">
+        <button className="mobile-brand" onClick={() => setView('dashboard')}>
+          <span className="brand-mark compact"><ShieldCheck size={21} /></span>
+          <strong>Nexus</strong>
+        </button>
+        <div className="mobile-actions">
+          <IconButton label={theme === 'system' ? 'Tema do aparelho' : resolvedTheme === 'dark' ? 'Tema claro' : 'Tema escuro'} onClick={onToggleTheme}>
+            {theme === 'system' ? <Palette size={18} /> : resolvedTheme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+          </IconButton>
+          <IconButton label="Perfil" onClick={() => setView('profile')}>
+            <UserCog size={18} />
+          </IconButton>
+        </div>
+      </header>
       <main className="content">{children}</main>
       <nav className="mobile-nav">
         {navItems.slice(0, 5).map((item) => {
@@ -823,21 +840,22 @@ function UsersPage({ users, reloadUsers }) {
 
 function MediaPage() {
   const [folders, setFolders] = useState([]);
-  const [images, setImages] = useState([]);
+  const [media, setMedia] = useState([]);
   const [selectedFolderId, setSelectedFolderId] = useState('');
   const [folderName, setFolderName] = useState('');
   const [message, setMessage] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [selectedMedia, setSelectedMedia] = useState(null);
 
   const loadFolders = useCallback(async () => {
     const payload = await api('/image-folders');
     setFolders(payload.folders);
   }, []);
 
-  const loadImages = useCallback(async () => {
+  const loadMedia = useCallback(async () => {
     const query = selectedFolderId ? `?folderId=${encodeURIComponent(selectedFolderId)}` : '';
     const payload = await api(`/images${query}`);
-    setImages(payload.images);
+    setMedia(payload.images);
   }, [selectedFolderId]);
 
   useEffect(() => {
@@ -845,8 +863,8 @@ function MediaPage() {
   }, [loadFolders]);
 
   useEffect(() => {
-    loadImages().catch((error) => setMessage(error.message));
-  }, [loadImages]);
+    loadMedia().catch((error) => setMessage(error.message));
+  }, [loadMedia]);
 
   async function createFolder(event) {
     event.preventDefault();
@@ -875,8 +893,8 @@ function MediaPage() {
           }
         });
       }
-      setMessage('Imagem enviada.');
-      await Promise.all([loadFolders(), loadImages()]);
+      setMessage(files.length > 1 ? 'Midias enviadas.' : 'Midia enviada.');
+      await Promise.all([loadFolders(), loadMedia()]);
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -885,24 +903,27 @@ function MediaPage() {
     }
   }
 
-  async function deleteImage(imageId) {
-    await api(`/images/${imageId}`, { method: 'DELETE' });
-    setMessage('Imagem removida.');
-    await Promise.all([loadFolders(), loadImages()]);
+  async function deleteMedia(mediaId) {
+    await api(`/images/${mediaId}`, { method: 'DELETE' });
+    if (selectedMedia?.id === mediaId) setSelectedMedia(null);
+    setMessage('Midia removida.');
+    await Promise.all([loadFolders(), loadMedia()]);
   }
 
   async function deleteFolder(folderId) {
     await api(`/image-folders/${folderId}`, { method: 'DELETE' });
     if (selectedFolderId === folderId) setSelectedFolderId('');
     setMessage('Pasta removida.');
-    await Promise.all([loadFolders(), loadImages()]);
+    await Promise.all([loadFolders(), loadMedia()]);
   }
 
   const selectedFolder = folders.find((folder) => folder.id === selectedFolderId);
+  const imageCount = media.filter((item) => !isVideoMedia(item)).length;
+  const videoCount = media.filter(isVideoMedia).length;
 
   return (
     <section className="page">
-      <PageHeader eyebrow="Biblioteca local" title="Imagens" />
+      <PageHeader eyebrow="Biblioteca compartilhada" title="Midia" />
       {message && <div className="notice">{message}</div>}
       <div className="media-layout">
         <section className="panel">
@@ -922,9 +943,9 @@ function MediaPage() {
             {folders.map((folder) => (
               <div className="folder-row" key={folder.id}>
                 <button className={selectedFolderId === folder.id ? 'active' : ''} onClick={() => setSelectedFolderId(folder.id)}>
-                  <ImageIcon size={17} />
+                  <Film size={17} />
                   <span>{folder.name}</span>
-                  <small>{folder.imageCount}</small>
+                  <small>{folder.mediaCount ?? folder.imageCount}</small>
                 </button>
                 <IconButton label="Remover pasta" onClick={() => deleteFolder(folder.id)}>
                   <Trash2 size={16} />
@@ -937,36 +958,75 @@ function MediaPage() {
           <div className="panel-title">
             <div>
               <h3>{selectedFolder?.name || 'Sem pasta'}</h3>
-              <small>{images.length} imagem(ns)</small>
+              <small>{media.length} arquivo(s) - {imageCount} imagem(ns) - {videoCount} video(s)</small>
             </div>
             <label className="upload-button">
               <Upload size={17} />
               {uploading ? 'Enviando' : 'Enviar'}
-              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple onChange={uploadFiles} />
+              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm,video/quicktime" multiple onChange={uploadFiles} />
             </label>
           </div>
           <div className="image-grid">
-            {images.map((image) => (
-              <article className="image-card" key={image.id}>
-                <img src={image.url} alt="" />
+            {media.map((item) => (
+              <article className="image-card" key={item.id}>
+                <button className="media-thumb" onClick={() => setSelectedMedia(item)}>
+                  {isVideoMedia(item) ? (
+                    <>
+                      <video src={item.url} muted playsInline preload="metadata" />
+                      <span className="media-type"><Film size={15} /> Video</span>
+                    </>
+                  ) : (
+                    <img src={item.url} alt="" />
+                  )}
+                </button>
                 <span>
-                  <strong>{image.name}</strong>
-                  <small>{Math.ceil(image.sizeBytes / 1024)} KB</small>
+                  <strong>{item.name}</strong>
+                  <small>{formatFileSize(item.sizeBytes)}</small>
                 </span>
                 <div className="card-actions">
-                  <IconButton label="Copiar URL" onClick={() => copyText(image.url)}>
+                  <IconButton label="Abrir" onClick={() => setSelectedMedia(item)}>
+                    <Maximize2 size={16} />
+                  </IconButton>
+                  <IconButton label="Copiar URL" onClick={() => copyText(item.url)}>
                     <Copy size={16} />
                   </IconButton>
-                  <IconButton label="Remover imagem" onClick={() => deleteImage(image.id)}>
+                  <IconButton label="Remover midia" onClick={() => deleteMedia(item.id)}>
                     <Trash2 size={16} />
                   </IconButton>
                 </div>
               </article>
             ))}
           </div>
-          {images.length === 0 && <EmptyState icon={ImageIcon} title="Nenhuma imagem nesta pasta" />}
+          {media.length === 0 && <EmptyState icon={Film} title="Nenhuma midia nesta pasta" />}
         </section>
       </div>
+      {selectedMedia && (
+        <div className="media-viewer-backdrop" role="dialog" aria-modal="true">
+          <section className="media-viewer">
+            <div className="media-viewer-header">
+              <span>
+                <strong>{selectedMedia.name}</strong>
+                <small>{formatFileSize(selectedMedia.sizeBytes)}</small>
+              </span>
+              <div className="card-actions">
+                <IconButton label="Copiar URL" onClick={() => copyText(selectedMedia.url)}>
+                  <Copy size={17} />
+                </IconButton>
+                <IconButton label="Fechar" onClick={() => setSelectedMedia(null)}>
+                  <X size={17} />
+                </IconButton>
+              </div>
+            </div>
+            <div className="media-viewer-body">
+              {isVideoMedia(selectedMedia) ? (
+                <video src={selectedMedia.url} controls autoPlay playsInline />
+              ) : (
+                <img src={selectedMedia.url} alt={selectedMedia.name} />
+              )}
+            </div>
+          </section>
+        </div>
+      )}
     </section>
   );
 }
@@ -990,7 +1050,7 @@ function ProfilePage({ user }) {
   );
 }
 
-function SettingsPage({ theme, setTheme, onBackup }) {
+function SettingsPage({ theme, resolvedTheme, setTheme, onBackup }) {
   return (
     <section className="page">
       <PageHeader eyebrow="Preferencias" title="Configuracoes" />
@@ -1000,9 +1060,14 @@ function SettingsPage({ theme, setTheme, onBackup }) {
             <h3>Tema</h3>
             <Sparkles size={18} />
           </div>
-          <div className="segmented">
+          <div className="segmented theme-segmented">
+            <button className={theme === 'system' ? 'active' : ''} onClick={() => setTheme('system')}><Palette size={17} /> Sistema</button>
             <button className={theme === 'light' ? 'active' : ''} onClick={() => setTheme('light')}><Sun size={17} /> Claro</button>
             <button className={theme === 'dark' ? 'active' : ''} onClick={() => setTheme('dark')}><Moon size={17} /> Escuro</button>
+          </div>
+          <div className="theme-mobile-preview">
+            <span><Palette size={16} /> Tema ativo</span>
+            <strong>{resolvedTheme === 'dark' ? 'Escuro' : 'Claro'}</strong>
           </div>
         </section>
         <section className="panel">
@@ -1022,17 +1087,28 @@ function copyText(text) {
   navigator.clipboard?.writeText(text);
 }
 
+function isVideoMedia(item) {
+  return item?.kind === 'video' || String(item?.mimeType || '').startsWith('video/');
+}
+
+function formatFileSize(bytes = 0) {
+  const value = Number(bytes || 0);
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.max(1, Math.ceil(value / 1024))} KB`;
+}
+
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error('Nao foi possivel ler a imagem.'));
+    reader.onerror = () => reject(new Error('Nao foi possivel ler a midia.'));
     reader.readAsDataURL(file);
   });
 }
 
 export default function App() {
-  const [theme, setThemeState] = useState(() => localStorage.getItem('nexus-theme') || 'dark');
+  const [theme, setThemeState] = useState(() => localStorage.getItem('nexus-theme') || 'system');
+  const [resolvedTheme, setResolvedTheme] = useState('dark');
   const [session, setSession] = useState({ loading: true, user: null });
   const [view, setView] = useState('dashboard');
   const [accounts, setAccounts] = useState([]);
@@ -1050,7 +1126,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const applyTheme = () => {
+      const nextTheme = theme === 'system' ? (media.matches ? 'dark' : 'light') : theme;
+      document.documentElement.dataset.theme = nextTheme;
+      setResolvedTheme(nextTheme);
+    };
+    applyTheme();
+    if (theme !== 'system') return undefined;
+    media.addEventListener('change', applyTheme);
+    return () => media.removeEventListener('change', applyTheme);
   }, [theme]);
 
   const loadMe = useCallback(async () => {
@@ -1153,7 +1238,8 @@ export default function App() {
     <Shell
       user={session.user}
       theme={theme}
-      onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+      resolvedTheme={resolvedTheme}
+      onToggleTheme={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
       onLogout={logout}
       view={view}
       setView={setView}
@@ -1198,7 +1284,7 @@ export default function App() {
       {view === 'history' && <HistoryPage history={history} />}
       {view === 'images' && <MediaPage />}
       {view === 'users' && <UsersPage users={authorizedUsers} reloadUsers={loadAuthorizedUsers} />}
-      {view === 'settings' && <SettingsPage theme={theme} setTheme={setTheme} onBackup={exportBackup} />}
+      {view === 'settings' && <SettingsPage theme={theme} resolvedTheme={resolvedTheme} setTheme={setTheme} onBackup={exportBackup} />}
       {view === 'profile' && <ProfilePage user={session.user} />}
       {formMode && (
         <AccountForm
