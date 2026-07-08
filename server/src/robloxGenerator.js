@@ -22,18 +22,13 @@ const presenceLabels = {
   3: 'No Studio'
 };
 
-function isWebsitePresence(presence) {
-  return cleanText(presence?.lastLocation).toLowerCase() === 'website';
-}
-
 function statusFromPresence(presence) {
   const presenceType = Number(presence?.userPresenceType || 0);
-  return presenceType > 0 || isWebsitePresence(presence) ? 'in_use' : 'available';
+  return presenceType > 0 ? 'in_use' : 'available';
 }
 
 function labelFromPresence(presenceType, presence) {
   if (presenceType > 0) return presenceLabels[presenceType] || 'Em uso';
-  if (isWebsitePresence(presence)) return 'Online no site';
   return 'Offline';
 }
 
