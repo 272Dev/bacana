@@ -60,6 +60,7 @@ const emptyForm = {
 };
 
 const platformOptions = ['Roblox', 'Discord', 'Steam', 'Epic Games', 'Google', 'Microsoft', 'Outro'];
+const authenticatorPeriodOptions = [10, 15, 20, 30, 45, 60, 90, 120];
 
 const historyLabels = {
   created: 'Conta criada',
@@ -1119,7 +1120,7 @@ function RobloxGeneratorPage({ user }) {
 function AuthenticatorPage() {
   const [items, setItems] = useState([]);
   const [search, setSearch] = useState('');
-  const [form, setForm] = useState({ label: '', issuer: '', username: '', secret: '', notes: '' });
+  const [form, setForm] = useState({ label: '', issuer: '', username: '', secret: '', notes: '', period: 30 });
   const [message, setMessage] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -1149,8 +1150,8 @@ function AuthenticatorPage() {
     setSaving(true);
     setMessage('');
     try {
-      await api('/authenticators', { method: 'POST', body: form });
-      setForm({ label: '', issuer: '', username: '', secret: '', notes: '' });
+      await api('/authenticators', { method: 'POST', body: { ...form, period: Number(form.period) || 30 } });
+      setForm({ label: '', issuer: '', username: '', secret: '', notes: '', period: 30 });
       setMessage('Autenticador salvo.');
       await loadAuthenticators();
     } catch (error) {
@@ -1165,6 +1166,13 @@ function AuthenticatorPage() {
     if (!confirmed) return;
     await api(`/authenticators/${item.id}`, { method: 'DELETE' });
     setMessage('Autenticador removido.');
+    await loadAuthenticators();
+  }
+
+  async function updateCodePeriod(item, period) {
+    const nextPeriod = Number(period) || 30;
+    await api(`/authenticators/${item.id}`, { method: 'PATCH', body: { period: nextPeriod } });
+    setMessage(`Tempo de ${item.label} alterado para ${nextPeriod}s.`);
     await loadAuthenticators();
   }
 
@@ -1205,6 +1213,14 @@ function AuthenticatorPage() {
               Observacoes
               <textarea value={form.notes} onChange={(event) => updateForm('notes', event.target.value)} rows={3} />
             </label>
+            <label>
+              Tempo para trocar codigo
+              <select value={form.period} onChange={(event) => updateForm('period', Number(event.target.value))}>
+                {authenticatorPeriodOptions.map((period) => (
+                  <option key={period} value={period}>{period} segundos</option>
+                ))}
+              </select>
+            </label>
             <button className="primary-button" disabled={saving}>
               <Save size={18} />
               {saving ? 'Salvando' : 'Salvar codigo'}
@@ -1228,7 +1244,7 @@ function AuthenticatorPage() {
                     <strong>{item.label}</strong>
                     <small>{[item.issuer, item.username].filter(Boolean).join(' - ') || 'Sem emissor'}</small>
                   </span>
-                  <span className="tag"><Clock3 size={15} /> {item.secondsRemaining}s</span>
+                  <span className="tag"><Clock3 size={15} /> {item.secondsRemaining}s / {item.period}s</span>
                 </div>
                 <button className="authenticator-code" onClick={() => copyText(item.code)}>
                   {item.code || '------'}
@@ -1236,6 +1252,14 @@ function AuthenticatorPage() {
                 <div className="authenticator-progress">
                   <span style={{ width: `${Math.max(4, (item.secondsRemaining / item.period) * 100)}%` }} />
                 </div>
+                <label className="authenticator-period-control">
+                  Trocar a cada
+                  <select value={item.period} onChange={(event) => updateCodePeriod(item, event.target.value)}>
+                    {authenticatorPeriodOptions.map((period) => (
+                      <option key={period} value={period}>{period}s</option>
+                    ))}
+                  </select>
+                </label>
                 <div className="card-actions">
                   <button className="primary-button" onClick={() => copyText(item.code)}>
                     <Copy size={17} />

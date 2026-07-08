@@ -616,6 +616,22 @@ textarea {
   transition: width 160ms linear;
 }
 
+.authenticator-period-control {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 118px;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.authenticator-period-control select {
+  min-height: 40px;
+  padding: 0 10px;
+}
+
 .temp-email-layout {
   display: grid;
   grid-template-columns: minmax(260px, 0.28fr) minmax(280px, 0.32fr) minmax(0, 1fr);

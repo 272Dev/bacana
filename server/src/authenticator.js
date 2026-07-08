@@ -99,7 +99,7 @@ export function parseAuthenticatorInput(payload) {
     secret,
     algorithm: normalizeAlgorithm(source.algorithm),
     digits: normalizeDigits(source.digits),
-    period: normalizePeriod(source.period),
+    period: normalizePeriod(payload.period ?? source.period),
     notes: cleanText(payload.notes).slice(0, 1000)
   };
 }
@@ -200,6 +200,15 @@ export async function createAuthenticator({ payload, actorDiscordId }) {
 }
 
 export async function getAuthenticator(id) {
+  const row = await db.prepare('SELECT * FROM authenticators WHERE id = ?').get(id);
+  return row ? mapAuthenticator(row) : null;
+}
+
+export async function updateAuthenticator(id, payload = {}) {
+  const period = normalizePeriod(payload.period);
+  const now = nowIso();
+  await db.prepare('UPDATE authenticators SET period = ?, updated_at = ? WHERE id = ?')
+    .run(period, now, id);
   const row = await db.prepare('SELECT * FROM authenticators WHERE id = ?').get(id);
   return row ? mapAuthenticator(row) : null;
 }

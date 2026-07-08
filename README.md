@@ -137,6 +137,7 @@ Recursos:
 
 - codigo atual com contador
 - copiar codigo com um clique
+- tempo configuravel para troca do codigo, de 10 a 120 segundos
 - excluir autenticador
 - pesquisa por nome, emissor ou usuario
 

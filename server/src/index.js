@@ -26,7 +26,8 @@ import {
   createAuthenticator,
   deleteAuthenticator,
   getAuthenticator,
-  listAuthenticators
+  listAuthenticators,
+  updateAuthenticator
 } from './authenticator.js';
 import {
   createTempEmailInbox,
@@ -320,6 +321,10 @@ const authenticatorCreateSchema = z.object({
   algorithm: z.enum(['SHA1', 'SHA256', 'SHA512']).optional().default('SHA1'),
   digits: z.union([z.literal(6), z.literal(8)]).optional().default(6),
   period: z.number().int().min(10).max(120).optional().default(30)
+});
+
+const authenticatorUpdateSchema = z.object({
+  period: z.coerce.number().int().min(10).max(120)
 });
 
 const tempEmailCreateSchema = z.object({
@@ -1004,6 +1009,26 @@ app.get('/api/authenticators/:id', requireAuth, async (req, res) => {
   const authenticator = await getAuthenticator(req.params.id);
   if (!authenticator) return res.status(404).json({ error: 'Autenticador nao encontrado.' });
   res.json({ authenticator });
+});
+
+app.patch('/api/authenticators/:id', requireAuth, async (req, res, next) => {
+  try {
+    const existing = await getAuthenticator(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Autenticador nao encontrado.' });
+    const payload = authenticatorUpdateSchema.parse(req.body);
+    const authenticator = await updateAuthenticator(req.params.id, payload);
+    await logAudit({
+      actorDiscordId: req.user.discordId,
+      action: 'authenticator.updated',
+      targetType: 'authenticator',
+      targetId: req.params.id,
+      metadata: { period: authenticator.period },
+      ip: req.ip
+    });
+    res.json({ authenticator });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.delete('/api/authenticators/:id', requireAuth, async (req, res, next) => {
