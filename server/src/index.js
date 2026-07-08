@@ -566,10 +566,9 @@ app.get('/api/image-folders', requireAuth, async (req, res) => {
     SELECT f.*, COUNT(i.id) AS image_count
     FROM image_folders f
     LEFT JOIN images i ON i.folder_id = f.id
-    WHERE f.owner_discord_id = ?
     GROUP BY f.id
     ORDER BY f.updated_at DESC
-  `).all(req.user.discordId);
+  `).all();
   res.json({ folders: rows.map(mapFolder) });
 });
 
@@ -591,7 +590,7 @@ app.post('/api/image-folders', requireAuth, async (req, res, next) => {
 });
 
 app.delete('/api/image-folders/:id', requireAuth, async (req, res) => {
-  const row = await db.prepare('SELECT * FROM image_folders WHERE id = ? AND owner_discord_id = ?').get(req.params.id, req.user.discordId);
+  const row = await db.prepare('SELECT * FROM image_folders WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Pasta nao encontrada.' });
   await db.prepare('UPDATE images SET folder_id = NULL, updated_at = ? WHERE folder_id = ?').run(nowIso(), req.params.id);
   await db.prepare('DELETE FROM image_folders WHERE id = ?').run(req.params.id);
@@ -605,15 +604,15 @@ app.get('/api/images', requireAuth, async (req, res) => {
     ? await db.prepare(`
         SELECT *
         FROM images
-        WHERE owner_discord_id = ? AND folder_id = ?
+        WHERE folder_id = ?
         ORDER BY created_at DESC
-      `).all(req.user.discordId, folderId)
+      `).all(folderId)
     : await db.prepare(`
         SELECT *
         FROM images
-        WHERE owner_discord_id = ? AND folder_id IS NULL
+        WHERE folder_id IS NULL
         ORDER BY created_at DESC
-      `).all(req.user.discordId);
+      `).all();
   res.json({ images: rows.map(mapImage) });
 });
 
@@ -622,7 +621,7 @@ app.post('/api/images', requireAuth, async (req, res, next) => {
     const payload = uploadImageSchema.parse(req.body);
     const folderId = payload.folderId || null;
     if (folderId) {
-      const folder = await db.prepare('SELECT * FROM image_folders WHERE id = ? AND owner_discord_id = ?').get(folderId, req.user.discordId);
+      const folder = await db.prepare('SELECT * FROM image_folders WHERE id = ?').get(folderId);
       if (!folder) return res.status(404).json({ error: 'Pasta nao encontrada.' });
     }
 
@@ -702,7 +701,7 @@ app.get('/api/images/:id/file', async (req, res) => {
 
 app.delete('/api/images/:id', requireAuth, async (req, res, next) => {
   try {
-    const row = await db.prepare('SELECT * FROM images WHERE id = ? AND owner_discord_id = ?').get(req.params.id, req.user.discordId);
+    const row = await db.prepare('SELECT * FROM images WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Imagem nao encontrada.' });
     if (isCloudinaryImage(row)) {
       await destroyCloudinaryImage(row.stored_name);

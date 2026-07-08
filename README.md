@@ -62,7 +62,7 @@ AUTHORIZED_DISCORD_IDS=seu_discord_id:owner,discord_id_do_amigo:member
 
 O app nao tem login por e-mail ou senha. Quem nao estiver nessa lista, ou na lista gerenciada depois pelo app, recebe acesso negado.
 
-As contas ficam em um cofre compartilhado para todos os Discord IDs autorizados. Qualquer usuario autorizado ve e pode editar as contas criadas pelos outros usuarios autorizados.
+As contas, pastas de imagens e imagens ficam em um cofre compartilhado para todos os Discord IDs autorizados. Qualquer usuario autorizado ve e pode editar/remover os itens criados pelos outros usuarios autorizados.
 
 ## Execucao
 
