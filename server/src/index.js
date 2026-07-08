@@ -188,6 +188,15 @@ async function getAccountAccess(accountId, discordId) {
   `).get(accountId, discordId);
   if (account) return { row: account, permission: 'owner', canEdit: true, canShare: true };
 
+  const teamAccount = await db.prepare(`
+    SELECT *, 'edit' AS permission
+    FROM accounts
+    WHERE id = ? AND deleted_at IS NULL
+  `).get(accountId);
+  if (teamAccount) {
+    return { row: teamAccount, permission: 'edit', canEdit: true, canShare: false };
+  }
+
   const shared = await db.prepare(`
     SELECT a.*, s.permission
     FROM accounts a
@@ -723,13 +732,11 @@ app.post('/api/roblox/lookup', requireAuth, async (req, res, next) => {
 
 app.get('/api/accounts', requireAuth, async (req, res) => {
   const rows = await db.prepare(`
-    SELECT a.*, CASE WHEN a.owner_discord_id = ? THEN 'owner' ELSE s.permission END AS permission
+    SELECT a.*, CASE WHEN a.owner_discord_id = ? THEN 'owner' ELSE 'edit' END AS permission
     FROM accounts a
-    LEFT JOIN account_shares s ON s.account_id = a.id AND s.shared_with_discord_id = ?
     WHERE a.deleted_at IS NULL
-      AND (a.owner_discord_id = ? OR s.shared_with_discord_id IS NOT NULL)
     ORDER BY a.updated_at DESC
-  `).all(req.user.discordId, req.user.discordId, req.user.discordId);
+  `).all(req.user.discordId);
 
   const search = String(req.query.search || '').trim().toLowerCase();
   const platform = String(req.query.platform || '').trim().toLowerCase();
@@ -985,11 +992,10 @@ app.get('/api/history', requireAuth, async (req, res) => {
     FROM account_history h
     JOIN accounts a ON a.id = h.account_id
     LEFT JOIN users u ON u.discord_id = h.actor_discord_id
-    LEFT JOIN account_shares s ON s.account_id = a.id AND s.shared_with_discord_id = ?
-    WHERE a.deleted_at IS NULL AND (a.owner_discord_id = ? OR s.shared_with_discord_id IS NOT NULL)
+    WHERE a.deleted_at IS NULL
     ORDER BY h.created_at DESC
     LIMIT 200
-  `).all(req.user.discordId, req.user.discordId);
+  `).all();
   res.json({
     history: rows.map((row) => ({
       id: row.id,
