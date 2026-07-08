@@ -39,13 +39,13 @@ export function createOAuthState() {
   return crypto.randomBytes(32).toString('base64url');
 }
 
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   try {
     const token = req.cookies?.[SESSION_COOKIE];
     if (!token) return res.status(401).json({ error: 'Sessao ausente.' });
     const payload = jwt.verify(token, config.security.sessionSecret);
-    const user = getUser(payload.sub);
-    const authorized = getAuthorizedUser(payload.sub);
+    const user = await getUser(payload.sub);
+    const authorized = await getAuthorizedUser(payload.sub);
     if (!user || !authorized || user.active !== 1) {
       clearSessionCookie(res);
       return res.status(401).json({ error: 'Acesso nao autorizado.' });
@@ -87,19 +87,19 @@ export function validateOAuthState(req) {
   return validateOAuthStateValue(req, req.query?.state);
 }
 
-export function checkLoginBlocked(ip) {
-  const row = db.prepare('SELECT * FROM login_attempts WHERE ip = ?').get(ip);
+export async function checkLoginBlocked(ip) {
+  const row = await db.prepare('SELECT * FROM login_attempts WHERE ip = ?').get(ip);
   if (!row?.blocked_until) return null;
   if (new Date(row.blocked_until).getTime() > Date.now()) return row.blocked_until;
   return null;
 }
 
-export function recordFailedLogin(ip, reason) {
+export async function recordFailedLogin(ip, reason) {
   const now = nowIso();
-  const row = db.prepare('SELECT * FROM login_attempts WHERE ip = ?').get(ip);
+  const row = await db.prepare('SELECT * FROM login_attempts WHERE ip = ?').get(ip);
   const attempts = (row?.attempts || 0) + 1;
   const blockedUntil = attempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000).toISOString() : row?.blocked_until || null;
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO login_attempts (ip, attempts, blocked_until, updated_at)
     VALUES (?, ?, ?, ?)
     ON CONFLICT(ip) DO UPDATE SET
@@ -107,11 +107,11 @@ export function recordFailedLogin(ip, reason) {
       blocked_until = excluded.blocked_until,
       updated_at = excluded.updated_at
   `).run(ip, attempts, blockedUntil, now);
-  logAudit({ action: 'auth.failed', metadata: { reason, attempts }, ip });
+  await logAudit({ action: 'auth.failed', metadata: { reason, attempts }, ip });
 }
 
-export function resetFailedLogin(ip) {
-  db.prepare('DELETE FROM login_attempts WHERE ip = ?').run(ip);
+export async function resetFailedLogin(ip) {
+  await db.prepare('DELETE FROM login_attempts WHERE ip = ?').run(ip);
 }
 
 export async function exchangeDiscordCode(code) {
@@ -156,13 +156,13 @@ export async function fetchDiscordUser(accessToken) {
   return response.json();
 }
 
-export function upsertDiscordUser(discordUser, role) {
+export async function upsertDiscordUser(discordUser, role) {
   const now = nowIso();
   const avatarUrl = discordUser.avatar
     ? `https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png?size=128`
     : `https://cdn.discordapp.com/embed/avatars/${Number(discordUser.discriminator || 0) % 5}.png`;
 
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO users (
       discord_id, username, global_name, avatar_hash, avatar_url, role, active,
       created_at, updated_at, last_login_at

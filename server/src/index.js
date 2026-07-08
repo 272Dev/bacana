@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { config, getMissingRuntimeConfig, hasDiscordOAuthConfig, requireRuntimeConfig } from './config.js';
-import { db, getAuthorizedUser, nowIso, seedAuthorizedUsers } from './db.js';
+import { db, getAuthorizedUser, initDatabase, nowIso, seedAuthorizedUsers } from './db.js';
 import { encryptSecret, tryDecryptSecret } from './crypto.js';
 import { destroyCloudinaryImage, isCloudinaryEnabled, uploadCloudinaryImage } from './cloudinary.js';
 import { logAudit, writeAccountHistory } from './audit.js';
@@ -33,13 +33,24 @@ import {
 } from './auth.js';
 
 requireRuntimeConfig();
-seedAuthorizedUsers();
+await initDatabase();
+await seedAuthorizedUsers();
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(__dirname, '../../dist');
 const uploadsDir = path.resolve(config.rootDir, 'data/uploads');
 fs.mkdirSync(uploadsDir, { recursive: true });
+
+function wrapAsync(handler) {
+  if (typeof handler !== 'function' || handler.length === 4) return handler;
+  return (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
+}
+
+for (const method of ['get', 'post', 'put', 'patch', 'delete']) {
+  const original = app[method].bind(app);
+  app[method] = (pathOrRoute, ...handlers) => original(pathOrRoute, ...handlers.map(wrapAsync));
+}
 
 app.set('trust proxy', config.security.trustProxy);
 app.use(helmet({
@@ -129,7 +140,7 @@ function mapAccount(row, { includePassword = false } = {}) {
     ['password_encrypted', passwordResult]
   ]) {
     if (!result.ok) {
-      logAudit({
+      void logAudit({
         actorDiscordId: null,
         action: 'account.decrypt_failed',
         targetType: 'account',
@@ -169,15 +180,15 @@ function mapAccount(row, { includePassword = false } = {}) {
   };
 }
 
-function getAccountAccess(accountId, discordId) {
-  const account = db.prepare(`
+async function getAccountAccess(accountId, discordId) {
+  const account = await db.prepare(`
     SELECT *, 'owner' AS permission
     FROM accounts
     WHERE id = ? AND owner_discord_id = ? AND deleted_at IS NULL
   `).get(accountId, discordId);
   if (account) return { row: account, permission: 'owner', canEdit: true, canShare: true };
 
-  const shared = db.prepare(`
+  const shared = await db.prepare(`
     SELECT a.*, s.permission
     FROM accounts a
     JOIN account_shares s ON s.account_id = a.id
@@ -193,13 +204,17 @@ function getAccountAccess(accountId, discordId) {
 }
 
 function requireAccountAccess(permission = 'view') {
-  return (req, res, next) => {
-    const access = getAccountAccess(req.params.id, req.user.discordId);
-    if (!access) return res.status(404).json({ error: 'Conta nao encontrada.' });
-    if (permission === 'edit' && !access.canEdit) return res.status(403).json({ error: 'Sem permissao de edicao.' });
-    if (permission === 'owner' && !access.canShare) return res.status(403).json({ error: 'Apenas o dono pode alterar compartilhamentos.' });
-    req.accountAccess = access;
-    next();
+  return async (req, res, next) => {
+    try {
+      const access = await getAccountAccess(req.params.id, req.user.discordId);
+      if (!access) return res.status(404).json({ error: 'Conta nao encontrada.' });
+      if (permission === 'edit' && !access.canEdit) return res.status(403).json({ error: 'Sem permissao de edicao.' });
+      if (permission === 'owner' && !access.canShare) return res.status(403).json({ error: 'Apenas o dono pode alterar compartilhamentos.' });
+      req.accountAccess = access;
+      next();
+    } catch (error) {
+      next(error);
+    }
   };
 }
 
@@ -285,7 +300,7 @@ function mapFolder(row) {
   return {
     id: row.id,
     name: row.name,
-    imageCount: row.image_count || 0,
+    imageCount: Number(row.image_count || 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -320,11 +335,11 @@ function getImageFilePath(row) {
   return filePath;
 }
 
-app.get('/api/health', (_req, res) => {
+app.get('/api/health', async (_req, res) => {
   res.json({ ok: true, name: 'Nexus', time: nowIso() });
 });
 
-app.get('/api/config/status', (_req, res) => {
+app.get('/api/config/status', async (_req, res) => {
   if (config.nodeEnv === 'production') {
     return res.json({
       ok: true,
@@ -348,8 +363,9 @@ app.get('/api/config/status', (_req, res) => {
   });
 });
 
-app.get('/api/auth/discord', authLimiter, (req, res) => {
-  const blockedUntil = checkLoginBlocked(req.ip);
+app.get('/api/auth/discord', authLimiter, async (req, res, next) => {
+  try {
+  const blockedUntil = await checkLoginBlocked(req.ip);
   if (blockedUntil) return res.redirect(clientRedirect('/login', { error: 'blocked' }));
   if (!hasDiscordOAuthConfig()) {
     return res.redirect(clientRedirect('/login', { error: 'oauth_config' }));
@@ -365,6 +381,9 @@ app.get('/api/auth/discord', authLimiter, (req, res) => {
   url.searchParams.set('redirect_uri', config.discord.redirectUri);
   url.searchParams.set('prompt', 'consent');
   res.redirect(url.toString());
+  } catch (error) {
+    next(error);
+  }
 });
 
 function implicitCallbackPage() {
@@ -418,30 +437,30 @@ function implicitCallbackPage() {
 
 app.post('/api/auth/discord/implicit', authLimiter, async (req, res) => {
   try {
-    const blockedUntil = checkLoginBlocked(req.ip);
+    const blockedUntil = await checkLoginBlocked(req.ip);
     if (blockedUntil) return res.status(429).json({ error: 'Acesso bloqueado.', code: 'blocked' });
     if (!validateOAuthStateValue(req, req.body?.state)) {
-      recordFailedLogin(req.ip, 'invalid_state');
+      await recordFailedLogin(req.ip, 'invalid_state');
       return res.status(401).json({ error: 'Sessao de login expirada.', code: 'invalid_state' });
     }
     if (!req.body?.accessToken) {
-      recordFailedLogin(req.ip, 'missing_token');
+      await recordFailedLogin(req.ip, 'missing_token');
       return res.status(400).json({ error: 'Token Discord ausente.', code: 'oauth' });
     }
 
     const discordUser = await fetchDiscordUser(String(req.body.accessToken));
-    const authorized = getAuthorizedUser(discordUser.id);
+    const authorized = await getAuthorizedUser(discordUser.id);
     if (!authorized) {
-      recordFailedLogin(req.ip, 'discord_id_not_allowed');
+      await recordFailedLogin(req.ip, 'discord_id_not_allowed');
       clearOAuthStateCookie(res);
       return res.status(403).json({ error: 'Discord ID nao autorizado.', code: 'unauthorized' });
     }
 
-    upsertDiscordUser(discordUser, authorized.role);
-    resetFailedLogin(req.ip);
+    await upsertDiscordUser(discordUser, authorized.role);
+    await resetFailedLogin(req.ip);
     clearOAuthStateCookie(res);
     setSessionCookie(res, discordUser.id);
-    logAudit({
+    await logAudit({
       actorDiscordId: discordUser.id,
       action: 'auth.login',
       targetType: 'user',
@@ -451,8 +470,8 @@ app.post('/api/auth/discord/implicit', authLimiter, async (req, res) => {
     });
     res.json({ ok: true });
   } catch (error) {
-    recordFailedLogin(req.ip, error.oauthCode || 'implicit_oauth_error');
-    logAudit({
+    await recordFailedLogin(req.ip, error.oauthCode || 'implicit_oauth_error');
+    await logAudit({
       action: 'auth.discord_oauth_error',
       targetType: 'oauth',
       metadata: { step: error.oauthStep || 'implicit', code: error.oauthCode || 'implicit_oauth_error' },
@@ -467,31 +486,31 @@ app.get('/api/auth/discord/callback', authLimiter, async (req, res) => {
     if (config.discord.oauthFlow === 'implicit' && !req.query.code) {
       return res.type('html').send(implicitCallbackPage());
     }
-    const blockedUntil = checkLoginBlocked(req.ip);
+    const blockedUntil = await checkLoginBlocked(req.ip);
     if (blockedUntil) return res.redirect(clientRedirect('/login', { error: 'blocked' }));
     if (!validateOAuthState(req)) {
-      recordFailedLogin(req.ip, 'invalid_state');
+      await recordFailedLogin(req.ip, 'invalid_state');
       return res.redirect(clientRedirect('/login', { error: 'invalid_state' }));
     }
     if (!req.query.code) {
-      recordFailedLogin(req.ip, 'missing_code');
+      await recordFailedLogin(req.ip, 'missing_code');
       return res.redirect(clientRedirect('/login', { error: 'missing_code' }));
     }
 
     const token = await exchangeDiscordCode(String(req.query.code));
     const discordUser = await fetchDiscordUser(token.access_token);
-    const authorized = getAuthorizedUser(discordUser.id);
+    const authorized = await getAuthorizedUser(discordUser.id);
     if (!authorized) {
-      recordFailedLogin(req.ip, 'discord_id_not_allowed');
+      await recordFailedLogin(req.ip, 'discord_id_not_allowed');
       clearOAuthStateCookie(res);
       return res.redirect(clientRedirect('/login', { error: 'unauthorized' }));
     }
 
-    upsertDiscordUser(discordUser, authorized.role);
-    resetFailedLogin(req.ip);
+    await upsertDiscordUser(discordUser, authorized.role);
+    await resetFailedLogin(req.ip);
     clearOAuthStateCookie(res);
     setSessionCookie(res, discordUser.id);
-    logAudit({
+    await logAudit({
       actorDiscordId: discordUser.id,
       action: 'auth.login',
       targetType: 'user',
@@ -502,8 +521,8 @@ app.get('/api/auth/discord/callback', authLimiter, async (req, res) => {
   } catch (error) {
     const oauthCode = error.oauthCode || 'oauth_error';
     const reason = error.oauthStep === 'token' ? `discord_token_${oauthCode}` : oauthCode;
-    recordFailedLogin(req.ip, reason);
-    logAudit({
+    await recordFailedLogin(req.ip, reason);
+    await logAudit({
       action: 'auth.discord_oauth_error',
       targetType: 'oauth',
       metadata: { step: error.oauthStep || 'unknown', code: oauthCode },
@@ -523,18 +542,18 @@ app.get('/api/auth/discord/callback', authLimiter, async (req, res) => {
   }
 });
 
-app.post('/api/auth/logout', requireAuth, (req, res) => {
-  logAudit({ actorDiscordId: req.user.discordId, action: 'auth.logout', targetType: 'user', targetId: req.user.discordId, ip: req.ip });
+app.post('/api/auth/logout', requireAuth, async (req, res) => {
+  await logAudit({ actorDiscordId: req.user.discordId, action: 'auth.logout', targetType: 'user', targetId: req.user.discordId, ip: req.ip });
   clearSessionCookie(res);
   res.json({ ok: true });
 });
 
-app.get('/api/auth/me', requireAuth, (req, res) => {
+app.get('/api/auth/me', requireAuth, async (req, res) => {
   res.json({ user: req.user });
 });
 
-app.get('/api/image-folders', requireAuth, (req, res) => {
-  const rows = db.prepare(`
+app.get('/api/image-folders', requireAuth, async (req, res) => {
+  const rows = await db.prepare(`
     SELECT f.*, COUNT(i.id) AS image_count
     FROM image_folders f
     LEFT JOIN images i ON i.folder_id = f.id
@@ -545,42 +564,42 @@ app.get('/api/image-folders', requireAuth, (req, res) => {
   res.json({ folders: rows.map(mapFolder) });
 });
 
-app.post('/api/image-folders', requireAuth, (req, res, next) => {
+app.post('/api/image-folders', requireAuth, async (req, res, next) => {
   try {
     const payload = folderSchema.parse(req.body);
     const id = crypto.randomUUID();
     const now = nowIso();
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO image_folders (id, owner_discord_id, name, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(id, req.user.discordId, payload.name, now, now);
-    logAudit({ actorDiscordId: req.user.discordId, action: 'image_folder.created', targetType: 'image_folder', targetId: id, ip: req.ip });
-    const row = db.prepare('SELECT *, 0 AS image_count FROM image_folders WHERE id = ?').get(id);
+    await logAudit({ actorDiscordId: req.user.discordId, action: 'image_folder.created', targetType: 'image_folder', targetId: id, ip: req.ip });
+    const row = await db.prepare('SELECT *, 0 AS image_count FROM image_folders WHERE id = ?').get(id);
     res.status(201).json({ folder: mapFolder(row) });
   } catch (error) {
     next(error);
   }
 });
 
-app.delete('/api/image-folders/:id', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM image_folders WHERE id = ? AND owner_discord_id = ?').get(req.params.id, req.user.discordId);
+app.delete('/api/image-folders/:id', requireAuth, async (req, res) => {
+  const row = await db.prepare('SELECT * FROM image_folders WHERE id = ? AND owner_discord_id = ?').get(req.params.id, req.user.discordId);
   if (!row) return res.status(404).json({ error: 'Pasta nao encontrada.' });
-  db.prepare('UPDATE images SET folder_id = NULL, updated_at = ? WHERE folder_id = ?').run(nowIso(), req.params.id);
-  db.prepare('DELETE FROM image_folders WHERE id = ?').run(req.params.id);
-  logAudit({ actorDiscordId: req.user.discordId, action: 'image_folder.deleted', targetType: 'image_folder', targetId: req.params.id, ip: req.ip });
+  await db.prepare('UPDATE images SET folder_id = NULL, updated_at = ? WHERE folder_id = ?').run(nowIso(), req.params.id);
+  await db.prepare('DELETE FROM image_folders WHERE id = ?').run(req.params.id);
+  await logAudit({ actorDiscordId: req.user.discordId, action: 'image_folder.deleted', targetType: 'image_folder', targetId: req.params.id, ip: req.ip });
   res.json({ ok: true });
 });
 
-app.get('/api/images', requireAuth, (req, res) => {
+app.get('/api/images', requireAuth, async (req, res) => {
   const folderId = String(req.query.folderId || '');
   const rows = folderId
-    ? db.prepare(`
+    ? await db.prepare(`
         SELECT *
         FROM images
         WHERE owner_discord_id = ? AND folder_id = ?
         ORDER BY created_at DESC
       `).all(req.user.discordId, folderId)
-    : db.prepare(`
+    : await db.prepare(`
         SELECT *
         FROM images
         WHERE owner_discord_id = ? AND folder_id IS NULL
@@ -594,7 +613,7 @@ app.post('/api/images', requireAuth, async (req, res, next) => {
     const payload = uploadImageSchema.parse(req.body);
     const folderId = payload.folderId || null;
     if (folderId) {
-      const folder = db.prepare('SELECT * FROM image_folders WHERE id = ? AND owner_discord_id = ?').get(folderId, req.user.discordId);
+      const folder = await db.prepare('SELECT * FROM image_folders WHERE id = ? AND owner_discord_id = ?').get(folderId, req.user.discordId);
       if (!folder) return res.status(404).json({ error: 'Pasta nao encontrada.' });
     }
 
@@ -622,7 +641,7 @@ app.post('/api/images', requireAuth, async (req, res, next) => {
     }
 
     const now = nowIso();
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO images (
         id, owner_discord_id, folder_id, original_name, stored_name, mime_type,
         size_bytes, url, created_at, updated_at
@@ -641,9 +660,9 @@ app.post('/api/images', requireAuth, async (req, res, next) => {
       now
     );
     if (folderId) {
-      db.prepare('UPDATE image_folders SET updated_at = ? WHERE id = ?').run(now, folderId);
+      await db.prepare('UPDATE image_folders SET updated_at = ? WHERE id = ?').run(now, folderId);
     }
-    logAudit({
+    await logAudit({
       actorDiscordId: req.user.discordId,
       action: 'image.uploaded',
       targetType: 'image',
@@ -651,15 +670,15 @@ app.post('/api/images', requireAuth, async (req, res, next) => {
       metadata: { folderId, mimeType: parsed.mimeType, storage: isCloudinaryEnabled() ? 'cloudinary' : 'local' },
       ip: req.ip
     });
-    const row = db.prepare('SELECT * FROM images WHERE id = ?').get(id);
+    const row = await db.prepare('SELECT * FROM images WHERE id = ?').get(id);
     res.status(201).json({ image: mapImage(row) });
   } catch (error) {
     next(error);
   }
 });
 
-app.get('/api/images/:id/file', (req, res) => {
-  const row = db.prepare('SELECT * FROM images WHERE id = ?').get(req.params.id);
+app.get('/api/images/:id/file', async (req, res) => {
+  const row = await db.prepare('SELECT * FROM images WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).send('Imagem nao encontrada.');
   if (isCloudinaryImage(row)) {
     res.setHeader('Cache-Control', 'public, max-age=86400');
@@ -674,7 +693,7 @@ app.get('/api/images/:id/file', (req, res) => {
 
 app.delete('/api/images/:id', requireAuth, async (req, res, next) => {
   try {
-    const row = db.prepare('SELECT * FROM images WHERE id = ? AND owner_discord_id = ?').get(req.params.id, req.user.discordId);
+    const row = await db.prepare('SELECT * FROM images WHERE id = ? AND owner_discord_id = ?').get(req.params.id, req.user.discordId);
     if (!row) return res.status(404).json({ error: 'Imagem nao encontrada.' });
     if (isCloudinaryImage(row)) {
       await destroyCloudinaryImage(row.stored_name);
@@ -684,8 +703,8 @@ app.delete('/api/images/:id', requireAuth, async (req, res, next) => {
         fs.unlinkSync(filePath);
       }
     }
-    db.prepare('DELETE FROM images WHERE id = ?').run(req.params.id);
-    logAudit({ actorDiscordId: req.user.discordId, action: 'image.deleted', targetType: 'image', targetId: req.params.id, ip: req.ip });
+    await db.prepare('DELETE FROM images WHERE id = ?').run(req.params.id);
+    await logAudit({ actorDiscordId: req.user.discordId, action: 'image.deleted', targetType: 'image', targetId: req.params.id, ip: req.ip });
     res.json({ ok: true });
   } catch (error) {
     next(error);
@@ -695,15 +714,15 @@ app.delete('/api/images/:id', requireAuth, async (req, res, next) => {
 app.post('/api/roblox/lookup', requireAuth, async (req, res, next) => {
   try {
     const result = await lookupRobloxUsername(req.body?.username);
-    logAudit({ actorDiscordId: req.user.discordId, action: 'roblox.lookup', targetType: 'roblox', targetId: result.userId, ip: req.ip });
+    await logAudit({ actorDiscordId: req.user.discordId, action: 'roblox.lookup', targetType: 'roblox', targetId: result.userId, ip: req.ip });
     res.json({ roblox: result });
   } catch (error) {
     next(error);
   }
 });
 
-app.get('/api/accounts', requireAuth, (req, res) => {
-  const rows = db.prepare(`
+app.get('/api/accounts', requireAuth, async (req, res) => {
+  const rows = await db.prepare(`
     SELECT a.*, CASE WHEN a.owner_discord_id = ? THEN 'owner' ELSE s.permission END AS permission
     FROM accounts a
     LEFT JOIN account_shares s ON s.account_id = a.id AND s.shared_with_discord_id = ?
@@ -739,7 +758,7 @@ app.post('/api/accounts', requireAuth, async (req, res, next) => {
     const id = crypto.randomUUID();
     const now = nowIso();
     const photoUrl = roblox?.avatarUrl || payload.photoUrl || '';
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO accounts (
         id, owner_discord_id, name, platform, photo_url, login_encrypted, password_encrypted,
         notes_encrypted, roblox_username, roblox_display_name, roblox_user_id, roblox_profile_url,
@@ -764,21 +783,21 @@ app.post('/api/accounts', requireAuth, async (req, res, next) => {
       now
     );
 
-    writeAccountHistory({
+    await writeAccountHistory({
       accountId: id,
       actorDiscordId: req.user.discordId,
       action: 'created',
       metadata: { fields: ['name', 'login', 'password', 'platform', 'notes'].filter(Boolean) }
     });
-    logAudit({ actorDiscordId: req.user.discordId, action: 'account.created', targetType: 'account', targetId: id, ip: req.ip });
-    const row = getAccountAccess(id, req.user.discordId).row;
+    await logAudit({ actorDiscordId: req.user.discordId, action: 'account.created', targetType: 'account', targetId: id, ip: req.ip });
+    const row = (await getAccountAccess(id, req.user.discordId)).row;
     res.status(201).json({ account: mapAccount(row) });
   } catch (error) {
     next(error);
   }
 });
 
-app.get('/api/accounts/:id', requireAuth, requireAccountAccess('view'), (req, res) => {
+app.get('/api/accounts/:id', requireAuth, requireAccountAccess('view'), async (req, res) => {
   res.json({ account: mapAccount(req.accountAccess.row) });
 });
 
@@ -812,7 +831,7 @@ app.patch('/api/accounts/:id', requireAuth, requireAccountAccess('edit'), async 
     if (passwordChanged) changedFields.push('password');
     if (JSON.stringify(previous.roblox || null) !== JSON.stringify(roblox || null)) changedFields.push('roblox');
 
-    db.prepare(`
+    await db.prepare(`
       UPDATE accounts SET
         name = ?,
         platform = ?,
@@ -845,30 +864,30 @@ app.patch('/api/accounts/:id', requireAuth, requireAccountAccess('edit'), async 
     );
 
     if (changedFields.length > 0) {
-      writeAccountHistory({
+      await writeAccountHistory({
         accountId: req.params.id,
         actorDiscordId: req.user.discordId,
         action: 'updated',
         metadata: { fields: changedFields }
       });
     }
-    logAudit({ actorDiscordId: req.user.discordId, action: 'account.updated', targetType: 'account', targetId: req.params.id, metadata: { fields: changedFields }, ip: req.ip });
-    res.json({ account: mapAccount(getAccountAccess(req.params.id, req.user.discordId).row) });
+    await logAudit({ actorDiscordId: req.user.discordId, action: 'account.updated', targetType: 'account', targetId: req.params.id, metadata: { fields: changedFields }, ip: req.ip });
+    res.json({ account: mapAccount((await getAccountAccess(req.params.id, req.user.discordId)).row) });
   } catch (error) {
     next(error);
   }
 });
 
-app.delete('/api/accounts/:id', requireAuth, requireAccountAccess('owner'), (req, res) => {
+app.delete('/api/accounts/:id', requireAuth, requireAccountAccess('owner'), async (req, res) => {
   const now = nowIso();
-  db.prepare('UPDATE accounts SET deleted_at = ?, updated_at = ? WHERE id = ?').run(now, now, req.params.id);
-  writeAccountHistory({ accountId: req.params.id, actorDiscordId: req.user.discordId, action: 'deleted' });
-  logAudit({ actorDiscordId: req.user.discordId, action: 'account.deleted', targetType: 'account', targetId: req.params.id, ip: req.ip });
+  await db.prepare('UPDATE accounts SET deleted_at = ?, updated_at = ? WHERE id = ?').run(now, now, req.params.id);
+  await writeAccountHistory({ accountId: req.params.id, actorDiscordId: req.user.discordId, action: 'deleted' });
+  await logAudit({ actorDiscordId: req.user.discordId, action: 'account.deleted', targetType: 'account', targetId: req.params.id, ip: req.ip });
   res.json({ ok: true });
 });
 
-app.get('/api/accounts/:id/secret/password', requireAuth, requireAccountAccess('view'), (req, res) => {
-  logAudit({ actorDiscordId: req.user.discordId, action: 'account.password_revealed', targetType: 'account', targetId: req.params.id, ip: req.ip });
+app.get('/api/accounts/:id/secret/password', requireAuth, requireAccountAccess('view'), async (req, res) => {
+  await logAudit({ actorDiscordId: req.user.discordId, action: 'account.password_revealed', targetType: 'account', targetId: req.params.id, ip: req.ip });
   const password = tryDecryptSecret(req.accountAccess.row.password_encrypted);
   if (!password.ok) {
     return res.status(422).json({ error: 'Senha antiga nao pode ser descriptografada. Edite a conta e salve uma nova senha.' });
@@ -876,8 +895,8 @@ app.get('/api/accounts/:id/secret/password', requireAuth, requireAccountAccess('
   res.json({ password: password.value });
 });
 
-app.get('/api/accounts/:id/history', requireAuth, requireAccountAccess('view'), (req, res) => {
-  const rows = db.prepare(`
+app.get('/api/accounts/:id/history', requireAuth, requireAccountAccess('view'), async (req, res) => {
+  const rows = await db.prepare(`
     SELECT h.*, u.username, u.avatar_url
     FROM account_history h
     LEFT JOIN users u ON u.discord_id = h.actor_discord_id
@@ -898,8 +917,8 @@ app.get('/api/accounts/:id/history', requireAuth, requireAccountAccess('view'), 
   });
 });
 
-app.get('/api/accounts/:id/shares', requireAuth, requireAccountAccess('owner'), (req, res) => {
-  const shares = db.prepare(`
+app.get('/api/accounts/:id/shares', requireAuth, requireAccountAccess('owner'), async (req, res) => {
+  const shares = await db.prepare(`
     SELECT s.*, au.label, au.role, u.username, u.avatar_url
     FROM account_shares s
     JOIN authorized_users au ON au.discord_id = s.shared_with_discord_id
@@ -921,47 +940,47 @@ app.get('/api/accounts/:id/shares', requireAuth, requireAccountAccess('owner'), 
   });
 });
 
-app.put('/api/accounts/:id/shares', requireAuth, requireAccountAccess('owner'), (req, res, next) => {
+app.put('/api/accounts/:id/shares', requireAuth, requireAccountAccess('owner'), async (req, res, next) => {
   try {
     const payload = shareSchema.parse(req.body);
     if (payload.discordId === req.user.discordId) return res.status(400).json({ error: 'A conta ja pertence a voce.' });
-    const authorized = getAuthorizedUser(payload.discordId);
+    const authorized = await getAuthorizedUser(payload.discordId);
     if (!authorized) return res.status(404).json({ error: 'Discord ID nao autorizado.' });
     const now = nowIso();
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO account_shares (account_id, shared_with_discord_id, permission, created_by, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(account_id, shared_with_discord_id) DO UPDATE SET
         permission = excluded.permission,
         updated_at = excluded.updated_at
     `).run(req.params.id, payload.discordId, payload.permission, req.user.discordId, now, now);
-    writeAccountHistory({
+    await writeAccountHistory({
       accountId: req.params.id,
       actorDiscordId: req.user.discordId,
       action: 'shared',
       metadata: { discordId: payload.discordId, permission: payload.permission }
     });
-    logAudit({ actorDiscordId: req.user.discordId, action: 'account.shared', targetType: 'account', targetId: req.params.id, metadata: payload, ip: req.ip });
+    await logAudit({ actorDiscordId: req.user.discordId, action: 'account.shared', targetType: 'account', targetId: req.params.id, metadata: payload, ip: req.ip });
     res.json({ ok: true });
   } catch (error) {
     next(error);
   }
 });
 
-app.delete('/api/accounts/:id/shares/:discordId', requireAuth, requireAccountAccess('owner'), (req, res) => {
-  db.prepare('DELETE FROM account_shares WHERE account_id = ? AND shared_with_discord_id = ?').run(req.params.id, req.params.discordId);
-  writeAccountHistory({
+app.delete('/api/accounts/:id/shares/:discordId', requireAuth, requireAccountAccess('owner'), async (req, res) => {
+  await db.prepare('DELETE FROM account_shares WHERE account_id = ? AND shared_with_discord_id = ?').run(req.params.id, req.params.discordId);
+  await writeAccountHistory({
     accountId: req.params.id,
     actorDiscordId: req.user.discordId,
     action: 'share_removed',
     metadata: { discordId: req.params.discordId }
   });
-  logAudit({ actorDiscordId: req.user.discordId, action: 'account.share_removed', targetType: 'account', targetId: req.params.id, metadata: { discordId: req.params.discordId }, ip: req.ip });
+  await logAudit({ actorDiscordId: req.user.discordId, action: 'account.share_removed', targetType: 'account', targetId: req.params.id, metadata: { discordId: req.params.discordId }, ip: req.ip });
   res.json({ ok: true });
 });
 
-app.get('/api/history', requireAuth, (req, res) => {
-  const rows = db.prepare(`
+app.get('/api/history', requireAuth, async (req, res) => {
+  const rows = await db.prepare(`
     SELECT h.*, a.name AS account_name, u.username, u.avatar_url
     FROM account_history h
     JOIN accounts a ON a.id = h.account_id
@@ -986,8 +1005,8 @@ app.get('/api/history', requireAuth, (req, res) => {
   });
 });
 
-app.get('/api/authorized-users', requireAuth, requireAdmin, (_req, res) => {
-  const rows = db.prepare(`
+app.get('/api/authorized-users', requireAuth, requireAdmin, async (_req, res) => {
+  const rows = await db.prepare(`
     SELECT au.*, u.username, u.global_name, u.avatar_url, u.last_login_at
     FROM authorized_users au
     LEFT JOIN users u ON u.discord_id = au.discord_id
@@ -1009,12 +1028,12 @@ app.get('/api/authorized-users', requireAuth, requireAdmin, (_req, res) => {
   });
 });
 
-app.post('/api/authorized-users', requireAuth, requireAdmin, (req, res, next) => {
+app.post('/api/authorized-users', requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const payload = authorizedUserSchema.parse(req.body);
     if (payload.role === 'owner' && req.user.role !== 'owner') return res.status(403).json({ error: 'Apenas owners podem criar owners.' });
     const now = nowIso();
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO authorized_users (discord_id, role, label, active, created_by, created_at, updated_at)
       VALUES (?, ?, ?, 1, ?, ?, ?)
       ON CONFLICT(discord_id) DO UPDATE SET
@@ -1023,40 +1042,40 @@ app.post('/api/authorized-users', requireAuth, requireAdmin, (req, res, next) =>
         active = 1,
         updated_at = excluded.updated_at
     `).run(payload.discordId, payload.role, payload.label || `Discord ${payload.discordId}`, req.user.discordId, now, now);
-    logAudit({ actorDiscordId: req.user.discordId, action: 'authorized_user.upserted', targetType: 'authorized_user', targetId: payload.discordId, metadata: payload, ip: req.ip });
+    await logAudit({ actorDiscordId: req.user.discordId, action: 'authorized_user.upserted', targetType: 'authorized_user', targetId: payload.discordId, metadata: payload, ip: req.ip });
     res.status(201).json({ ok: true });
   } catch (error) {
     next(error);
   }
 });
 
-app.patch('/api/authorized-users/:discordId', requireAuth, requireAdmin, (req, res, next) => {
+app.patch('/api/authorized-users/:discordId', requireAuth, requireAdmin, async (req, res, next) => {
   try {
     const payload = authorizedUserSchema.partial().parse({ ...req.body, discordId: req.params.discordId });
     if (payload.role === 'owner' && req.user.role !== 'owner') return res.status(403).json({ error: 'Apenas owners podem promover owners.' });
-    db.prepare(`
+    await db.prepare(`
       UPDATE authorized_users SET
         role = COALESCE(?, role),
         label = COALESCE(?, label),
         updated_at = ?
       WHERE discord_id = ? AND active = 1
     `).run(payload.role || null, payload.label || null, nowIso(), req.params.discordId);
-    logAudit({ actorDiscordId: req.user.discordId, action: 'authorized_user.updated', targetType: 'authorized_user', targetId: req.params.discordId, metadata: payload, ip: req.ip });
+    await logAudit({ actorDiscordId: req.user.discordId, action: 'authorized_user.updated', targetType: 'authorized_user', targetId: req.params.discordId, metadata: payload, ip: req.ip });
     res.json({ ok: true });
   } catch (error) {
     next(error);
   }
 });
 
-app.delete('/api/authorized-users/:discordId', requireAuth, requireAdmin, (req, res) => {
+app.delete('/api/authorized-users/:discordId', requireAuth, requireAdmin, async (req, res) => {
   if (req.params.discordId === req.user.discordId) return res.status(400).json({ error: 'Voce nao pode remover seu proprio acesso.' });
-  db.prepare('UPDATE authorized_users SET active = 0, updated_at = ? WHERE discord_id = ?').run(nowIso(), req.params.discordId);
-  logAudit({ actorDiscordId: req.user.discordId, action: 'authorized_user.revoked', targetType: 'authorized_user', targetId: req.params.discordId, ip: req.ip });
+  await db.prepare('UPDATE authorized_users SET active = 0, updated_at = ? WHERE discord_id = ?').run(nowIso(), req.params.discordId);
+  await logAudit({ actorDiscordId: req.user.discordId, action: 'authorized_user.revoked', targetType: 'authorized_user', targetId: req.params.discordId, ip: req.ip });
   res.json({ ok: true });
 });
 
-app.get('/api/audit-logs', requireAuth, requireAdmin, (_req, res) => {
-  const rows = db.prepare('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 250').all();
+app.get('/api/audit-logs', requireAuth, requireAdmin, async (_req, res) => {
+  const rows = await db.prepare('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 250').all();
   res.json({
     logs: rows.map((row) => ({
       id: row.id,
@@ -1071,23 +1090,23 @@ app.get('/api/audit-logs', requireAuth, requireAdmin, (_req, res) => {
   });
 });
 
-app.get('/api/backup', requireAuth, requireOwner, (req, res) => {
+app.get('/api/backup', requireAuth, requireOwner, async (req, res) => {
   const data = {
     exportedAt: nowIso(),
-    authorizedUsers: db.prepare('SELECT * FROM authorized_users').all(),
-    users: db.prepare('SELECT * FROM users').all(),
-    accounts: db.prepare('SELECT * FROM accounts').all(),
-    shares: db.prepare('SELECT * FROM account_shares').all(),
-    history: db.prepare('SELECT * FROM account_history').all(),
-    audit: db.prepare('SELECT * FROM audit_logs').all()
+    authorizedUsers: await db.prepare('SELECT * FROM authorized_users').all(),
+    users: await db.prepare('SELECT * FROM users').all(),
+    accounts: await db.prepare('SELECT * FROM accounts').all(),
+    shares: await db.prepare('SELECT * FROM account_shares').all(),
+    history: await db.prepare('SELECT * FROM account_history').all(),
+    audit: await db.prepare('SELECT * FROM audit_logs').all()
   };
   const payload = encryptSecret(JSON.stringify(data));
-  logAudit({ actorDiscordId: req.user.discordId, action: 'backup.exported', targetType: 'backup', ip: req.ip });
+  await logAudit({ actorDiscordId: req.user.discordId, action: 'backup.exported', targetType: 'backup', ip: req.ip });
   res.json({ format: 'nexus-backup-v1', encrypted: true, payload });
 });
 
 app.use(express.static(distDir));
-app.get('*', (req, res, next) => {
+app.get('*', async (req, res, next) => {
   if (req.path.startsWith('/api')) return next();
   res.sendFile(path.join(distDir, 'index.html'), (error) => {
     if (error) next();

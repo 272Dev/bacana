@@ -1,16 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import pg from 'pg';
 import { config } from './config.js';
 
-fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
+const { Pool } = pg;
 
-export const db = new DatabaseSync(config.databasePath);
+let sqlite = null;
+let postgres = null;
 
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-
+const schemaSql = `
   CREATE TABLE IF NOT EXISTS authorized_users (
     discord_id TEXT PRIMARY KEY,
     role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
@@ -126,16 +125,99 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_image_folders_owner ON image_folders(owner_discord_id);
   CREATE INDEX IF NOT EXISTS idx_images_owner ON images(owner_discord_id);
   CREATE INDEX IF NOT EXISTS idx_images_folder ON images(folder_id);
-`);
+`;
+
+function toPostgresSql(sql) {
+  let index = 0;
+  return sql.replace(/\?/g, () => `$${++index}`);
+}
+
+function assertReady() {
+  if (!sqlite && !postgres) {
+    throw new Error('Banco ainda nao inicializado.');
+  }
+}
+
+export const db = {
+  get type() {
+    return postgres ? 'postgres' : 'sqlite';
+  },
+
+  async exec(sql) {
+    assertReady();
+    if (postgres) {
+      await postgres.query(sql);
+      return;
+    }
+    sqlite.exec(sql);
+  },
+
+  prepare(sql) {
+    assertReady();
+    if (postgres) {
+      const postgresSql = toPostgresSql(sql);
+      return {
+        async get(...params) {
+          const result = await postgres.query(postgresSql, params);
+          return result.rows[0];
+        },
+        async all(...params) {
+          const result = await postgres.query(postgresSql, params);
+          return result.rows;
+        },
+        async run(...params) {
+          const result = await postgres.query(postgresSql, params);
+          return { changes: result.rowCount };
+        }
+      };
+    }
+
+    const statement = sqlite.prepare(sql);
+    return {
+      async get(...params) {
+        return statement.get(...params);
+      },
+      async all(...params) {
+        return statement.all(...params);
+      },
+      async run(...params) {
+        return statement.run(...params);
+      }
+    };
+  }
+};
+
+export async function initDatabase() {
+  if (sqlite || postgres) return;
+
+  if (config.databaseUrl) {
+    postgres = new Pool({
+      connectionString: config.databaseUrl,
+      ssl: config.databaseUrl.includes('sslmode=disable')
+        ? false
+        : { rejectUnauthorized: false }
+    });
+    await db.exec(schemaSql);
+    return;
+  }
+
+  fs.mkdirSync(path.dirname(config.databasePath), { recursive: true });
+  sqlite = new DatabaseSync(config.databasePath);
+  await db.exec(`
+    PRAGMA journal_mode = WAL;
+    PRAGMA foreign_keys = ON;
+    ${schemaSql}
+  `);
+}
 
 export function nowIso() {
   return new Date().toISOString();
 }
 
-export function seedAuthorizedUsers() {
+export async function seedAuthorizedUsers() {
   const now = nowIso();
   for (const item of config.authorizedUsers) {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO authorized_users (discord_id, role, label, active, created_by, created_at, updated_at)
       VALUES (?, ?, ?, 1, 'env', ?, ?)
       ON CONFLICT(discord_id) DO UPDATE SET
@@ -146,10 +228,10 @@ export function seedAuthorizedUsers() {
   }
 }
 
-export function getAuthorizedUser(discordId) {
+export async function getAuthorizedUser(discordId) {
   return db.prepare('SELECT * FROM authorized_users WHERE discord_id = ? AND active = 1').get(discordId);
 }
 
-export function getUser(discordId) {
+export async function getUser(discordId) {
   return db.prepare('SELECT * FROM users WHERE discord_id = ?').get(discordId);
 }

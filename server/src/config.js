@@ -50,6 +50,7 @@ export const config = {
   nodeEnv: env('NODE_ENV', 'development'),
   clientUrl: env('CLIENT_URL', 'http://localhost:5173'),
   apiPublicUrl: env('API_PUBLIC_URL', `http://localhost:${env('PORT', '4000')}`),
+  databaseUrl: env('DATABASE_URL'),
   databasePath: path.resolve(rootDir, env('DATABASE_PATH', './data/nexus.db')),
   cloudinary: {
     cloudName: env('CLOUDINARY_CLOUD_NAME').trim().toLowerCase(),

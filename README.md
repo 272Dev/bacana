@@ -7,7 +7,7 @@ Nexus e um cofre privado de contas para PC e mobile, com login exclusivo via Dis
 - Frontend: React + Vite, responsivo e instalavel como PWA.
 - Desktop: Electron apontando para a interface web local.
 - Backend: Node.js + Express.
-- Banco: SQLite usando o modulo nativo do Node.
+- Banco: SQLite local ou Postgres/Neon em producao.
 - Seguranca: AES-256-GCM para dados sensiveis, cookie HTTP-only, rate limit, bloqueio temporario e logs de auditoria.
 
 ## Configuracao
@@ -160,6 +160,16 @@ TRUST_PROXY=true
 ```
 
 Importante: no plano gratis do Render, o disco do Web Service nao deve ser usado como armazenamento permanente. O Cloudinary resolve as imagens, mas o SQLite em `./data/nexus.db` ainda pode ser perdido em reinicios, redeploys ou quando o servico dormir. Para guardar contas de forma permanente em producao, migre o banco para Postgres/Supabase ou use um disco persistente pago.
+
+### Neon Postgres
+
+Para guardar as contas de forma permanente no plano gratis, crie um banco no Neon e adicione no Render:
+
+```env
+DATABASE_URL=sua_connection_string_do_neon
+```
+
+Quando `DATABASE_URL` existir, o Nexus usa Postgres/Neon automaticamente. Sem essa variavel, ele usa SQLite local em `DATABASE_PATH`.
 
 ## Observacoes de seguranca
 
