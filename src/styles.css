@@ -1092,6 +1092,12 @@ textarea {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 14px;
+  transition: opacity 220ms ease, filter 220ms ease;
+  transform: translateZ(0);
+}
+
+.roblox-generator-grid.is-loading {
+  opacity: 0.82;
 }
 
 .authenticator-grid {
@@ -1121,6 +1127,33 @@ textarea {
 
 .roblox-generator-card {
   min-height: 220px;
+  contain: layout paint;
+}
+
+.roblox-generator-card .account-main,
+.roblox-selected-card .account-main {
+  transition: transform 220ms cubic-bezier(0.16, 1, 0.3, 1), opacity 180ms ease;
+}
+
+.roblox-generator-card:hover .account-main {
+  transform: translate3d(0, -1px, 0);
+}
+
+.roblox-generator-card .avatar,
+.roblox-selected-card .avatar {
+  transition: transform 260ms cubic-bezier(0.16, 1, 0.3, 1), box-shadow 220ms ease, opacity 220ms ease;
+}
+
+.roblox-generator-card:hover .avatar,
+.roblox-selected-card:hover .avatar {
+  transform: scale(1.045);
+  box-shadow: 0 0 26px rgba(255, 64, 88, 0.14);
+}
+
+.roblox-generator-card .tag,
+.roblox-selected-card .tag,
+.secret-box {
+  transition: transform 210ms cubic-bezier(0.16, 1, 0.3, 1), border-color 190ms ease, box-shadow 190ms ease, background 190ms ease;
 }
 
 .authenticator-card {
@@ -1347,6 +1380,7 @@ textarea {
 .roblox-selected-card {
   box-shadow: none;
   background: rgba(255, 255, 255, 0.075);
+  animation: premiumItemIn 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 .roblox-selected-card > div:first-of-type {
@@ -1360,6 +1394,67 @@ textarea {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.065);
+}
+
+.roblox-selected-card:hover .secret-box {
+  border-color: rgba(255, 76, 98, 0.18);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
+}
+
+.roblox-generator-skeleton {
+  pointer-events: none;
+}
+
+.skeleton-avatar,
+.skeleton-line,
+.skeleton-pill,
+.skeleton-button {
+  position: relative;
+  overflow: hidden;
+  display: block;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.skeleton-avatar::after,
+.skeleton-line::after,
+.skeleton-pill::after,
+.skeleton-button::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent);
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+
+.skeleton-avatar {
+  width: 58px;
+  height: 58px;
+  border-radius: 999px;
+}
+
+.skeleton-line {
+  height: 13px;
+  border-radius: 999px;
+}
+
+.skeleton-line.wide {
+  width: 78%;
+}
+
+.skeleton-line.short {
+  width: 48%;
+}
+
+.skeleton-pill {
+  width: 118px;
+  height: 30px;
+  border-radius: 999px;
+}
+
+.skeleton-button {
+  width: 112px;
+  height: 42px;
+  border-radius: 14px;
 }
 
 .secret-box span {

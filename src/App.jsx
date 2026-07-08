@@ -333,6 +333,17 @@ function AnimatedNumber({ value }) {
   return displayValue;
 }
 
+function useDebouncedValue(value, delay = 220) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedValue(value), delay);
+    return () => window.clearTimeout(timer);
+  }, [value, delay]);
+
+  return debouncedValue;
+}
+
 function EmptyState({ icon: Icon, title }) {
   return (
     <div className="empty-state">
@@ -891,16 +902,32 @@ function RobloxGeneratorPage({ user }) {
   const [selectedAccount, setSelectedAccount] = useState(null);
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
+  const [listLoading, setListLoading] = useState(true);
   const [importing, setImporting] = useState(false);
+  const debouncedFilters = useDebouncedValue(filters, 240);
+  const requestIdRef = useRef(0);
   const canImport = ['owner', 'admin'].includes(user.role);
 
-  const loadAccounts = useCallback(async () => {
+  const loadAccounts = useCallback(async ({ silent = false } = {}) => {
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    if (!silent) setListLoading(true);
+
     const query = new URLSearchParams();
-    if (filters.search) query.set('search', filters.search);
-    if (filters.status) query.set('status', filters.status);
-    const payload = await api(`/roblox-generator/accounts?${query}`);
-    setAccounts(payload.accounts);
-  }, [filters]);
+    if (debouncedFilters.search) query.set('search', debouncedFilters.search);
+    if (debouncedFilters.status) query.set('status', debouncedFilters.status);
+
+    try {
+      const payload = await api(`/roblox-generator/accounts?${query}`);
+      if (requestId === requestIdRef.current) {
+        setAccounts(payload.accounts);
+      }
+    } finally {
+      if (requestId === requestIdRef.current) {
+        setListLoading(false);
+      }
+    }
+  }, [debouncedFilters]);
 
   useEffect(() => {
     loadAccounts().catch((error) => setMessage(error.message));
@@ -922,7 +949,7 @@ function RobloxGeneratorPage({ user }) {
       });
       const result = payload.result;
       setMessage(`${result.imported} conta(s) importada(s). ${result.created} nova(s), ${result.updated} atualizada(s).`);
-      await loadAccounts();
+      await loadAccounts({ silent: true });
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -938,7 +965,7 @@ function RobloxGeneratorPage({ user }) {
       const payload = await api(`/roblox-generator/accounts/${account.id}/select`, { method: 'POST' });
       setSelectedAccount(payload.account);
       setMessage('Conta selecionada.');
-      await loadAccounts();
+      await loadAccounts({ silent: true });
       return payload.account;
     } catch (error) {
       setMessage(error.message);
@@ -968,7 +995,7 @@ function RobloxGeneratorPage({ user }) {
       const payload = await api('/roblox-generator/random', { method: 'POST' });
       setSelectedAccount(payload.account);
       setMessage('Conta aleatoria selecionada.');
-      await loadAccounts();
+      await loadAccounts({ silent: true });
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -988,7 +1015,7 @@ function RobloxGeneratorPage({ user }) {
       setSelectedAccount(payload.account);
       await copyText(formatRobloxGeneratorData(payload.account));
       setMessage('Dados copiados.');
-      await loadAccounts();
+      await loadAccounts({ silent: true });
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -1005,7 +1032,8 @@ function RobloxGeneratorPage({ user }) {
       await api(`/roblox-generator/accounts/${account.id}`, { method: 'DELETE' });
       if (selectedAccount?.id === account.id) setSelectedAccount(null);
       setMessage('Conta removida do gerador.');
-      await loadAccounts();
+      setAccounts((current) => current.filter((item) => item.id !== account.id));
+      await loadAccounts({ silent: true });
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -1015,6 +1043,7 @@ function RobloxGeneratorPage({ user }) {
 
   const availableCount = accounts.filter((account) => account.status === 'available').length;
   const inUseCount = accounts.filter((account) => account.status === 'in_use').length;
+  const showSkeleton = listLoading && accounts.length === 0;
 
   return (
     <section className="page">
@@ -1071,7 +1100,7 @@ function RobloxGeneratorPage({ user }) {
             <Gamepad2 size={18} />
           </div>
           {selectedAccount ? (
-            <div className="roblox-selected-card">
+            <div className="roblox-selected-card" key={selectedAccount.id}>
               <Avatar src={selectedAccount.avatarUrl} name={selectedAccount.username} size="xl" />
               <div>
                 <h3>{selectedAccount.username}</h3>
@@ -1114,8 +1143,20 @@ function RobloxGeneratorPage({ user }) {
             <EmptyState icon={Gamepad2} title="Nenhuma conta selecionada" />
           )}
         </section>
-        <section className="roblox-generator-grid">
-          {accounts.map((account) => (
+        <section className={`roblox-generator-grid ${listLoading ? 'is-loading' : ''}`} aria-busy={listLoading}>
+          {showSkeleton && Array.from({ length: 6 }, (_, index) => (
+            <article className="roblox-generator-card roblox-generator-skeleton" key={`skeleton-${index}`}>
+              <span className="skeleton-avatar" />
+              <span className="skeleton-line wide" />
+              <span className="skeleton-line short" />
+              <span className="skeleton-pill" />
+              <div className="card-actions">
+                <span className="skeleton-button" />
+                <span className="skeleton-button" />
+              </div>
+            </article>
+          ))}
+          {!showSkeleton && accounts.map((account) => (
             <article className="roblox-generator-card" key={account.id}>
               <button className="account-main" onClick={() => openDetails(account)}>
                 <Avatar src={account.avatarUrl} name={account.username} size="lg" />
@@ -1147,7 +1188,7 @@ function RobloxGeneratorPage({ user }) {
               </div>
             </article>
           ))}
-          {accounts.length === 0 && <EmptyState icon={Gamepad2} title="Nenhuma conta Roblox carregada" />}
+          {!listLoading && accounts.length === 0 && <EmptyState icon={Gamepad2} title="Nenhuma conta Roblox carregada" />}
         </section>
       </div>
     </section>
