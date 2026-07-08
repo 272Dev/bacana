@@ -1,0 +1,1032 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: geometricPrecision;
+  --bg: #08111f;
+  --surface: #0f1b2d;
+  --surface-2: #142235;
+  --text: #edf5ff;
+  --muted: #96a7bd;
+  --line: rgba(148, 163, 184, 0.22);
+  --accent: #14b8a6;
+  --accent-2: #f59e0b;
+  --danger: #ef4444;
+  --shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f8fb;
+  --surface: #ffffff;
+  --surface-2: #edf2f7;
+  --text: #122033;
+  --muted: #637389;
+  --line: rgba(71, 85, 105, 0.18);
+  --shadow: 0 18px 50px rgba(15, 23, 42, 0.10);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    linear-gradient(180deg, rgba(20, 184, 166, 0.10), transparent 320px),
+    var(--bg);
+  color: var(--text);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  border: 0;
+}
+
+a {
+  color: inherit;
+}
+
+.loading-screen,
+.login-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.loading-screen {
+  gap: 16px;
+  color: var(--muted);
+}
+
+.login-panel {
+  width: min(440px, 100%);
+  display: grid;
+  gap: 24px;
+  padding: 34px;
+  border: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  box-shadow: var(--shadow);
+  border-radius: 8px;
+}
+
+.brand-mark {
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: white;
+  background: linear-gradient(135deg, #0f766e, #14b8a6 58%, #f59e0b);
+}
+
+.brand-mark.compact {
+  width: 38px;
+  height: 38px;
+}
+
+.eyebrow {
+  color: var(--accent);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  margin: 0 0 8px;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  font-size: clamp(2.2rem, 7vw, 4.5rem);
+  line-height: 0.98;
+  letter-spacing: 0;
+  margin-bottom: 12px;
+}
+
+h2 {
+  font-size: clamp(1.7rem, 3vw, 2.4rem);
+  margin-bottom: 0;
+  letter-spacing: 0;
+}
+
+h3 {
+  font-size: 1.08rem;
+  margin-bottom: 0;
+}
+
+.muted,
+small {
+  color: var(--muted);
+}
+
+.primary-button,
+.ghost-button,
+.danger-button,
+.text-button,
+.icon-button {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: transform 150ms ease, background 150ms ease, border-color 150ms ease;
+}
+
+.primary-button {
+  padding: 0 16px;
+  color: #05221f;
+  background: var(--accent);
+  font-weight: 800;
+}
+
+.ghost-button {
+  padding: 0 14px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.danger-button {
+  padding: 0 14px;
+  color: white;
+  background: var(--danger);
+  font-weight: 800;
+}
+
+.text-button {
+  padding: 0 10px;
+  color: var(--accent);
+  background: transparent;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.icon-button {
+  width: 42px;
+  padding: 0;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.primary-button:hover,
+.ghost-button:hover,
+.danger-button:hover,
+.text-button:hover,
+.icon-button:hover {
+  transform: translateY(-1px);
+}
+
+.login-button {
+  width: 100%;
+  text-decoration: none;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  border-right: 1px solid var(--line);
+  background: color-mix(in srgb, var(--surface) 86%, transparent);
+  backdrop-filter: blur(18px);
+}
+
+.sidebar-brand,
+.nav-list button,
+.user-chip {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-brand {
+  font-size: 1.1rem;
+  font-weight: 900;
+}
+
+.nav-list {
+  display: grid;
+  gap: 8px;
+}
+
+.nav-list button {
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.nav-list button.active,
+.nav-list button:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  display: grid;
+  gap: 12px;
+}
+
+.user-chip {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.user-chip span,
+.account-row span,
+.account-main span,
+.share-row span,
+.user-card span,
+.roblox-profile span,
+.roblox-found span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.user-chip strong,
+.account-row strong,
+.account-main strong,
+.share-row strong,
+.user-card strong,
+.roblox-profile strong,
+.roblox-found strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.footer-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.content {
+  min-width: 0;
+  padding: 34px;
+}
+
+.page {
+  display: grid;
+  gap: 22px;
+  animation: appear 180ms ease;
+}
+
+@keyframes appear {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.page-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.metric-card,
+.account-card,
+.user-card,
+.panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.metric-card {
+  min-height: 128px;
+  padding: 18px;
+  display: grid;
+  align-content: space-between;
+  color: var(--muted);
+}
+
+.metric-card strong {
+  color: var(--text);
+  font-size: 2rem;
+}
+
+.dashboard-grid,
+.details-layout,
+.settings-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.panel {
+  padding: 18px;
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.account-stack,
+.share-list,
+.timeline {
+  display: grid;
+  gap: 10px;
+}
+
+.account-row,
+.share-row,
+.roblox-profile {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  color: var(--text);
+  background: var(--surface-2);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.status-strip span,
+.tag {
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 0.83rem;
+  font-weight: 700;
+}
+
+.tag.roblox {
+  color: #083236;
+  background: #67e8f9;
+  border-color: transparent;
+}
+
+.toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 220px;
+  gap: 12px;
+}
+
+.search-box,
+.select-box {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  outline: 0;
+}
+
+.search-box input,
+.select-box select {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+input,
+select {
+  min-height: 44px;
+  padding: 0 12px;
+}
+
+textarea {
+  resize: vertical;
+  padding: 12px;
+}
+
+.account-grid,
+.user-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.account-card {
+  min-height: 230px;
+  padding: 16px;
+  display: grid;
+  gap: 14px;
+}
+
+.account-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tag-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.roblox-mini {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: auto;
+}
+
+.avatar {
+  flex: none;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: white;
+  background: linear-gradient(135deg, #1d4ed8, #14b8a6);
+  border-radius: 8px;
+  font-weight: 900;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatar-lg {
+  width: 58px;
+  height: 58px;
+}
+
+.avatar-xl {
+  width: 92px;
+  height: 92px;
+}
+
+.hero-account {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+}
+
+.secret-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.field-row {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.field-row.compact {
+  grid-template-columns: 100px minmax(0, 1fr);
+}
+
+.field-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.date-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.date-grid span {
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.date-grid strong {
+  display: block;
+  color: var(--text);
+  margin-top: 4px;
+}
+
+.roblox-panel,
+.share-panel {
+  grid-column: span 1;
+}
+
+.share-form,
+.user-form,
+.folder-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px auto;
+  gap: 10px;
+}
+
+.timeline-item {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--accent-2);
+}
+
+.timeline-item p {
+  margin: 4px 0 0;
+  color: var(--muted);
+}
+
+.empty-state {
+  min-height: 140px;
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(12px);
+}
+
+.modal {
+  width: min(760px, 100%);
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.modal-header,
+.modal-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal-actions {
+  margin-top: 18px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 18px;
+}
+
+label {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.span-2 {
+  grid-column: span 2;
+}
+
+.inline-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.roblox-found {
+  min-height: 62px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--surface-2));
+}
+
+.notice {
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.notice.success {
+  border-color: rgba(20, 184, 166, 0.45);
+}
+
+.notice.danger {
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.user-card {
+  min-height: 160px;
+  padding: 16px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.user-card small {
+  grid-column: 1 / -1;
+}
+
+.media-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.34fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.folder-form {
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-bottom: 14px;
+}
+
+.folder-list {
+  display: grid;
+  gap: 8px;
+}
+
+.folder-list > button,
+.folder-row button:first-child {
+  min-height: 42px;
+  width: 100%;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  color: var(--muted);
+  background: var(--surface-2);
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.folder-list button.active,
+.folder-list button:hover {
+  color: var(--text);
+}
+
+.folder-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.upload-button,
+.file-picker {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 14px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.upload-button input,
+.file-picker input {
+  display: none;
+}
+
+.image-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 14px;
+}
+
+.image-card {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.image-card img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.image-card span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.image-card strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-panel {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+}
+
+.segmented {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.segmented button {
+  min-height: 38px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--muted);
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.segmented button.active {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.wide {
+  width: 100%;
+}
+
+.toast {
+  position: fixed;
+  z-index: 70;
+  right: 24px;
+  bottom: 24px;
+  min-height: 46px;
+  max-width: min(420px, calc(100vw - 48px));
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.mobile-nav {
+  display: none;
+}
+
+@media (max-width: 980px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    display: none;
+  }
+
+  .content {
+    padding: 24px 18px 92px;
+  }
+
+  .mobile-nav {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: 12px;
+    z-index: 40;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
+    box-shadow: var(--shadow);
+    backdrop-filter: blur(16px);
+  }
+
+  .mobile-nav button {
+    min-height: 56px;
+    display: grid;
+    place-items: center;
+    gap: 3px;
+    color: var(--muted);
+    background: transparent;
+    border-radius: 8px;
+    font-size: 0.7rem;
+  }
+
+  .mobile-nav button.active {
+    color: var(--text);
+    background: var(--surface-2);
+  }
+
+  .metric-grid,
+  .dashboard-grid,
+  .details-layout,
+  .media-layout,
+  .settings-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  h1 {
+    font-size: 2.45rem;
+  }
+
+  .page-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .header-actions {
+    width: 100%;
+  }
+
+  .header-actions > * {
+    flex: 1;
+  }
+
+  .metric-grid,
+  .dashboard-grid,
+  .details-layout,
+  .settings-grid,
+  .toolbar,
+  .form-grid,
+  .share-form,
+  .user-form,
+  .folder-form,
+  .media-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .span-2 {
+    grid-column: span 1;
+  }
+
+  .hero-account,
+  .profile-panel {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .field-row {
+    grid-template-columns: 1fr auto auto;
+  }
+
+  .field-row span {
+    grid-column: 1 / -1;
+  }
+
+  .date-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .modal {
+    padding: 18px;
+  }
+
+  .modal-header,
+  .modal-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .modal-actions button {
+    width: 100%;
+  }
+}

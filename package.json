@@ -1,0 +1,36 @@
+{
+  "name": "nexus",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Nexus - cofre seguro de contas com Discord OAuth2 e integracao Roblox.",
+  "scripts": {
+    "setup": "node scripts/setup-env.js",
+    "check:discord": "node scripts/check-discord-oauth.js",
+    "set:discord": "node scripts/set-discord-oauth.js",
+    "dev": "concurrently \"npm:server:dev\" \"npm:client:dev\"",
+    "server:dev": "node --watch server/src/index.js",
+    "server:start": "node server/src/index.js",
+    "client:dev": "vite --host 0.0.0.0 --configLoader runner",
+    "build": "vite build --configLoader runner",
+    "preview": "vite preview --host 0.0.0.0 --configLoader runner",
+    "electron:dev": "concurrently \"npm:server:dev\" \"npm:client:dev\" \"wait-on http://localhost:5173 && electron electron/main.cjs\""
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "electron": "^43.1.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.0.7",
+    "wait-on": "^8.0.2",
+    "zod": "^3.24.1"
+  }
+}
