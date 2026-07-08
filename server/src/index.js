@@ -22,6 +22,12 @@ import {
   uploadR2Object
 } from './r2.js';
 import { logAudit, writeAccountHistory } from './audit.js';
+import {
+  createAuthenticator,
+  deleteAuthenticator,
+  getAuthenticator,
+  listAuthenticators
+} from './authenticator.js';
 import { lookupRobloxUsername } from './roblox.js';
 import {
   getRobloxGeneratorAccount,
@@ -295,6 +301,17 @@ const uploadImageSchema = z.object({
 const robloxGeneratorImportSchema = z.object({
   text: z.string().min(3).max(2_000_000),
   sourceLabel: z.string().trim().max(120).optional().or(z.literal(''))
+});
+
+const authenticatorCreateSchema = z.object({
+  label: z.string().trim().max(120).optional().or(z.literal('')),
+  issuer: z.string().trim().max(120).optional().or(z.literal('')),
+  username: z.string().trim().max(180).optional().or(z.literal('')),
+  secret: z.string().trim().min(3).max(1000),
+  notes: z.string().max(1000).optional().default(''),
+  algorithm: z.enum(['SHA1', 'SHA256', 'SHA512']).optional().default('SHA1'),
+  digits: z.union([z.literal(6), z.literal(8)]).optional().default(6),
+  period: z.number().int().min(10).max(120).optional().default(30)
 });
 
 const previewImageTypes = new Set([
@@ -886,6 +903,25 @@ app.post('/api/roblox-generator/import', requireAuth, requireAdmin, async (req, 
   }
 });
 
+app.delete('/api/roblox-generator/accounts/:id', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const row = await db.prepare('SELECT * FROM roblox_generator_accounts WHERE id = ?').get(req.params.id);
+    if (!row) return res.status(404).json({ error: 'Conta Roblox nao encontrada.' });
+    await db.prepare('DELETE FROM roblox_generator_accounts WHERE id = ?').run(req.params.id);
+    await logAudit({
+      actorDiscordId: req.user.discordId,
+      action: 'roblox_generator.deleted',
+      targetType: 'roblox_generator_account',
+      targetId: req.params.id,
+      metadata: { username: row.username },
+      ip: req.ip
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.post('/api/roblox-generator/random', requireAuth, async (req, res, next) => {
   try {
     const account = await selectRandomRobloxGeneratorAccount();
@@ -919,6 +955,57 @@ app.post('/api/roblox-generator/accounts/:id/select', requireAuth, async (req, r
       ip: req.ip
     });
     res.json({ account });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/authenticators', requireAuth, async (req, res) => {
+  const authenticators = await listAuthenticators({ search: req.query.search });
+  res.json({ authenticators });
+});
+
+app.post('/api/authenticators', requireAuth, async (req, res, next) => {
+  try {
+    const payload = authenticatorCreateSchema.parse(req.body);
+    const authenticator = await createAuthenticator({
+      payload,
+      actorDiscordId: req.user.discordId
+    });
+    await logAudit({
+      actorDiscordId: req.user.discordId,
+      action: 'authenticator.created',
+      targetType: 'authenticator',
+      targetId: authenticator.id,
+      metadata: { label: authenticator.label, issuer: authenticator.issuer },
+      ip: req.ip
+    });
+    res.status(201).json({ authenticator });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/authenticators/:id', requireAuth, async (req, res) => {
+  const authenticator = await getAuthenticator(req.params.id);
+  if (!authenticator) return res.status(404).json({ error: 'Autenticador nao encontrado.' });
+  res.json({ authenticator });
+});
+
+app.delete('/api/authenticators/:id', requireAuth, async (req, res, next) => {
+  try {
+    const authenticator = await getAuthenticator(req.params.id);
+    if (!authenticator) return res.status(404).json({ error: 'Autenticador nao encontrado.' });
+    await deleteAuthenticator(req.params.id);
+    await logAudit({
+      actorDiscordId: req.user.discordId,
+      action: 'authenticator.deleted',
+      targetType: 'authenticator',
+      targetId: req.params.id,
+      metadata: { label: authenticator.label },
+      ip: req.ip
+    });
+    res.json({ ok: true });
   } catch (error) {
     next(error);
   }
@@ -1297,6 +1384,7 @@ app.get('/api/backup', requireAuth, requireOwner, async (req, res) => {
     users: await db.prepare('SELECT * FROM users').all(),
     accounts: await db.prepare('SELECT * FROM accounts').all(),
     robloxGeneratorAccounts: await db.prepare('SELECT * FROM roblox_generator_accounts').all(),
+    authenticators: await db.prepare('SELECT * FROM authenticators').all(),
     shares: await db.prepare('SELECT * FROM account_shares').all(),
     history: await db.prepare('SELECT * FROM account_history').all(),
     audit: await db.prepare('SELECT * FROM audit_logs').all()

@@ -138,6 +138,22 @@ const schemaSql = `
     FOREIGN KEY (selected_by_discord_id) REFERENCES users(discord_id)
   );
 
+  CREATE TABLE IF NOT EXISTS authenticators (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    issuer TEXT,
+    username TEXT,
+    secret_encrypted TEXT NOT NULL,
+    algorithm TEXT NOT NULL DEFAULT 'SHA1',
+    digits INTEGER NOT NULL DEFAULT 6,
+    period INTEGER NOT NULL DEFAULT 30,
+    notes_encrypted TEXT NOT NULL,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (created_by) REFERENCES users(discord_id)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_discord_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform);
   CREATE INDEX IF NOT EXISTS idx_shares_user ON account_shares(shared_with_discord_id);
@@ -148,6 +164,7 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_images_folder ON images(folder_id);
   CREATE INDEX IF NOT EXISTS idx_roblox_generator_status ON roblox_generator_accounts(status);
   CREATE INDEX IF NOT EXISTS idx_roblox_generator_username ON roblox_generator_accounts(username);
+  CREATE INDEX IF NOT EXISTS idx_authenticators_label ON authenticators(label);
 `;
 
 function toPostgresSql(sql) {

@@ -129,6 +129,17 @@ ROBLOX_ACCOUNTS_FILE=./data/roblox-accounts.txt
 
 Nao envie arquivos TXT com contas reais para o GitHub. As senhas importadas ficam criptografadas no banco.
 
+## Autenticador de codigos
+
+A aba Codigos armazena autenticadores TOTP/2FA com segredo criptografado no banco. Ela aceita segredo Base32 manual ou URI `otpauth://`.
+
+Recursos:
+
+- codigo atual com contador
+- copiar codigo com um clique
+- excluir autenticador
+- pesquisa por nome, emissor ou usuario
+
 ## Midia com Cloudflare R2 ou Cloudinary
 
 Para hospedar no Render, prefira Cloudflare R2 para imagens e videos nao dependerem do disco local do servidor.

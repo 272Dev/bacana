@@ -127,6 +127,7 @@ function Shell({ user, theme, resolvedTheme, onToggleTheme, onLogout, view, setV
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'accounts', label: 'Cofre', icon: KeyRound },
     { id: 'roblox-generator', label: 'Gerador', icon: Gamepad2 },
+    { id: 'authenticator', label: 'Codigos', icon: Lock },
     { id: 'images', label: 'Midia', icon: Film },
     { id: 'history', label: 'Historico', icon: History },
     { id: 'users', label: 'Usuarios', icon: Users, admin: true },
@@ -953,6 +954,23 @@ function RobloxGeneratorPage({ user }) {
     }
   }
 
+  async function deleteGeneratorAccount(account) {
+    const confirmed = window.confirm(`Excluir ${account.username} do gerador?`);
+    if (!confirmed) return;
+    setLoading(true);
+    setMessage('');
+    try {
+      await api(`/roblox-generator/accounts/${account.id}`, { method: 'DELETE' });
+      if (selectedAccount?.id === account.id) setSelectedAccount(null);
+      setMessage('Conta removida do gerador.');
+      await loadAccounts();
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const availableCount = accounts.filter((account) => account.status === 'available').length;
   const inUseCount = accounts.filter((account) => account.status === 'in_use').length;
 
@@ -1036,6 +1054,12 @@ function RobloxGeneratorPage({ user }) {
                   <Copy size={17} />
                   Copiar Dados
                 </button>
+                {canImport && (
+                  <button className="danger-button" onClick={() => deleteGeneratorAccount(selectedAccount)} disabled={loading}>
+                    <Trash2 size={17} />
+                    Excluir
+                  </button>
+                )}
                 {selectedAccount.profileUrl && (
                   <a className="ghost-button" href={selectedAccount.profileUrl} target="_blank" rel="noreferrer">
                     <Gamepad2 size={17} />
@@ -1073,10 +1097,154 @@ function RobloxGeneratorPage({ user }) {
                   <Copy size={17} />
                   Copiar Dados
                 </button>
+                {canImport && (
+                  <IconButton label="Excluir do gerador" onClick={() => deleteGeneratorAccount(account)} disabled={loading}>
+                    <Trash2 size={16} />
+                  </IconButton>
+                )}
               </div>
             </article>
           ))}
           {accounts.length === 0 && <EmptyState icon={Gamepad2} title="Nenhuma conta Roblox carregada" />}
+        </section>
+      </div>
+    </section>
+  );
+}
+
+function AuthenticatorPage() {
+  const [items, setItems] = useState([]);
+  const [search, setSearch] = useState('');
+  const [form, setForm] = useState({ label: '', issuer: '', username: '', secret: '', notes: '' });
+  const [message, setMessage] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const loadAuthenticators = useCallback(async () => {
+    const query = search ? `?search=${encodeURIComponent(search)}` : '';
+    const payload = await api(`/authenticators${query}`);
+    setItems(payload.authenticators);
+  }, [search]);
+
+  useEffect(() => {
+    loadAuthenticators().catch((error) => setMessage(error.message));
+  }, [loadAuthenticators]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      loadAuthenticators().catch(() => {});
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [loadAuthenticators]);
+
+  function updateForm(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  async function createCode(event) {
+    event.preventDefault();
+    setSaving(true);
+    setMessage('');
+    try {
+      await api('/authenticators', { method: 'POST', body: form });
+      setForm({ label: '', issuer: '', username: '', secret: '', notes: '' });
+      setMessage('Autenticador salvo.');
+      await loadAuthenticators();
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteCode(item) {
+    const confirmed = window.confirm(`Excluir autenticador ${item.label}?`);
+    if (!confirmed) return;
+    await api(`/authenticators/${item.id}`, { method: 'DELETE' });
+    setMessage('Autenticador removido.');
+    await loadAuthenticators();
+  }
+
+  return (
+    <section className="page">
+      <PageHeader eyebrow="2FA" title="Autenticador de Codigos" />
+      {message && <div className="notice">{message}</div>}
+      <div className="authenticator-layout">
+        <section className="panel">
+          <div className="panel-title">
+            <h3>Novo codigo</h3>
+            <Lock size={18} />
+          </div>
+          <form className="authenticator-form" onSubmit={createCode}>
+            <label>
+              Nome
+              <input value={form.label} onChange={(event) => updateForm('label', event.target.value)} placeholder="Roblox principal" />
+            </label>
+            <label>
+              Emissor
+              <input value={form.issuer} onChange={(event) => updateForm('issuer', event.target.value)} placeholder="Roblox, Discord..." />
+            </label>
+            <label>
+              Usuario
+              <input value={form.username} onChange={(event) => updateForm('username', event.target.value)} placeholder="login ou email" />
+            </label>
+            <label>
+              Segredo ou otpauth://
+              <textarea
+                value={form.secret}
+                onChange={(event) => updateForm('secret', event.target.value)}
+                rows={4}
+                placeholder="Cole o segredo Base32 ou a URI otpauth://"
+                required
+              />
+            </label>
+            <label>
+              Observacoes
+              <textarea value={form.notes} onChange={(event) => updateForm('notes', event.target.value)} rows={3} />
+            </label>
+            <button className="primary-button" disabled={saving}>
+              <Save size={18} />
+              {saving ? 'Salvando' : 'Salvar codigo'}
+            </button>
+          </form>
+        </section>
+        <section className="panel">
+          <div className="panel-title">
+            <h3>Codigos salvos</h3>
+            <Clock3 size={18} />
+          </div>
+          <label className="search-box authenticator-search">
+            <Search size={18} />
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Pesquisar codigo" />
+          </label>
+          <div className="authenticator-grid">
+            {items.map((item) => (
+              <article className="authenticator-card" key={item.id}>
+                <div className="authenticator-card-head">
+                  <span>
+                    <strong>{item.label}</strong>
+                    <small>{[item.issuer, item.username].filter(Boolean).join(' - ') || 'Sem emissor'}</small>
+                  </span>
+                  <span className="tag"><Clock3 size={15} /> {item.secondsRemaining}s</span>
+                </div>
+                <button className="authenticator-code" onClick={() => copyText(item.code)}>
+                  {item.code || '------'}
+                </button>
+                <div className="authenticator-progress">
+                  <span style={{ width: `${Math.max(4, (item.secondsRemaining / item.period) * 100)}%` }} />
+                </div>
+                <div className="card-actions">
+                  <button className="primary-button" onClick={() => copyText(item.code)}>
+                    <Copy size={17} />
+                    Copiar
+                  </button>
+                  <IconButton label="Excluir autenticador" onClick={() => deleteCode(item)}>
+                    <Trash2 size={16} />
+                  </IconButton>
+                </div>
+              </article>
+            ))}
+            {items.length === 0 && <EmptyState icon={Lock} title="Nenhum codigo salvo" />}
+          </div>
         </section>
       </div>
     </section>
@@ -1586,6 +1754,7 @@ export default function App() {
       )}
       {view === 'history' && <HistoryPage history={history} />}
       {view === 'roblox-generator' && <RobloxGeneratorPage user={session.user} />}
+      {view === 'authenticator' && <AuthenticatorPage />}
       {view === 'images' && <MediaPage />}
       {view === 'users' && <UsersPage users={authorizedUsers} reloadUsers={loadAuthorizedUsers} />}
       {view === 'settings' && <SettingsPage theme={theme} resolvedTheme={resolvedTheme} setTheme={setTheme} onBackup={exportBackup} />}
