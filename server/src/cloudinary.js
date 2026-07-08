@@ -14,7 +14,7 @@ function signParams(params) {
     .digest('hex');
 }
 
-async function callCloudinary(endpoint, params) {
+async function callCloudinary(resourceType, action, params) {
   if (!hasCloudinaryConfig()) {
     const error = new Error('Cloudinary nao configurado.');
     error.status = 500;
@@ -36,14 +36,14 @@ async function callCloudinary(endpoint, params) {
   form.set('api_key', config.cloudinary.apiKey);
   form.set('signature', signature);
 
-  const response = await fetch(`https://api.cloudinary.com/v1_1/${config.cloudinary.cloudName}/${endpoint}`, {
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${config.cloudinary.cloudName}/${resourceType}/${action}`, {
     method: 'POST',
     body: form
   });
   const payload = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const error = new Error(payload.error?.message || 'Cloudinary recusou a imagem.');
+    const error = new Error(payload.error?.message || 'Cloudinary recusou a midia.');
     error.status = response.status >= 500 ? 502 : 400;
     throw error;
   }
@@ -55,7 +55,7 @@ export function isCloudinaryEnabled() {
   return hasCloudinaryConfig();
 }
 
-export async function uploadCloudinaryImage({ dataUrl, publicId }) {
+export async function uploadCloudinaryMedia({ dataUrl, publicId, resourceType = 'image' }) {
   const params = {
     file: dataUrl,
     public_id: publicId,
@@ -66,10 +66,10 @@ export async function uploadCloudinaryImage({ dataUrl, publicId }) {
     params.folder = config.cloudinary.folder;
   }
 
-  return callCloudinary('image/upload', params);
+  return callCloudinary(resourceType, 'upload', params);
 }
 
-export async function destroyCloudinaryImage(publicId) {
+export async function destroyCloudinaryMedia(publicId, resourceType = 'image') {
   if (!publicId || !hasCloudinaryConfig()) return null;
-  return callCloudinary('image/destroy', { public_id: publicId, invalidate: true });
+  return callCloudinary(resourceType, 'destroy', { public_id: publicId, invalidate: true });
 }
