@@ -6,6 +6,8 @@ import { encryptSecret, tryDecryptSecret } from './crypto.js';
 import { lookupRobloxUsernames } from './roblox.js';
 
 const USERNAME_PATTERN = /^[a-zA-Z0-9_]{3,32}$/;
+const ROBLOX_PROFILE_IMPORT_BATCH_SIZE = 25;
+const ROBLOX_PROFILE_IMPORT_RETRIES = 3;
 
 function cleanText(value) {
   return String(value || '').trim();
@@ -66,17 +68,40 @@ export function parseRobloxGeneratorText(text) {
 }
 
 async function enrichRobloxAccounts(accounts) {
-  try {
-    return {
-      profiles: await lookupRobloxUsernames(accounts.map((account) => account.username), { excludeBannedUsers: false }),
-      lookupError: null
-    };
-  } catch (error) {
-    return {
-      profiles: new Map(),
-      lookupError: error.message
-    };
+  const profiles = new Map();
+  const errors = [];
+  const usernames = accounts.map((account) => account.username);
+
+  for (let index = 0; index < usernames.length; index += ROBLOX_PROFILE_IMPORT_BATCH_SIZE) {
+    const batch = usernames.slice(index, index + ROBLOX_PROFILE_IMPORT_BATCH_SIZE);
+    let imported = false;
+
+    for (let attempt = 1; attempt <= ROBLOX_PROFILE_IMPORT_RETRIES; attempt += 1) {
+      try {
+        const batchProfiles = await lookupRobloxUsernames(batch, { excludeBannedUsers: false });
+        for (const [key, value] of batchProfiles.entries()) {
+          profiles.set(key, value);
+        }
+        imported = true;
+        break;
+      } catch (error) {
+        if (attempt === ROBLOX_PROFILE_IMPORT_RETRIES) {
+          errors.push(error.message);
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+        }
+      }
+    }
+
+    if (imported) {
+      await new Promise((resolve) => setTimeout(resolve, 220));
+    }
   }
+
+  return {
+    profiles,
+    lookupError: errors.length ? [...new Set(errors)].join('; ') : null
+  };
 }
 
 function mapStoredAccount(row, { includePassword = false } = {}) {

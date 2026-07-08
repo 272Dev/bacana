@@ -1,6 +1,6 @@
 const ROBLOX_USERS_URL = 'https://users.roblox.com/v1/usernames/users';
 const ROBLOX_THUMBNAILS_URL = 'https://thumbnails.roblox.com/v1/users/avatar-headshot';
-const ROBLOX_BATCH_SIZE = 100;
+const ROBLOX_BATCH_SIZE = 50;
 
 function normalizeUsername(username) {
   return String(username || '').trim();
