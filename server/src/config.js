@@ -73,6 +73,9 @@ export const config = {
     secretAccessKey: env('R2_SECRET_ACCESS_KEY'),
     bucket: env('R2_BUCKET')
   },
+  robloxGenerator: {
+    sourceFile: path.resolve(rootDir, env('ROBLOX_ACCOUNTS_FILE', './data/roblox-accounts.txt'))
+  },
   discord: {
     clientId: env('DISCORD_CLIENT_ID'),
     clientSecret: env('DISCORD_CLIENT_SECRET'),

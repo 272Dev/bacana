@@ -117,6 +117,27 @@ const schemaSql = `
     FOREIGN KEY (folder_id) REFERENCES image_folders(id) ON DELETE SET NULL
   );
 
+  CREATE TABLE IF NOT EXISTS roblox_generator_accounts (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_encrypted TEXT NOT NULL,
+    display_name TEXT,
+    user_id TEXT,
+    profile_url TEXT,
+    avatar_url TEXT,
+    status TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available', 'in_use')),
+    selected_by_discord_id TEXT,
+    selected_at TEXT,
+    cookie_encrypted TEXT,
+    notes_encrypted TEXT,
+    source_label TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (selected_by_discord_id) REFERENCES users(discord_id)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_discord_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform);
   CREATE INDEX IF NOT EXISTS idx_shares_user ON account_shares(shared_with_discord_id);
@@ -125,6 +146,8 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_image_folders_owner ON image_folders(owner_discord_id);
   CREATE INDEX IF NOT EXISTS idx_images_owner ON images(owner_discord_id);
   CREATE INDEX IF NOT EXISTS idx_images_folder ON images(folder_id);
+  CREATE INDEX IF NOT EXISTS idx_roblox_generator_status ON roblox_generator_accounts(status);
+  CREATE INDEX IF NOT EXISTS idx_roblox_generator_username ON roblox_generator_accounts(username);
 `;
 
 function toPostgresSql(sql) {

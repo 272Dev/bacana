@@ -24,6 +24,15 @@ import {
 import { logAudit, writeAccountHistory } from './audit.js';
 import { lookupRobloxUsername } from './roblox.js';
 import {
+  getRobloxGeneratorAccount,
+  importRobloxGeneratorFile,
+  importRobloxGeneratorText,
+  listRobloxGeneratorAccounts,
+  releaseRobloxGeneratorAccount,
+  selectRandomRobloxGeneratorAccount,
+  selectRobloxGeneratorAccount
+} from './robloxGenerator.js';
+import {
   checkLoginBlocked,
   clearOAuthStateCookie,
   clearSessionCookie,
@@ -45,6 +54,11 @@ import {
 requireRuntimeConfig();
 await initDatabase();
 await seedAuthorizedUsers();
+await importRobloxGeneratorFile().catch((error) => {
+  if (config.nodeEnv !== 'production') {
+    console.warn('[nexus] Importacao automatica Roblox falhou:', error.message);
+  }
+});
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -277,6 +291,11 @@ const uploadImageSchema = z.object({
   folderId: z.string().uuid().optional().nullable().or(z.literal('')),
   name: z.string().trim().max(160).optional().or(z.literal('')),
   dataUrl: z.string().min(20)
+});
+
+const robloxGeneratorImportSchema = z.object({
+  text: z.string().min(3).max(2_000_000),
+  sourceLabel: z.string().trim().max(120).optional().or(z.literal(''))
 });
 
 const previewImageTypes = new Set([
@@ -832,6 +851,103 @@ app.post('/api/roblox/lookup', requireAuth, async (req, res, next) => {
   }
 });
 
+app.get('/api/roblox-generator/accounts', requireAuth, async (req, res) => {
+  const accounts = await listRobloxGeneratorAccounts({
+    search: req.query.search,
+    status: req.query.status
+  });
+  res.json({ accounts });
+});
+
+app.post('/api/roblox-generator/import', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const payload = robloxGeneratorImportSchema.parse(req.body);
+    const result = await importRobloxGeneratorText({
+      text: payload.text,
+      actorDiscordId: req.user.discordId,
+      sourceLabel: payload.sourceLabel || 'upload-txt'
+    });
+    await logAudit({
+      actorDiscordId: req.user.discordId,
+      action: 'roblox_generator.imported',
+      targetType: 'roblox_generator',
+      metadata: {
+        imported: result.imported,
+        created: result.created,
+        updated: result.updated,
+        invalidLines: result.invalidLines.length,
+        withoutRobloxProfile: result.withoutRobloxProfile,
+        lookupError: result.lookupError
+      },
+      ip: req.ip
+    });
+    res.status(201).json({ result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/roblox-generator/random', requireAuth, async (req, res, next) => {
+  try {
+    const account = await selectRandomRobloxGeneratorAccount({ actorDiscordId: req.user.discordId });
+    await logAudit({
+      actorDiscordId: req.user.discordId,
+      action: 'roblox_generator.random_selected',
+      targetType: 'roblox_generator_account',
+      targetId: account.id,
+      ip: req.ip
+    });
+    res.json({ account });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/roblox-generator/accounts/:id', requireAuth, async (req, res) => {
+  const account = await getRobloxGeneratorAccount(req.params.id, { includePassword: true });
+  if (!account) return res.status(404).json({ error: 'Conta Roblox nao encontrada.' });
+  res.json({ account });
+});
+
+app.post('/api/roblox-generator/accounts/:id/select', requireAuth, async (req, res, next) => {
+  try {
+    const account = await selectRobloxGeneratorAccount({
+      id: req.params.id,
+      actorDiscordId: req.user.discordId
+    });
+    await logAudit({
+      actorDiscordId: req.user.discordId,
+      action: 'roblox_generator.selected',
+      targetType: 'roblox_generator_account',
+      targetId: account.id,
+      ip: req.ip
+    });
+    res.json({ account });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/roblox-generator/accounts/:id/release', requireAuth, async (req, res, next) => {
+  try {
+    const account = await releaseRobloxGeneratorAccount({
+      id: req.params.id,
+      actorDiscordId: req.user.discordId,
+      isAdmin: ['owner', 'admin'].includes(req.user.role)
+    });
+    await logAudit({
+      actorDiscordId: req.user.discordId,
+      action: 'roblox_generator.released',
+      targetType: 'roblox_generator_account',
+      targetId: account.id,
+      ip: req.ip
+    });
+    res.json({ account });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get('/api/accounts', requireAuth, async (req, res) => {
   const rows = await db.prepare(`
     SELECT a.*, CASE WHEN a.owner_discord_id = ? THEN 'owner' ELSE 'edit' END AS permission
@@ -1204,6 +1320,7 @@ app.get('/api/backup', requireAuth, requireOwner, async (req, res) => {
     authorizedUsers: await db.prepare('SELECT * FROM authorized_users').all(),
     users: await db.prepare('SELECT * FROM users').all(),
     accounts: await db.prepare('SELECT * FROM accounts').all(),
+    robloxGeneratorAccounts: await db.prepare('SELECT * FROM roblox_generator_accounts').all(),
     shares: await db.prepare('SELECT * FROM account_shares').all(),
     history: await db.prepare('SELECT * FROM account_history').all(),
     audit: await db.prepare('SELECT * FROM audit_logs').all()

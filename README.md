@@ -103,6 +103,25 @@ Quando a plataforma for Roblox, informe o Username e use a busca. O backend cons
 
 Se o Username nao existir, a interface informa que a conta nao foi encontrada.
 
+## Gerador de Contas Roblox
+
+A aba Gerador de Contas lista contas Roblox importadas por TXT em cards com avatar, username, display name, status e acoes para selecionar ou copiar os dados.
+
+Formato aceito no TXT:
+
+```text
+login: usuarioRoblox Senha: senhaDaConta
+usuarioRoblox:senhaDaConta
+```
+
+Owners/admins podem importar o TXT pela interface. Tambem existe importacao automatica local opcional:
+
+```env
+ROBLOX_ACCOUNTS_FILE=./data/roblox-accounts.txt
+```
+
+Nao envie arquivos TXT com contas reais para o GitHub. As senhas importadas ficam criptografadas no banco.
+
 ## Midia com Cloudflare R2 ou Cloudinary
 
 Para hospedar no Render, prefira Cloudflare R2 para imagens e videos nao dependerem do disco local do servidor.

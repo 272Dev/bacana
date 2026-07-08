@@ -198,6 +198,15 @@ small {
   transform: translateY(-1px);
 }
 
+.primary-button:disabled,
+.ghost-button:disabled,
+.danger-button:disabled,
+.icon-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .login-button {
   width: 100%;
   text-decoration: none;
@@ -434,6 +443,18 @@ small {
   border-color: transparent;
 }
 
+.tag.success {
+  color: #05221f;
+  background: #5eead4;
+  border-color: transparent;
+}
+
+.tag.warning {
+  color: #2f2100;
+  background: #facc15;
+  border-color: transparent;
+}
+
 .toolbar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 220px;
@@ -489,6 +510,63 @@ textarea {
   gap: 14px;
 }
 
+.roblox-generator-layout {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.36fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.roblox-generator-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.roblox-generator-card,
+.roblox-selected-card {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.roblox-generator-card {
+  min-height: 220px;
+}
+
+.roblox-selected-card {
+  box-shadow: none;
+  background: var(--surface-2);
+}
+
+.roblox-selected-card > div:first-of-type {
+  min-width: 0;
+}
+
+.secret-box {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.secret-box span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.secret-box strong {
+  overflow-wrap: anywhere;
+}
+
 .account-card {
   min-height: 230px;
   padding: 16px;
@@ -523,6 +601,7 @@ textarea {
 
 .card-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-top: auto;
@@ -1147,6 +1226,7 @@ label {
   .dashboard-grid,
   .details-layout,
   .media-layout,
+  .roblox-generator-layout,
   .settings-grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -1179,7 +1259,8 @@ label {
   .share-form,
   .user-form,
   .folder-form,
-  .media-layout {
+  .media-layout,
+  .roblox-generator-layout {
     grid-template-columns: 1fr;
   }
 

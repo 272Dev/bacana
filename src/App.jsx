@@ -35,6 +35,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Shuffle,
   Sun,
   Trash2,
   Upload,
@@ -125,6 +126,7 @@ function Shell({ user, theme, resolvedTheme, onToggleTheme, onLogout, view, setV
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'accounts', label: 'Cofre', icon: KeyRound },
+    { id: 'roblox-generator', label: 'Gerador', icon: Gamepad2 },
     { id: 'images', label: 'Midia', icon: Film },
     { id: 'history', label: 'Historico', icon: History },
     { id: 'users', label: 'Usuarios', icon: Users, admin: true },
@@ -840,6 +842,266 @@ function UsersPage({ users, reloadUsers }) {
   );
 }
 
+function RobloxGeneratorPage({ user }) {
+  const [accounts, setAccounts] = useState([]);
+  const [filters, setFilters] = useState({ search: '', status: '' });
+  const [selectedAccount, setSelectedAccount] = useState(null);
+  const [message, setMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const canImport = ['owner', 'admin'].includes(user.role);
+
+  const loadAccounts = useCallback(async () => {
+    const query = new URLSearchParams();
+    if (filters.search) query.set('search', filters.search);
+    if (filters.status) query.set('status', filters.status);
+    const payload = await api(`/roblox-generator/accounts?${query}`);
+    setAccounts(payload.accounts);
+  }, [filters]);
+
+  useEffect(() => {
+    loadAccounts().catch((error) => setMessage(error.message));
+  }, [loadAccounts]);
+
+  async function importTxt(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    setMessage('');
+    try {
+      const text = await fileToText(file);
+      const payload = await api('/roblox-generator/import', {
+        method: 'POST',
+        body: {
+          text,
+          sourceLabel: file.name
+        }
+      });
+      const result = payload.result;
+      setMessage(`${result.imported} conta(s) importada(s). ${result.created} nova(s), ${result.updated} atualizada(s).`);
+      await loadAccounts();
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setImporting(false);
+      event.target.value = '';
+    }
+  }
+
+  async function selectAccount(account) {
+    setLoading(true);
+    setMessage('');
+    try {
+      const payload = await api(`/roblox-generator/accounts/${account.id}/select`, { method: 'POST' });
+      setSelectedAccount(payload.account);
+      setMessage('Conta selecionada.');
+      await loadAccounts();
+      return payload.account;
+    } catch (error) {
+      setMessage(error.message);
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function openDetails(account) {
+    setLoading(true);
+    setMessage('');
+    try {
+      const payload = await api(`/roblox-generator/accounts/${account.id}`);
+      setSelectedAccount(payload.account);
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function randomAccount() {
+    setLoading(true);
+    setMessage('');
+    try {
+      const payload = await api('/roblox-generator/random', { method: 'POST' });
+      setSelectedAccount(payload.account);
+      setMessage('Conta aleatoria selecionada.');
+      await loadAccounts();
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function copyAccountData(account) {
+    setLoading(true);
+    setMessage('');
+    try {
+      const payload = account.status === 'available'
+        ? await api(`/roblox-generator/accounts/${account.id}/select`, { method: 'POST' })
+        : await api(`/roblox-generator/accounts/${account.id}`);
+      setSelectedAccount(payload.account);
+      await copyText(formatRobloxGeneratorData(payload.account));
+      setMessage('Dados copiados.');
+      await loadAccounts();
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function releaseAccount(account) {
+    setLoading(true);
+    setMessage('');
+    try {
+      const payload = await api(`/roblox-generator/accounts/${account.id}/release`, { method: 'POST' });
+      setSelectedAccount(payload.account);
+      setMessage('Conta liberada.');
+      await loadAccounts();
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const availableCount = accounts.filter((account) => account.status === 'available').length;
+  const inUseCount = accounts.filter((account) => account.status === 'in_use').length;
+
+  return (
+    <section className="page">
+      <PageHeader
+        eyebrow="Roblox"
+        title="Gerador de Contas"
+        actions={
+          <>
+            {canImport && (
+              <label className="upload-button">
+                <Upload size={17} />
+                {importing ? 'Importando' : 'Importar TXT'}
+                <input type="file" accept=".txt,text/plain" onChange={importTxt} />
+              </label>
+            )}
+            <button className="primary-button" onClick={randomAccount} disabled={loading || availableCount === 0}>
+              <Shuffle size={18} />
+              Gerar Conta Aleatoria
+            </button>
+          </>
+        }
+      />
+      {message && <div className="notice">{message}</div>}
+      <div className="toolbar">
+        <label className="search-box">
+          <Search size={18} />
+          <input
+            value={filters.search}
+            onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))}
+            placeholder="Pesquisar username ou display name"
+          />
+        </label>
+        <label className="select-box">
+          <SlidersHorizontal size={18} />
+          <select
+            value={filters.status}
+            onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}
+          >
+            <option value="">Todas</option>
+            <option value="available">Disponiveis</option>
+            <option value="in_use">Em uso</option>
+          </select>
+        </label>
+      </div>
+      <div className="status-strip">
+        <span><BadgeCheck size={15} /> {availableCount} disponiveis</span>
+        <span><Clock3 size={15} /> {inUseCount} em uso</span>
+        <span><Gamepad2 size={15} /> {accounts.length} carregadas</span>
+      </div>
+      <div className="roblox-generator-layout">
+        <section className="panel roblox-selected-panel">
+          <div className="panel-title">
+            <h3>Conta selecionada</h3>
+            <Gamepad2 size={18} />
+          </div>
+          {selectedAccount ? (
+            <div className="roblox-selected-card">
+              <Avatar src={selectedAccount.avatarUrl} name={selectedAccount.username} size="xl" />
+              <div>
+                <h3>{selectedAccount.username}</h3>
+                <p className="muted">{selectedAccount.displayName || 'Sem Display Name'}</p>
+                <div className="tag-line">
+                  <span className={selectedAccount.status === 'available' ? 'tag success' : 'tag warning'}>
+                    {selectedAccount.status === 'available' ? 'Disponivel' : 'Em uso'}
+                  </span>
+                  {selectedAccount.userId && <span className="tag">UserId {selectedAccount.userId}</span>}
+                </div>
+              </div>
+              <div className="secret-box">
+                <span>Login</span>
+                <strong>{selectedAccount.username}</strong>
+              </div>
+              <div className="secret-box">
+                <span>Senha</span>
+                <strong>{selectedAccount.password || 'Nao carregada'}</strong>
+              </div>
+              <div className="card-actions">
+                <button className="primary-button" onClick={() => copyAccountData(selectedAccount)}>
+                  <Copy size={17} />
+                  Copiar Dados
+                </button>
+                {selectedAccount.profileUrl && (
+                  <a className="ghost-button" href={selectedAccount.profileUrl} target="_blank" rel="noreferrer">
+                    <Gamepad2 size={17} />
+                    Perfil
+                  </a>
+                )}
+                {selectedAccount.status === 'in_use' && (
+                  <button className="ghost-button" onClick={() => releaseAccount(selectedAccount)}>
+                    <Clock3 size={17} />
+                    Liberar
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <EmptyState icon={Gamepad2} title="Nenhuma conta selecionada" />
+          )}
+        </section>
+        <section className="roblox-generator-grid">
+          {accounts.map((account) => (
+            <article className="roblox-generator-card" key={account.id}>
+              <button className="account-main" onClick={() => openDetails(account)}>
+                <Avatar src={account.avatarUrl} name={account.username} size="lg" />
+                <span>
+                  <strong>{account.username}</strong>
+                  <small>{account.displayName || 'Sem Display Name'}</small>
+                </span>
+              </button>
+              <div className="tag-line">
+                <span className={account.status === 'available' ? 'tag success' : 'tag warning'}>
+                  {account.status === 'available' ? 'Disponivel' : 'Em uso'}
+                </span>
+                {account.userId && <span className="tag">UserId {account.userId}</span>}
+              </div>
+              <div className="card-actions">
+                <button className="ghost-button" onClick={() => selectAccount(account)} disabled={loading || account.status !== 'available'}>
+                  <BadgeCheck size={17} />
+                  Selecionar
+                </button>
+                <button className="primary-button" onClick={() => copyAccountData(account)} disabled={loading}>
+                  <Copy size={17} />
+                  Copiar Dados
+                </button>
+              </div>
+            </article>
+          ))}
+          {accounts.length === 0 && <EmptyState icon={Gamepad2} title="Nenhuma conta Roblox carregada" />}
+        </section>
+      </div>
+    </section>
+  );
+}
+
 function MediaPage() {
   const [folders, setFolders] = useState([]);
   const [media, setMedia] = useState([]);
@@ -1138,6 +1400,25 @@ function fileToDataUrl(file) {
   });
 }
 
+function fileToText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error('Nao foi possivel ler o TXT.'));
+    reader.readAsText(file);
+  });
+}
+
+function formatRobloxGeneratorData(account) {
+  return [
+    `Login: ${account.username || ''}`,
+    `Senha: ${account.password || ''}`,
+    account.displayName ? `Display Name: ${account.displayName}` : '',
+    account.userId ? `UserId: ${account.userId}` : '',
+    account.profileUrl ? `Perfil: ${account.profileUrl}` : ''
+  ].filter(Boolean).join('\n');
+}
+
 export default function App() {
   const [theme, setThemeState] = useState(() => localStorage.getItem('nexus-theme') || 'system');
   const [resolvedTheme, setResolvedTheme] = useState('dark');
@@ -1314,6 +1595,7 @@ export default function App() {
         />
       )}
       {view === 'history' && <HistoryPage history={history} />}
+      {view === 'roblox-generator' && <RobloxGeneratorPage user={session.user} />}
       {view === 'images' && <MediaPage />}
       {view === 'users' && <UsersPage users={authorizedUsers} reloadUsers={loadAuthorizedUsers} />}
       {view === 'settings' && <SettingsPage theme={theme} resolvedTheme={resolvedTheme} setTheme={setTheme} onBackup={exportBackup} />}
