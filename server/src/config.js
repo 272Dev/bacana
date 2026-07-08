@@ -45,7 +45,7 @@ function parseAuthorizedUsers(raw) {
 
 function normalizeCloudinaryCloudName(raw) {
   const value = raw.trim().toLowerCase();
-  if (value === 'armazenamento') {
+  if (value === 'armazenamento' || value === 'ger3sly') {
     return 'ger3tsly';
   }
   return value;
