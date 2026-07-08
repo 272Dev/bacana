@@ -52,7 +52,7 @@ export const config = {
   apiPublicUrl: env('API_PUBLIC_URL', `http://localhost:${env('PORT', '4000')}`),
   databasePath: path.resolve(rootDir, env('DATABASE_PATH', './data/nexus.db')),
   cloudinary: {
-    cloudName: env('CLOUDINARY_CLOUD_NAME'),
+    cloudName: env('CLOUDINARY_CLOUD_NAME').trim().toLowerCase(),
     apiKey: env('CLOUDINARY_API_KEY'),
     apiSecret: env('CLOUDINARY_API_SECRET'),
     folder: env('CLOUDINARY_FOLDER', 'nexus')
