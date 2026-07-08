@@ -43,6 +43,14 @@ function parseAuthorizedUsers(raw) {
     .filter((item) => /^\d{5,32}$/.test(item.discordId));
 }
 
+function normalizeCloudinaryCloudName(raw) {
+  const value = raw.trim().toLowerCase();
+  if (value === 'armazenamento') {
+    return 'ger3tsly';
+  }
+  return value;
+}
+
 export const config = {
   rootDir,
   envPath,
@@ -53,7 +61,7 @@ export const config = {
   databaseUrl: env('DATABASE_URL'),
   databasePath: path.resolve(rootDir, env('DATABASE_PATH', './data/nexus.db')),
   cloudinary: {
-    cloudName: env('CLOUDINARY_CLOUD_NAME').trim().toLowerCase(),
+    cloudName: normalizeCloudinaryCloudName(env('CLOUDINARY_CLOUD_NAME')),
     apiKey: env('CLOUDINARY_API_KEY'),
     apiSecret: env('CLOUDINARY_API_SECRET'),
     folder: env('CLOUDINARY_FOLDER', 'nexus')
