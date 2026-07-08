@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   BadgeCheck,
@@ -291,9 +291,46 @@ function Metric({ icon: Icon, label, value }) {
     <article className="metric-card">
       <Icon size={21} />
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong><AnimatedNumber value={value} /></strong>
     </article>
   );
+}
+
+function AnimatedNumber({ value }) {
+  const [displayValue, setDisplayValue] = useState(0);
+  const previousValue = useRef(0);
+
+  useEffect(() => {
+    const targetValue = Number(value || 0);
+    const prefersReducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReducedMotion) {
+      setDisplayValue(targetValue);
+      previousValue.current = targetValue;
+      return undefined;
+    }
+
+    const startValue = previousValue.current;
+    const startTime = performance.now();
+    const duration = 720;
+    let frameId = 0;
+
+    function tick(now) {
+      const progress = Math.min(1, (now - startTime) / duration);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      const nextValue = Math.round(startValue + (targetValue - startValue) * eased);
+      setDisplayValue(nextValue);
+      if (progress < 1) {
+        frameId = requestAnimationFrame(tick);
+      } else {
+        previousValue.current = targetValue;
+      }
+    }
+
+    frameId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frameId);
+  }, [value]);
+
+  return displayValue;
 }
 
 function EmptyState({ icon: Icon, title }) {
@@ -1923,6 +1960,20 @@ export default function App() {
     setAuthorizedUsers(payload.users);
   }, [session.user?.role]);
 
+  const navigateView = useCallback((nextView) => {
+    if (nextView === view) return;
+
+    const changeView = () => setView(nextView);
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+
+    if (!reducedMotion && document.startViewTransition) {
+      document.startViewTransition(changeView);
+      return;
+    }
+
+    changeView();
+  }, [view]);
+
   useEffect(() => {
     loadMe();
   }, [loadMe]);
@@ -1959,7 +2010,7 @@ export default function App() {
 
   function openDetails(account) {
     setSelectedAccount(account);
-    setView('details');
+    navigateView('details');
   }
 
   async function exportBackup() {
@@ -1999,7 +2050,7 @@ export default function App() {
       onToggleTheme={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
       onLogout={logout}
       view={view}
-      setView={setView}
+      setView={navigateView}
     >
       {toast && (
         <button className="toast" onClick={() => setToast('')}>
@@ -2011,7 +2062,7 @@ export default function App() {
         <Dashboard
           accounts={filteredAccounts}
           history={history}
-          setView={setView}
+          setView={navigateView}
           setSelectedAccount={setSelectedAccount}
         />
       )}
@@ -2028,12 +2079,12 @@ export default function App() {
       {view === 'details' && selectedAccount && (
         <AccountDetails
           account={selectedAccount}
-          onBack={() => setView('accounts')}
+          onBack={() => navigateView('accounts')}
           onEdit={openEdit}
           onRefresh={refreshAll}
           onDeleted={async () => {
             setSelectedAccount(null);
-            setView('accounts');
+            navigateView('accounts');
             await refreshAll();
           }}
         />

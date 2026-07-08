@@ -41,6 +41,7 @@ html,
   width: 100%;
   min-height: 100%;
   background: #070807;
+  scroll-behavior: smooth;
 }
 
 body {
@@ -107,6 +108,97 @@ a {
   }
 }
 
+@keyframes premiumPageIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes premiumItemIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes premiumSlideLeft {
+  from {
+    opacity: 0;
+    transform: translate3d(12px, 0, 0);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes activeIconGlow {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 0 rgba(255, 64, 88, 0));
+  }
+
+  50% {
+    filter: drop-shadow(0 0 10px rgba(255, 64, 88, 0.24));
+  }
+}
+
+@keyframes rippleBurst {
+  from {
+    opacity: 0.26;
+    transform: translate(-50%, -50%) scale(0);
+  }
+
+  to {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(18);
+  }
+}
+
+@keyframes modalBackdropIn {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 10px, 0) scale(0.95);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
+@keyframes shimmer {
+  from {
+    transform: translate3d(-120%, 0, 0);
+  }
+
+  to {
+    transform: translate3d(120%, 0, 0);
+  }
+}
+
 .loading-screen,
 .login-screen {
   min-height: 100vh;
@@ -116,8 +208,21 @@ a {
 }
 
 .loading-screen {
+  position: relative;
+  overflow: hidden;
   gap: 16px;
   color: var(--muted);
+}
+
+.loading-screen::after {
+  content: "";
+  position: absolute;
+  width: min(420px, 70vw);
+  height: 120px;
+  border-radius: 22px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.10), transparent);
+  animation: shimmer 1.45s ease-in-out infinite;
+  pointer-events: none;
 }
 
 .login-panel {
@@ -197,6 +302,8 @@ small {
 .danger-button,
 .text-button,
 .icon-button {
+  position: relative;
+  overflow: hidden;
   min-height: 42px;
   display: inline-flex;
   align-items: center;
@@ -204,7 +311,32 @@ small {
   gap: 9px;
   border-radius: 14px;
   cursor: pointer;
-  transition: transform 150ms ease, background 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+  transition: transform 210ms cubic-bezier(0.16, 1, 0.3, 1), background 190ms ease, border-color 190ms ease, box-shadow 190ms ease, opacity 190ms ease;
+  will-change: transform;
+}
+
+.primary-button::after,
+.ghost-button::after,
+.danger-button::after,
+.text-button::after,
+.icon-button::after,
+.nav-list button::after,
+.mobile-nav button::after,
+.account-row::after,
+.share-row::after,
+.upload-button::after,
+.file-picker::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.26);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(0);
 }
 
 .primary-button {
@@ -249,14 +381,69 @@ small {
   backdrop-filter: var(--glass-blur);
 }
 
+.icon-button[title]::before {
+  content: attr(title);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  z-index: 8;
+  max-width: 160px;
+  padding: 7px 9px;
+  color: var(--text);
+  background: rgba(12, 13, 13, 0.88);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate3d(-50%, 4px, 0) scale(0.96);
+  transform-origin: bottom center;
+  transition: opacity 150ms ease, transform 150ms ease;
+  white-space: nowrap;
+}
+
+.icon-button[title]:hover::before {
+  opacity: 1;
+  transform: translate3d(-50%, 0, 0) scale(1);
+}
+
 .primary-button:hover,
 .ghost-button:hover,
 .danger-button:hover,
 .text-button:hover,
 .icon-button:hover {
-  transform: translateY(-1px);
+  transform: scale(1.03);
   border-color: rgba(255, 76, 98, 0.42);
   box-shadow: var(--red-glow);
+}
+
+.primary-button:active,
+.ghost-button:active,
+.danger-button:active,
+.text-button:active,
+.icon-button:active,
+.nav-list button:active,
+.mobile-nav button:active,
+.account-row:active,
+.share-row:active,
+.upload-button:active,
+.file-picker:active {
+  transform: scale(0.96);
+  transition-duration: 90ms;
+}
+
+.primary-button:active::after,
+.ghost-button:active::after,
+.danger-button:active::after,
+.text-button:active::after,
+.icon-button:active::after,
+.nav-list button:active::after,
+.mobile-nav button:active::after,
+.account-row:active::after,
+.share-row:active::after,
+.upload-button:active::after,
+.file-picker:active::after {
+  animation: rippleBurst 520ms ease-out;
 }
 
 .primary-button:disabled,
@@ -369,6 +556,8 @@ small {
 }
 
 .nav-list button {
+  position: relative;
+  overflow: hidden;
   width: 44px;
   height: 44px;
   min-height: 44px;
@@ -380,7 +569,8 @@ small {
   background: rgba(255, 255, 255, 0.075);
   border: 1px solid rgba(255, 255, 255, 0.045);
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.06);
-  transition: width 180ms ease, transform 160ms ease, background 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  transition: width 210ms cubic-bezier(0.16, 1, 0.3, 1), transform 200ms cubic-bezier(0.16, 1, 0.3, 1), background 190ms ease, border-color 190ms ease, box-shadow 190ms ease;
+  will-change: transform;
 }
 
 .nav-list button.active,
@@ -391,6 +581,18 @@ small {
     linear-gradient(135deg, rgba(255, 48, 72, 0.32), rgba(28, 10, 14, 0.88));
   border-color: rgba(255, 76, 98, 0.38);
   box-shadow: inset 0 1px rgba(255, 255, 255, 0.16), 0 12px 28px rgba(0, 0, 0, 0.24), var(--red-glow);
+}
+
+.nav-list button:hover,
+.mobile-actions .icon-button:hover,
+.footer-actions .icon-button:hover {
+  transform: scale(1.03);
+}
+
+.nav-list button:active,
+.mobile-actions .icon-button:active,
+.footer-actions .icon-button:active {
+  transform: scale(0.97);
 }
 
 .nav-list button span {
@@ -405,6 +607,41 @@ small {
 
 .nav-list button.active span {
   display: inline;
+}
+
+.nav-list button.active svg,
+.mobile-nav button.active svg {
+  animation: activeIconGlow 3.2s ease-in-out infinite;
+}
+
+.primary-button svg,
+.ghost-button svg,
+.danger-button svg,
+.text-button svg,
+.icon-button svg,
+.nav-list button svg,
+.mobile-nav button svg,
+.account-row svg,
+.share-row svg,
+.upload-button svg,
+.file-picker svg {
+  transform-origin: center;
+  transition: transform 210ms cubic-bezier(0.16, 1, 0.3, 1), filter 210ms ease;
+}
+
+.primary-button:hover svg,
+.ghost-button:hover svg,
+.danger-button:hover svg,
+.text-button:hover svg,
+.icon-button:hover svg,
+.nav-list button:hover svg,
+.mobile-nav button:hover svg,
+.account-row:hover svg,
+.share-row:hover svg,
+.upload-button:hover svg,
+.file-picker:hover svg {
+  transform: scale(1.1) rotate(5deg);
+  filter: drop-shadow(0 0 8px rgba(255, 64, 88, 0.22));
 }
 
 .sidebar-footer {
@@ -463,15 +700,17 @@ small {
   min-height: 0;
   overflow: auto;
   padding: 24px 26px 34px;
+  scroll-behavior: smooth;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  view-transition-name: nexus-page;
 }
 
 .page {
   position: relative;
   display: grid;
   gap: 18px;
-  animation: appear 180ms ease;
+  animation: premiumPageIn 640ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 @keyframes appear {
@@ -492,6 +731,25 @@ small {
   gap: 18px;
   padding: 2px 4px 0;
 }
+
+::view-transition-old(nexus-page) {
+  animation: appear 180ms ease reverse both;
+}
+
+::view-transition-new(nexus-page) {
+  animation: premiumPageIn 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.page > * {
+  animation: premiumItemIn 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.page > :nth-child(1) { animation-delay: 0ms; }
+.page > :nth-child(2) { animation-delay: 50ms; }
+.page > :nth-child(3) { animation-delay: 100ms; }
+.page > :nth-child(4) { animation-delay: 150ms; }
+.page > :nth-child(5) { animation-delay: 200ms; }
+.page > :nth-child(6) { animation-delay: 250ms; }
 
 .page-header h2 {
   text-shadow: 0 12px 32px rgba(0, 0, 0, 0.52);
@@ -520,8 +778,9 @@ small {
     rgba(20, 21, 20, 0.52);
   backdrop-filter: var(--glass-blur);
   box-shadow: var(--shadow);
-  animation: cardReveal 340ms ease both;
-  transition: transform 170ms ease, border-color 170ms ease, box-shadow 170ms ease, background 170ms ease;
+  animation: cardReveal 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: transform 210ms cubic-bezier(0.16, 1, 0.3, 1), border-color 190ms ease, box-shadow 210ms ease, background 210ms ease, opacity 190ms ease;
+  will-change: transform, opacity;
 }
 
 .metric-card:hover,
@@ -534,10 +793,52 @@ small {
 .image-card:hover,
 .temp-email-inbox:hover,
 .temp-email-message:hover {
-  transform: translateY(-2px);
+  transform: translateY(-2px) scale(1.015);
   border-color: rgba(255, 76, 98, 0.24);
   box-shadow: var(--shadow), var(--red-glow);
 }
+
+.metric-grid > :nth-child(1),
+.account-grid > :nth-child(1),
+.user-grid > :nth-child(1),
+.image-grid > :nth-child(1),
+.roblox-generator-grid > :nth-child(1),
+.authenticator-grid > :nth-child(1) { animation-delay: 40ms; }
+
+.metric-grid > :nth-child(2),
+.account-grid > :nth-child(2),
+.user-grid > :nth-child(2),
+.image-grid > :nth-child(2),
+.roblox-generator-grid > :nth-child(2),
+.authenticator-grid > :nth-child(2) { animation-delay: 90ms; }
+
+.metric-grid > :nth-child(3),
+.account-grid > :nth-child(3),
+.user-grid > :nth-child(3),
+.image-grid > :nth-child(3),
+.roblox-generator-grid > :nth-child(3),
+.authenticator-grid > :nth-child(3) { animation-delay: 140ms; }
+
+.metric-grid > :nth-child(4),
+.account-grid > :nth-child(4),
+.user-grid > :nth-child(4),
+.image-grid > :nth-child(4),
+.roblox-generator-grid > :nth-child(4),
+.authenticator-grid > :nth-child(4) { animation-delay: 190ms; }
+
+.metric-grid > :nth-child(5),
+.account-grid > :nth-child(5),
+.user-grid > :nth-child(5),
+.image-grid > :nth-child(5),
+.roblox-generator-grid > :nth-child(5),
+.authenticator-grid > :nth-child(5) { animation-delay: 240ms; }
+
+.metric-grid > :nth-child(6),
+.account-grid > :nth-child(6),
+.user-grid > :nth-child(6),
+.image-grid > :nth-child(6),
+.roblox-generator-grid > :nth-child(6),
+.authenticator-grid > :nth-child(6) { animation-delay: 290ms; }
 
 .metric-card {
   min-height: 112px;
@@ -596,6 +897,8 @@ small {
 .account-row,
 .share-row,
 .roblox-profile {
+  position: relative;
+  overflow: hidden;
   min-height: 58px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -609,15 +912,35 @@ small {
   border: 1px solid rgba(255, 255, 255, 0.055);
   border-radius: 15px;
   cursor: pointer;
-  transition: transform 150ms ease, border-color 150ms ease, background 150ms ease;
+  animation: premiumItemIn 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: transform 190ms cubic-bezier(0.16, 1, 0.3, 1), border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+  will-change: transform, opacity;
 }
 
 .account-row:hover,
 .share-row:hover,
 .roblox-profile:hover {
-  transform: translateY(-1px);
+  transform: translateY(-1px) scale(1.01);
   border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.16);
 }
+
+.account-stack > :nth-child(1) { animation-delay: 40ms; }
+.account-stack > :nth-child(2) { animation-delay: 90ms; }
+.account-stack > :nth-child(3) { animation-delay: 140ms; }
+.account-stack > :nth-child(4) { animation-delay: 190ms; }
+.account-stack > :nth-child(5) { animation-delay: 240ms; }
+
+.timeline-item {
+  animation: premiumSlideLeft 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.timeline > :nth-child(1) { animation-delay: 40ms; }
+.timeline > :nth-child(2) { animation-delay: 90ms; }
+.timeline > :nth-child(3) { animation-delay: 140ms; }
+.timeline > :nth-child(4) { animation-delay: 190ms; }
+.timeline > :nth-child(5) { animation-delay: 240ms; }
+.timeline > :nth-child(6) { animation-delay: 290ms; }
 
 .status-strip {
   display: flex;
@@ -675,6 +998,13 @@ small {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.075);
   backdrop-filter: var(--glass-blur);
+  transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.search-box:focus-within,
+.select-box:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 50%, rgba(255, 255, 255, 0.075));
+  box-shadow: 0 0 0 3px rgba(255, 64, 88, 0.10), var(--red-glow);
 }
 
 input,
@@ -686,6 +1016,7 @@ textarea {
   border: 1px solid rgba(255, 255, 255, 0.085);
   border-radius: 14px;
   outline: 0;
+  transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease, transform 180ms ease;
 }
 
 .search-box input,
@@ -699,6 +1030,21 @@ textarea {
 input::placeholder,
 textarea::placeholder {
   color: rgba(236, 241, 232, 0.42);
+  opacity: 1;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: color-mix(in srgb, var(--accent) 55%, rgba(255, 255, 255, 0.085));
+  box-shadow: 0 0 0 3px rgba(255, 64, 88, 0.10), var(--red-glow);
+}
+
+input:focus::placeholder,
+textarea:focus::placeholder {
+  opacity: 0.62;
+  transform: translate3d(0, -2px, 0);
 }
 
 input,
@@ -768,8 +1114,9 @@ textarea {
     rgba(21, 22, 21, 0.56);
   backdrop-filter: var(--glass-blur);
   box-shadow: var(--shadow);
-  animation: cardReveal 340ms ease both;
-  transition: transform 170ms ease, border-color 170ms ease, box-shadow 170ms ease, background 170ms ease;
+  animation: cardReveal 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: transform 210ms cubic-bezier(0.16, 1, 0.3, 1), border-color 190ms ease, box-shadow 210ms ease, background 210ms ease, opacity 190ms ease;
+  will-change: transform, opacity;
 }
 
 .roblox-generator-card {
@@ -881,12 +1228,17 @@ textarea {
 }
 
 .temp-email-inbox {
+  position: relative;
+  overflow: hidden;
   display: grid;
   gap: 10px;
   padding: 12px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.065);
+  animation: premiumItemIn 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: transform 210ms cubic-bezier(0.16, 1, 0.3, 1), border-color 190ms ease, box-shadow 210ms ease, background 210ms ease, opacity 190ms ease;
+  will-change: transform, opacity;
 }
 
 .temp-email-inbox.active,
@@ -939,6 +1291,8 @@ textarea {
 }
 
 .temp-email-message {
+  position: relative;
+  overflow: hidden;
   display: grid;
   gap: 8px;
   min-height: 92px;
@@ -946,6 +1300,9 @@ textarea {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.065);
+  animation: premiumItemIn 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: transform 210ms cubic-bezier(0.16, 1, 0.3, 1), border-color 190ms ease, box-shadow 210ms ease, background 210ms ease, opacity 190ms ease;
+  will-change: transform, opacity;
 }
 
 .temp-email-message p {
@@ -1190,6 +1547,7 @@ textarea {
   padding: 18px;
   background: rgba(2, 6, 23, 0.72);
   backdrop-filter: blur(12px);
+  animation: modalBackdropIn 220ms ease-out both;
 }
 
 .modal {
@@ -1201,6 +1559,8 @@ textarea {
   border-radius: 8px;
   background: var(--surface);
   box-shadow: var(--shadow);
+  animation: modalIn 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transform-origin: center;
 }
 
 .modal-header,
@@ -1327,6 +1687,8 @@ label {
 
 .upload-button,
 .file-picker {
+  position: relative;
+  overflow: hidden;
   min-height: 42px;
   display: inline-flex;
   align-items: center;
@@ -1339,6 +1701,15 @@ label {
   border-radius: 14px;
   cursor: pointer;
   font-weight: 800;
+  transition: transform 210ms cubic-bezier(0.16, 1, 0.3, 1), border-color 190ms ease, box-shadow 190ms ease, background 190ms ease;
+  will-change: transform;
+}
+
+.upload-button:hover,
+.file-picker:hover {
+  transform: scale(1.03);
+  border-color: rgba(255, 76, 98, 0.42);
+  box-shadow: var(--red-glow);
 }
 
 .upload-button input,
@@ -1360,8 +1731,9 @@ label {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.065);
-  animation: cardReveal 340ms ease both;
-  transition: transform 170ms ease, border-color 170ms ease, box-shadow 170ms ease, background 170ms ease;
+  animation: cardReveal 620ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  transition: transform 210ms cubic-bezier(0.16, 1, 0.3, 1), border-color 190ms ease, box-shadow 210ms ease, background 210ms ease, opacity 190ms ease;
+  will-change: transform, opacity;
 }
 
 .media-thumb {
@@ -1685,6 +2057,8 @@ label {
   }
 
   .mobile-nav button {
+    position: relative;
+    overflow: hidden;
     flex: 0 0 74px;
     min-height: 56px;
     display: grid;
@@ -1704,6 +2078,14 @@ label {
       radial-gradient(circle at 30% 18%, rgba(255, 134, 146, 0.38), transparent 32%),
       linear-gradient(135deg, rgba(255, 48, 72, 0.35), rgba(255, 255, 255, 0.08));
     box-shadow: inset 0 1px rgba(255, 255, 255, 0.18), 0 8px 20px rgba(255, 48, 72, 0.18);
+  }
+
+  .mobile-nav button:hover {
+    transform: scale(1.03);
+  }
+
+  .mobile-nav button:active {
+    transform: scale(0.97);
   }
 
   .metric-grid,
@@ -1814,5 +2196,9 @@ label {
     animation-iteration-count: 1 !important;
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
+  }
+
+  .content {
+    view-transition-name: none;
   }
 }
