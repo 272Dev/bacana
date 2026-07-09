@@ -17,9 +17,11 @@
     "electron:dev": "concurrently \"npm:server:dev\" \"npm:client:dev\" \"wait-on http://localhost:5173 && electron electron/main.cjs\""
   },
   "dependencies": {
+    "@discordjs/voice": "^0.19.2",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
     "cors": "^2.8.5",
+    "discord.js": "^14.26.4",
     "dotenv": "^16.4.7",
     "electron": "^43.1.0",
     "express": "^4.21.2",
@@ -27,6 +29,7 @@
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
     "lucide-react": "^0.468.0",
+    "opusscript": "^0.0.8",
     "pg": "^8.22.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

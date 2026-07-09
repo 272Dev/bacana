@@ -2412,7 +2412,7 @@ function DiscordToolsPage() {
     });
   }
 
-  function runBotLifecycle(action) {
+  async function runBotLifecycle(action) {
     const labels = {
       start: 'Start Bot',
       stop: 'Stop Bot',
@@ -2420,43 +2420,76 @@ function DiscordToolsPage() {
       reconnect: 'Reconnect Bot'
     };
     const nextStatus = action === 'stop' ? 'offline' : 'online';
-    const restartedAt = action === 'restart' || action === 'reconnect' ? new Date().toISOString() : selectedManagedBot.lastRestartAt || '';
-    updateControl({
-      desiredStatus: nextStatus,
-      lastRestartAt: restartedAt || control.lastRestartAt
+    await runAction(`bot-${action}`, async () => {
+      const result = await api('/discord-tools/bot/lifecycle', {
+        method: 'POST',
+        body: {
+          ...botConfig,
+          action,
+          status: nextStatus,
+          activityType: control.profileActivityType,
+          activityMessage: control.profileActivityMessage || control.profileStatusText || 'Nexus dashboard'
+        }
+      });
+      const restartedAt = action === 'restart' || action === 'reconnect' ? new Date().toISOString() : selectedManagedBot.lastRestartAt || '';
+      updateControl({
+        desiredStatus: nextStatus,
+        lastRestartAt: restartedAt || control.lastRestartAt
+      });
+      updateManagedBot(control.selectedBotId, {
+        desiredStatus: nextStatus,
+        lastRestartAt: restartedAt,
+        lastLifecycleAction: action,
+        guildCount: result.runtime?.guildCount || selectedManagedBot.guildCount || 0,
+        voiceConnected: Boolean(result.runtime?.voice?.length)
+      });
+      setBotStatus((current) => current ? { ...current, runtime: result.runtime, bot: { ...current.bot, online: Boolean(result.runtime?.online) } } : current);
+      pushLog('bot', `${labels[action]} executado no Gateway`, selectedManagedBot.name);
+      showNotice(`${labels[action]} executado no Discord Gateway.`);
     });
-    updateManagedBot(control.selectedBotId, {
-      desiredStatus: nextStatus,
-      lastRestartAt: restartedAt,
-      lastLifecycleAction: action
-    });
-    pushLog('bot', `${labels[action]} solicitado no painel`, selectedManagedBot.name);
-    showNotice(`${labels[action]} registrado no painel.`);
   }
 
-  function saveVoicePlan(action) {
+  async function saveVoicePlan(action) {
     const channel = voiceChannels.find((item) => item.id === control.voiceChannelId);
     const isLeaving = action === 'Leave voice';
-    const startedAt = isLeaving ? '' : new Date().toISOString();
-    const voiceConnected = !isLeaving;
-    updateControl({
-      voiceConnected,
-      voiceStartedAt: startedAt,
-      voiceStayUntilStopped: control.voiceDuration === 'forever'
+    if (!botConfig.guildId) return showNotice('Carregue ou informe o servidor primeiro.');
+    if (!isLeaving && !control.voiceChannelId) return showNotice('Selecione um canal de voz.');
+
+    await runAction(`voice-${action}`, async () => {
+      const result = await api('/discord-tools/voice', {
+        method: 'POST',
+        body: {
+          ...botConfig,
+          action: isLeaving ? 'leave' : action === 'Move voice' ? 'move' : 'join',
+          voiceChannelId: control.voiceChannelId,
+          voiceDuration: control.voiceDuration,
+          voiceHours: control.voiceHours,
+          voiceMinutes: control.voiceMinutes,
+          voiceAfkMode: control.voiceAfkMode
+        }
+      });
+      const startedAt = isLeaving ? '' : new Date().toISOString();
+      const voiceConnected = !isLeaving;
+      updateControl({
+        voiceConnected,
+        voiceStartedAt: startedAt,
+        voiceStayUntilStopped: control.voiceDuration === 'forever'
+      });
+      updateManagedBot(control.selectedBotId, {
+        voiceChannelId: control.voiceChannelId,
+        voiceDuration: control.voiceDuration,
+        voiceConnected,
+        voiceStartedAt: startedAt,
+        voiceVolume: control.voiceVolume,
+        voiceAfkMode: control.voiceAfkMode,
+        voiceAutoReconnect: control.voiceAutoReconnect
+      });
+      setBotStatus((current) => current ? { ...current, runtime: result.runtime } : current);
+      pushLog('voice', `${action}: ${channel?.name || 'canal nao selecionado'}`, selectedManagedBot.name);
+      showNotice(control.voiceDuration === 'forever' && !isLeaving
+        ? 'Bot entrou na call e fica ate voce desligar.'
+        : isLeaving ? 'Bot saiu da call.' : 'Bot entrou na call.');
     });
-    updateManagedBot(control.selectedBotId, {
-      voiceChannelId: control.voiceChannelId,
-      voiceDuration: control.voiceDuration,
-      voiceConnected,
-      voiceStartedAt: startedAt,
-      voiceVolume: control.voiceVolume,
-      voiceAfkMode: control.voiceAfkMode,
-      voiceAutoReconnect: control.voiceAutoReconnect
-    });
-    pushLog('voice', `${action}: ${channel?.name || 'canal nao selecionado'}`, selectedManagedBot.name);
-    showNotice(control.voiceDuration === 'forever' && !isLeaving
-      ? 'Call salva como permanente ate voce desligar.'
-      : 'Plano de voz salvo no painel.');
   }
 
   async function runAction(key, action) {

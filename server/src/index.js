@@ -50,6 +50,12 @@ import {
   updateDiscordChannel,
   updateDiscordRole
 } from './discordTools.js';
+import {
+  getDiscordRuntimeState,
+  runDiscordBotLifecycle,
+  runDiscordVoiceAction,
+  startDefaultDiscordBot
+} from './discordRuntime.js';
 import { lookupRobloxUsername } from './roblox.js';
 import {
   getRobloxGeneratorAccount,
@@ -401,6 +407,22 @@ const discordModerationSchema = discordBotRequestSchema.extend({
   durationMinutes: z.coerce.number().int().min(1).max(40320).optional().default(10),
   amount: z.coerce.number().int().min(1).max(100).optional().default(10),
   message: z.string().max(2000).optional().or(z.literal(''))
+});
+
+const discordBotLifecycleSchema = discordBotRequestSchema.extend({
+  action: z.enum(['start', 'stop', 'restart', 'reconnect']).optional().default('start'),
+  status: z.enum(['online', 'idle', 'dnd', 'invisible', 'offline']).optional().default('online'),
+  activityType: z.enum(['Watching', 'Playing', 'Listening', 'Competing']).optional().default('Watching'),
+  activityMessage: z.string().trim().max(128).optional().or(z.literal(''))
+});
+
+const discordVoiceSchema = discordBotRequestSchema.extend({
+  action: z.enum(['join', 'move', 'leave']).optional().default('join'),
+  voiceChannelId: z.string().trim().max(32).optional().or(z.literal('')),
+  voiceDuration: z.enum(['30m', '1h', '6h', 'forever', 'custom']).optional().default('forever'),
+  voiceHours: z.coerce.number().min(0).max(168).optional().default(0),
+  voiceMinutes: z.coerce.number().min(0).max(59).optional().default(0),
+  voiceAfkMode: z.boolean().optional().default(true)
 });
 
 const discordUserLookupSchema = z.object({
@@ -1219,6 +1241,9 @@ app.post('/api/discord-tools/user-lookup', requireAuth, async (req, res) => {
 app.post('/api/discord-tools/bot/status', requireAuth, async (req, res) => {
   const payload = discordBotRequestSchema.parse(req.body);
   const status = await getDiscordBotStatus(payload);
+  const runtime = await getDiscordRuntimeState(payload).catch(() => ({ online: false, ready: false, voice: [] }));
+  status.runtime = runtime;
+  status.bot.online = Boolean(runtime.online);
   await logAudit({
     actorDiscordId: req.user.discordId,
     action: 'discord_tools.bot_status',
@@ -1227,6 +1252,33 @@ app.post('/api/discord-tools/bot/status', requireAuth, async (req, res) => {
     ip: req.ip
   });
   res.json(status);
+});
+
+app.post('/api/discord-tools/bot/lifecycle', requireAuth, async (req, res) => {
+  const payload = discordBotLifecycleSchema.parse(req.body);
+  const result = await runDiscordBotLifecycle(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: `discord_tools.bot_${payload.action}`,
+    targetType: 'discord_bot',
+    metadata: { status: payload.status, activityType: payload.activityType },
+    ip: req.ip
+  });
+  res.json(result);
+});
+
+app.post('/api/discord-tools/voice', requireAuth, async (req, res) => {
+  const payload = discordVoiceSchema.parse(req.body);
+  const result = await runDiscordVoiceAction(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: `discord_tools.voice_${payload.action}`,
+    targetType: 'discord_channel',
+    targetId: payload.voiceChannelId || null,
+    metadata: { guildId: payload.guildId, duration: payload.voiceDuration },
+    ip: req.ip
+  });
+  res.json(result);
 });
 
 app.post('/api/discord-tools/channels', requireAuth, async (req, res) => {
@@ -1742,6 +1794,13 @@ app.use((error, _req, res, _next) => {
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
   app.listen(config.port, '0.0.0.0', () => {
     console.log(`Nexus API pronta em ${config.apiPublicUrl}`);
+    startDefaultDiscordBot()
+      .then((result) => {
+        if (result) console.log('Discord bot conectado ao Gateway.');
+      })
+      .catch((error) => {
+        console.warn(`Discord bot nao conectou ao Gateway: ${error.message}`);
+      });
   });
 }
 
