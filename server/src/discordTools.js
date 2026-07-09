@@ -74,15 +74,47 @@ function normalizeEmbed(embed = {}) {
   const normalized = {};
   if (cleanText(embed.title)) normalized.title = cleanText(embed.title).slice(0, 256);
   if (cleanText(embed.description)) normalized.description = cleanText(embed.description).slice(0, 4096);
-  if (cleanText(embed.color)) {
-    const color = cleanText(embed.color).replace('#', '');
-    normalized.color = Number.parseInt(color, 16) || 0xff4058;
-  }
   if (cleanText(embed.image)) normalized.image = { url: cleanText(embed.image) };
   if (cleanText(embed.thumbnail)) normalized.thumbnail = { url: cleanText(embed.thumbnail) };
   if (cleanText(embed.footer)) normalized.footer = { text: cleanText(embed.footer).slice(0, 2048) };
   if (fields.length) normalized.fields = fields;
+
+  if (Object.keys(normalized).length > 0 && cleanText(embed.color)) {
+    const color = cleanText(embed.color).replace('#', '');
+    normalized.color = Number.parseInt(color, 16) || 0xff4058;
+  }
+
   return normalized;
+}
+
+function parseDiscordResponse(text) {
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return text ? { message: text.slice(0, 400) } : null;
+  }
+}
+
+function collectDiscordErrors(errors, prefix = '') {
+  if (!errors || typeof errors !== 'object') return [];
+  const direct = Array.isArray(errors._errors)
+    ? errors._errors.map((item) => `${prefix || 'payload'}: ${item.message || item.code}`).filter(Boolean)
+    : [];
+  const nested = Object.entries(errors)
+    .filter(([key]) => key !== '_errors')
+    .flatMap(([key, value]) => collectDiscordErrors(value, prefix ? `${prefix}.${key}` : key));
+  return [...direct, ...nested];
+}
+
+function formatDiscordWebhookError(payload, status) {
+  const details = collectDiscordErrors(payload?.errors).slice(0, 4);
+  if (payload?.message) {
+    return details.length ? `${payload.message}: ${details.join(' | ')}` : payload.message;
+  }
+  if (status === 404) return 'Webhook nao encontrado. Confira se voce copiou a URL completa e se o webhook nao foi apagado.';
+  if (status === 401 || status === 403) return 'Webhook sem permissao ou token invalido. Gere/copiei a URL novamente no Discord.';
+  if (status === 400) return 'Discord recusou o conteudo. Confira mensagem, embed, imagem, thumbnail e avatar URL.';
+  return `Discord recusou a mensagem (${status}).`;
 }
 
 async function discordRequest(path, { method = 'GET', token, body } = {}) {
@@ -96,12 +128,7 @@ async function discordRequest(path, { method = 'GET', token, body } = {}) {
     body: body == null ? undefined : JSON.stringify(body)
   });
   const text = await response.text();
-  let payload = null;
-  try {
-    payload = text ? JSON.parse(text) : null;
-  } catch {
-    payload = { message: text };
-  }
+  const payload = parseDiscordResponse(text);
   if (!response.ok) {
     throw makeHttpError(payload?.message || `Discord recusou a acao (${response.status}).`, response.status);
   }
@@ -131,13 +158,8 @@ export async function sendDiscordWebhookMessage(payload = {}) {
     body: JSON.stringify(body)
   });
   const text = await response.text();
-  let result = null;
-  try {
-    result = text ? JSON.parse(text) : null;
-  } catch {
-    result = { message: text };
-  }
-  if (!response.ok) throw makeHttpError(result?.message || 'Webhook recusou a mensagem.', response.status);
+  const result = parseDiscordResponse(text);
+  if (!response.ok) throw makeHttpError(formatDiscordWebhookError(result, response.status), response.status);
   return { ok: true, messageId: result?.id || null };
 }
 

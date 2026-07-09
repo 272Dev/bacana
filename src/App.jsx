@@ -2006,6 +2006,17 @@ function makeDiscordEmbedJson(embed) {
   return payload;
 }
 
+function hasDiscordEmbedContent(embed) {
+  return Boolean(
+    embed.title
+    || embed.description
+    || embed.image
+    || embed.thumbnail
+    || embed.footer
+    || (embed.fields || []).some((field) => field.name || field.value)
+  );
+}
+
 function DiscordEmbedPreview({ embed, content, username, avatarUrl }) {
   const hasEmbed = Boolean(embed.title || embed.description || embed.image || embed.thumbnail || embed.footer || embed.fields?.length);
 
@@ -2178,6 +2189,11 @@ function DiscordToolsPage() {
   }
 
   async function sendWebhookMessage() {
+    if (!webhook.content.trim() && !hasDiscordEmbedContent(embed)) {
+      showNotice('Escreva uma mensagem ou preencha algum campo do embed.');
+      return;
+    }
+
     await runAction('webhook', async () => {
       const result = await api('/discord-tools/webhook/send', {
         method: 'POST',
