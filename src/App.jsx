@@ -2246,6 +2246,7 @@ function DiscordToolsPage() {
     logChannelId: savedSettings?.antiNuke?.logChannelId || savedSettings?.logChannelId || ''
   });
   const [newBotForm, setNewBotForm] = useState({ token: '', guildId: '', name: '' });
+  const [showAddBotModal, setShowAddBotModal] = useState(false);
   const [moderation, setModeration] = useState({ userId: '', channelId: '', reason: '', durationMinutes: 10, amount: 10, message: '' });
   const [lookupId, setLookupId] = useState('');
   const [lookupResult, setLookupResult] = useState(null);
@@ -2389,9 +2390,23 @@ function DiscordToolsPage() {
     showNotice(`Bot selecionado: ${nextBot.name}`);
   }
 
+  function openAddBotModal() {
+    setSection('bot');
+    setShowAddBotModal(true);
+    setNotice('');
+  }
+
+  function closeAddBotModal() {
+    if (loading === 'bot-add') return;
+    setShowAddBotModal(false);
+  }
+
   async function addManagedBot() {
     const token = newBotForm.token.trim();
-    if (!token) return showNotice('Cole o token do bot para adicionar.');
+    if (!token) {
+      setShowAddBotModal(true);
+      return showNotice('Cole o token do bot para adicionar.');
+    }
 
     await runAction('bot-add', async () => {
       const payload = await api('/discord-tools/bot/status', {
@@ -2425,6 +2440,7 @@ function DiscordToolsPage() {
       setBotStatus(payload);
       setBotConfig({ botToken: token, guildId: nextBot.guildId });
       setNewBotForm({ token: '', guildId: '', name: '' });
+      setShowAddBotModal(false);
       updateControl({ selectedBotId: id, desiredStatus: nextBot.desiredStatus, voiceDuration: 'forever' });
       pushLog('bot', `Bot adicionado: ${nextBot.name}`, nextBot.guildName || nextBot.guildId);
       showNotice('Bot adicionado e validado pelo Discord.');
@@ -2915,7 +2931,7 @@ function DiscordToolsPage() {
           <section className="panel discord-tool-card">
             <div className="panel-title">
               <h3>Bots</h3>
-              <button className="ghost-button" type="button" onClick={addManagedBot}><Plus size={16} /> Bot</button>
+              <button className="ghost-button" type="button" onClick={openAddBotModal}><Plus size={16} /> Bot</button>
             </div>
             <div className="discord-bot-card-grid">
               {botCards.map((bot) => (
@@ -3441,7 +3457,7 @@ function DiscordToolsPage() {
         <section className="panel discord-tool-card">
           <div className="panel-title">
             <h3>Multi bot</h3>
-            <button className="ghost-button" type="button" onClick={addManagedBot}>
+            <button className="ghost-button" type="button" onClick={openAddBotModal}>
               <Plus size={16} />
               Adicionar
             </button>
@@ -4041,6 +4057,61 @@ function DiscordToolsPage() {
     );
   }
 
+  function renderAddBotModal() {
+    if (!showAddBotModal) return null;
+    return (
+      <div className="modal-backdrop" role="dialog" aria-modal="true">
+        <form className="modal account-form" onSubmit={(event) => { event.preventDefault(); void addManagedBot(); }}>
+          <div className="modal-header">
+            <div>
+              <p className="eyebrow">Discord multi-bot</p>
+              <h3>Adicionar bot pelo token</h3>
+            </div>
+            <IconButton label="Fechar" type="button" onClick={closeAddBotModal}>
+              <X size={18} />
+            </IconButton>
+          </div>
+          <div className="notice subtle">Cole o token do bot aqui. Ele fica somente nesta sessao do painel.</div>
+          <div className="form-grid">
+            <label className="span-2">
+              Token do bot
+              <input
+                autoFocus
+                type="password"
+                value={newBotForm.token}
+                onChange={(event) => setNewBotForm((current) => ({ ...current, token: event.target.value }))}
+                placeholder="Cole o token do bot"
+              />
+            </label>
+            <label>
+              ID do servidor
+              <input
+                value={newBotForm.guildId}
+                onChange={(event) => setNewBotForm((current) => ({ ...current, guildId: event.target.value }))}
+                placeholder="Opcional"
+              />
+            </label>
+            <label>
+              Nome no painel
+              <input
+                value={newBotForm.name}
+                onChange={(event) => setNewBotForm((current) => ({ ...current, name: event.target.value }))}
+                placeholder="Opcional"
+              />
+            </label>
+          </div>
+          <div className="modal-actions">
+            <button className="ghost-button" type="button" onClick={closeAddBotModal}>Cancelar</button>
+            <button className="primary-button" type="submit" disabled={loading === 'bot-add'}>
+              <Plus size={17} />
+              {loading === 'bot-add' ? 'Validando' : 'Adicionar bot'}
+            </button>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
   const renderers = {
     overview: renderControlOverview,
     runtime: renderRuntimeControl,
@@ -4066,12 +4137,19 @@ function DiscordToolsPage() {
         eyebrow="Discord"
         title="Discord Tools"
         actions={(
-          <button className="ghost-button" onClick={loadBotStatus}>
-            <RefreshCw size={17} />
-            Atualizar bot
-          </button>
+          <>
+            <button className="primary-button" type="button" onClick={openAddBotModal}>
+              <Plus size={17} />
+              Adicionar bot
+            </button>
+            <button className="ghost-button" type="button" onClick={loadBotStatus}>
+              <RefreshCw size={17} />
+              Atualizar bot
+            </button>
+          </>
         )}
       />
+      {renderAddBotModal()}
       {notice && (
         <button className="toast discord-toast" onClick={() => setNotice('')}>
           {notice}
