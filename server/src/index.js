@@ -44,7 +44,6 @@ import {
   deleteDiscordRole,
   getDiscordBotStatus,
   lookupDiscordUser,
-  nukeDiscordServer,
   runDiscordModerationAction,
   sendDiscordWebhookMessage,
   setDiscordMemberRole,
@@ -1335,20 +1334,6 @@ app.post('/api/discord-tools/moderation', requireAuth, async (req, res) => {
     targetType: payload.action === 'warn' || payload.action === 'clear' ? 'discord_channel' : 'discord_user',
     targetId: payload.action === 'warn' || payload.action === 'clear' ? payload.channelId : payload.userId,
     metadata: { reason: payload.reason || null },
-    ip: req.ip
-  });
-  res.json(result);
-});
-
-app.post('/api/discord-tools/nuke', requireAuth, async (req, res) => {
-  const { botToken, guildId, newServerInvite, dmMessage } = req.body;
-  const result = await nukeDiscordServer({ botToken, guildId, newServerInvite, dmMessage });
-  await logAudit({
-    actorDiscordId: req.user.discordId,
-    action: 'discord_tools.nuke',
-    targetType: 'discord_guild',
-    targetId: guildId,
-    metadata: { ...result },
     ip: req.ip
   });
   res.json(result);

@@ -5,7 +5,6 @@ import {
   BadgeCheck,
   Ban,
   Bell,
-  Bomb,
   Bot,
   Boxes,
   Check,
@@ -1937,8 +1936,7 @@ const discordSections = [
   { id: 'bot', label: 'Bot Manager', icon: Bot },
   { id: 'channels', label: 'Canais', icon: Hash },
   { id: 'roles', label: 'Cargos', icon: Crown },
-  { id: 'anti-nuke', label: 'Anti-Nuke', icon: Shield },
-  { id: 'nuke', label: 'Nuke Server', icon: Bomb },
+  { id: 'anti-nuke', label: 'Protecao', icon: Shield },
   { id: 'moderation', label: 'Moderacao', icon: Gavel },
   { id: 'lookup', label: 'User Lookup', icon: Search },
   { id: 'logs', label: 'Logs', icon: ScrollText },
@@ -2143,9 +2141,6 @@ function DiscordToolsPage() {
       return [];
     }
   });
-  const [nukeForm, setNukeForm] = useState({ newServerInvite: '', dmMessage: '' });
-  const [nukeResult, setNukeResult] = useState(null);
-  const [nukeConfirm, setNukeConfirm] = useState(false);
   const [logFilters, setLogFilters] = useState({ type: '', user: '', date: '' });
   const [settings, setSettings] = useState(savedSettings || defaultDiscordSettings);
 
@@ -2388,21 +2383,6 @@ function DiscordToolsPage() {
     });
   }
 
-  async function runNuke() {
-    if (!botConfig.guildId) return showNotice('Conecte o bot a um servidor primeiro.');
-    if (!nukeForm.newServerInvite.trim()) return showNotice('Informe o link de convite do novo servidor.');
-    setNukeConfirm(false);
-    await runAction('nuke', async () => {
-      const payload = await api('/discord-tools/nuke', {
-        method: 'POST',
-        body: { ...botConfig, guildId: botConfig.guildId, ...nukeForm }
-      });
-      setNukeResult(payload);
-      pushLog('nuke', `Nuke executado: ${payload.banned} banidos, ${payload.dmsSent} DMs, ${payload.channelsDeleted} canais`);
-      showNotice('Nuke concluido.');
-    });
-  }
-
   async function lookupUser() {
     await runAction('lookup', async () => {
       const payload = await api('/discord-tools/user-lookup', {
@@ -2428,8 +2408,8 @@ function DiscordToolsPage() {
 
   function saveAntiNuke() {
     updateSettings({ ...settings, antiNuke, logChannelId: antiNuke.logChannelId });
-    pushLog('anti-nuke', `Anti-Nuke ${antiNuke.enabled ? 'ativo' : 'desativado'}`);
-    showNotice('Anti-Nuke salvo localmente.');
+    pushLog('anti-nuke', `Protecao ${antiNuke.enabled ? 'ativa' : 'desativada'}`);
+    showNotice('Protecao salva localmente.');
   }
 
   function saveBotSettings() {
@@ -2843,7 +2823,7 @@ function DiscordToolsPage() {
       <div className="discord-section-grid">
         <section className="panel discord-tool-card">
           <div className="panel-title">
-            <h3>Anti-Nuke</h3>
+            <h3>Protecao do servidor</h3>
             <AlertTriangle size={18} />
           </div>
           <div className="discord-status-banner">
@@ -2856,7 +2836,7 @@ function DiscordToolsPage() {
           <div className="discord-form-grid">
             <label className="switch-line wide">
               <input type="checkbox" checked={antiNuke.enabled} onChange={(event) => setAntiNuke((current) => ({ ...current, enabled: event.target.checked }))} />
-              Ativar protecao Anti-Nuke
+              Ativar protecao do servidor
             </label>
             <label>
               Limite por minuto
@@ -2884,7 +2864,7 @@ function DiscordToolsPage() {
               <textarea rows={3} value={antiNuke.ignoredRoles} onChange={(event) => setAntiNuke((current) => ({ ...current, ignoredRoles: event.target.value }))} placeholder="Um Role ID por linha" />
             </label>
           </div>
-          <button className="primary-button" onClick={saveAntiNuke}><Save size={17} /> Salvar Anti-Nuke</button>
+          <button className="primary-button" onClick={saveAntiNuke}><Save size={17} /> Salvar protecao</button>
         </section>
         <section className="panel discord-tool-card">
           <div className="panel-title">
@@ -2981,59 +2961,6 @@ function DiscordToolsPage() {
     );
   }
 
-  function renderNuke() {
-    return (
-      <div className="discord-section-grid">
-        <section className="panel discord-tool-card">
-          <div className="panel-title">
-            <h3>Nuke Server</h3>
-            <Bomb size={18} />
-          </div>
-          <div className="discord-form-grid">
-            <label className="wide">
-              Link de Convite do Novo Servidor
-              <input value={nukeForm.newServerInvite} onChange={(event) => setNukeForm((current) => ({ ...current, newServerInvite: event.target.value }))} placeholder="https://discord.gg/..." />
-            </label>
-            <label className="wide">
-              Mensagem DM Personalizada
-              <textarea rows={4} value={nukeForm.dmMessage} onChange={(event) => setNukeForm((current) => ({ ...current, dmMessage: event.target.value }))} placeholder="Opcional. Ex: Fomos nukados, entrem no novo server:" />
-            </label>
-          </div>
-          <div className="card-actions">
-            {!nukeConfirm ? (
-              <button className="danger-button" onClick={() => setNukeConfirm(true)}>
-                <Bomb size={17} />
-                Iniciar Nuke
-              </button>
-            ) : (
-              <>
-                <button className="ghost-button" onClick={() => setNukeConfirm(false)}>Cancelar</button>
-                <button className="danger-button" onClick={runNuke} disabled={loading === 'nuke'}>
-                  <AlertTriangle size={17} />
-                  Confirmar Exclusao Total
-                </button>
-              </>
-            )}
-          </div>
-        </section>
-        {nukeResult && (
-          <section className="panel discord-tool-card">
-            <div className="panel-title">
-              <h3>Resultado do Nuke</h3>
-              <Check size={18} />
-            </div>
-            <div className="discord-stat-grid">
-              <Metric icon={Users} label="Membros Totais" value={nukeResult.totalMembers} />
-              <Metric icon={Mail} label="DMs Enviadas" value={nukeResult.dmsSent} />
-              <Metric icon={Ban} label="Banidos" value={nukeResult.banned} />
-              <Metric icon={Trash2} label="Canais Excluidos" value={nukeResult.channelsDeleted} />
-            </div>
-          </section>
-        )}
-      </div>
-    );
-  }
-
   function renderLookup() {
     return (
       <div className="discord-section-grid">
@@ -3099,7 +3026,7 @@ function DiscordToolsPage() {
               <option value="bot">Bot</option>
               <option value="channel">Canais</option>
               <option value="role">Cargos</option>
-              <option value="anti-nuke">Anti-Nuke</option>
+              <option value="anti-nuke">Protecao</option>
               <option value="moderation">Moderacao</option>
               <option value="lookup">Lookup</option>
               <option value="settings">Config</option>
@@ -3183,7 +3110,6 @@ function DiscordToolsPage() {
     channels: renderChannels,
     roles: renderRoles,
     'anti-nuke': renderAntiNuke,
-    nuke: renderNuke,
     moderation: renderModeration,
     lookup: renderLookup,
     logs: renderLogs,
