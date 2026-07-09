@@ -2115,7 +2115,7 @@ function DiscordToolsPage() {
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState('');
   const [webhook, setWebhook] = useState({ webhookUrl: '', content: '', username: '', avatarUrl: '' });
-  const [repeatOptions, setRepeatOptions] = useState({ count: 5, delaySeconds: 3 });
+  const [repeatOptions, setRepeatOptions] = useState({ count: 100, delaySeconds: 1 });
   const [repeatStatus, setRepeatStatus] = useState({ active: false, sent: 0, total: 0 });
   const repeatStopRef = useRef(false);
   const [embed, setEmbed] = useState(defaultDiscordEmbed);
@@ -2239,8 +2239,10 @@ function DiscordToolsPage() {
     if (!validateWebhookContent()) return;
     if (loading === 'webhook-repeat') return;
 
-    const total = Math.min(25, Math.max(1, Number(repeatOptions.count) || 1));
-    const delaySeconds = Math.min(300, Math.max(2, Number(repeatOptions.delaySeconds) || 2));
+    const requestedCount = Number(repeatOptions.count);
+    const requestedDelay = Number(repeatOptions.delaySeconds);
+    const total = Math.min(100, Number.isFinite(requestedCount) ? Math.max(1, Math.floor(requestedCount)) : 1);
+    const delaySeconds = Math.min(300, Number.isFinite(requestedDelay) ? Math.max(1, requestedDelay) : 1);
     repeatStopRef.current = false;
     setLoading('webhook-repeat');
     setNotice('');
@@ -2446,7 +2448,7 @@ function DiscordToolsPage() {
             <div className="panel-title compact">
               <div>
                 <h3>Mensagens repetidas</h3>
-                <small>Envio controlado com limite e delay para evitar rate limit.</small>
+                <small>Envio rapido com limite de 100 mensagens por rodada.</small>
               </div>
               <Clock3 size={18} />
             </div>
@@ -2456,7 +2458,7 @@ function DiscordToolsPage() {
                 <input
                   type="number"
                   min="1"
-                  max="25"
+                  max="100"
                   value={repeatOptions.count}
                   onChange={(event) => updateRepeatOption('count', event.target.value)}
                   disabled={loading === 'webhook-repeat'}
@@ -2466,7 +2468,7 @@ function DiscordToolsPage() {
                 Delay entre mensagens
                 <input
                   type="number"
-                  min="2"
+                  min="1"
                   max="300"
                   value={repeatOptions.delaySeconds}
                   onChange={(event) => updateRepeatOption('delaySeconds', event.target.value)}
@@ -2477,7 +2479,7 @@ function DiscordToolsPage() {
             <div className="discord-repeat-status">
               <span>
                 <strong>{repeatStatus.active ? 'Enviando repetidas' : 'Pronto para repetir'}</strong>
-                <small>{repeatStatus.total ? `${repeatStatus.sent}/${repeatStatus.total} enviadas` : 'Limite de 25 por rodada, delay minimo de 2s'}</small>
+                <small>{repeatStatus.total ? `${repeatStatus.sent}/${repeatStatus.total} enviadas` : 'Limite de 100 por rodada, delay minimo de 1s'}</small>
               </span>
               <div className="discord-repeat-progress">
                 <span style={{ width: repeatStatus.total ? `${Math.min(100, (repeatStatus.sent / repeatStatus.total) * 100)}%` : '0%' }} />
