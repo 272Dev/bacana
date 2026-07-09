@@ -1931,11 +1931,17 @@ function MediaPage() {
 }
 
 const discordSections = [
+  { id: 'overview', label: 'Control Center', icon: LayoutDashboard },
+  { id: 'runtime', label: 'Online e Agenda', icon: Activity },
+  { id: 'voice', label: 'Voz', icon: Volume2 },
+  { id: 'profile-control', label: 'Perfil do Bot', icon: Palette },
   { id: 'webhook', label: 'Webhook', icon: MessageSquare },
   { id: 'embed', label: 'Embed Builder', icon: Code2 },
   { id: 'bot', label: 'Bot Manager', icon: Bot },
+  { id: 'commands', label: 'Comandos', icon: SlidersHorizontal },
   { id: 'channels', label: 'Canais', icon: Hash },
   { id: 'roles', label: 'Cargos', icon: Crown },
+  { id: 'security', label: 'Seguranca', icon: ShieldCheck },
   { id: 'anti-nuke', label: 'Protecao', icon: Shield },
   { id: 'moderation', label: 'Moderacao', icon: Gavel },
   { id: 'lookup', label: 'User Lookup', icon: Search },
@@ -1968,6 +1974,75 @@ const defaultDiscordSettings = {
     roleManager: true
   }
 };
+
+const defaultDiscordControl = {
+  selectedBotId: 'render-bot',
+  desiredStatus: 'online',
+  maintenanceMode: false,
+  autoReconnect: true,
+  statusRotation: true,
+  schedulePreset: 'forever',
+  customHours: 0,
+  customMinutes: 30,
+  customSeconds: 0,
+  timerEndAction: 'idle',
+  lastRestartAt: '',
+  voiceChannelId: '',
+  voiceDuration: 'forever',
+  voiceHours: 0,
+  voiceMinutes: 30,
+  voiceAfkMode: true,
+  voiceAutoReconnect: true,
+  voiceConnected: false,
+  voiceStayUntilStopped: true,
+  voiceStartedAt: '',
+  voiceVolume: 80,
+  profileDisplayName: '',
+  profileStatusText: '',
+  profileActivityType: 'Watching',
+  profileActivityMessage: 'Nexus dashboard',
+  profileAvatarUrl: '',
+  profileBannerUrl: '',
+  commandCooldown: 5,
+  commandRole: '',
+  commandChannel: '',
+  commandConfig: {}
+};
+
+const defaultDiscordManagedBots = [
+  {
+    id: 'render-bot',
+    name: 'Render Bot',
+    guildId: '',
+    avatarUrl: '',
+    color: '#5865f2',
+    desiredStatus: 'online',
+    voiceChannelId: '',
+    voiceDuration: 'forever',
+    voiceConnected: false,
+    voiceStartedAt: ''
+  }
+];
+
+const discordStatusOptions = ['online', 'idle', 'dnd', 'invisible', 'offline'];
+const discordSchedulePresets = [
+  { id: '30m', label: '30 minutos' },
+  { id: '1h', label: '1 hora' },
+  { id: '6h', label: '6 horas' },
+  { id: '24h', label: '24 horas' },
+  { id: 'forever', label: 'Ate desligar' },
+  { id: 'custom', label: 'Personalizado' }
+];
+const discordCommandCatalog = [
+  { id: 'ban', label: 'Ban', category: 'Moderation', enabled: true },
+  { id: 'kick', label: 'Kick', category: 'Moderation', enabled: true },
+  { id: 'timeout', label: 'Timeout', category: 'Moderation', enabled: true },
+  { id: 'clear', label: 'Clear messages', category: 'Moderation', enabled: true },
+  { id: 'userinfo', label: 'User info', category: 'Utility', enabled: true },
+  { id: 'serverinfo', label: 'Server info', category: 'Utility', enabled: true },
+  { id: 'logs', label: 'Logs', category: 'Admin', enabled: true },
+  { id: 'welcome', label: 'Welcome setup', category: 'Admin', enabled: false }
+];
 
 function discordColorToHex(value) {
   const number = Number(value || 0);
@@ -2111,7 +2186,21 @@ function DiscordToolsPage() {
       return null;
     }
   }, []);
-  const [section, setSection] = useState('webhook');
+  const savedControl = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem('nexus-discord-control-center') || 'null');
+    } catch {
+      return null;
+    }
+  }, []);
+  const savedManagedBots = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem('nexus-discord-managed-bots') || 'null');
+    } catch {
+      return null;
+    }
+  }, []);
+  const [section, setSection] = useState('overview');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState('');
   const [webhook, setWebhook] = useState({ webhookUrl: '', content: '', username: '', avatarUrl: '' });
@@ -2143,8 +2232,40 @@ function DiscordToolsPage() {
   });
   const [logFilters, setLogFilters] = useState({ type: '', user: '', date: '' });
   const [settings, setSettings] = useState(savedSettings || defaultDiscordSettings);
+  const [control, setControl] = useState({ ...defaultDiscordControl, ...(savedControl || {}) });
+  const [managedBots, setManagedBots] = useState(() => {
+    const bots = Array.isArray(savedManagedBots) && savedManagedBots.length ? savedManagedBots : defaultDiscordManagedBots;
+    return bots.map((bot, index) => ({
+      ...defaultDiscordManagedBots[0],
+      ...bot,
+      id: bot.id || `bot-${index + 1}`,
+      guildId: bot.guildId || (index === 0 ? savedSettings?.guildId || '' : ''),
+      desiredStatus: bot.desiredStatus || 'online',
+      voiceDuration: bot.voiceDuration || 'forever'
+    }));
+  });
+  const [botTokens, setBotTokens] = useState({});
 
+  const selectedManagedBot = useMemo(() => (
+    managedBots.find((bot) => bot.id === control.selectedBotId) || managedBots[0] || defaultDiscordManagedBots[0]
+  ), [managedBots, control.selectedBotId]);
   const categories = useMemo(() => (botStatus?.channels || []).filter((channel) => channel.type === 4), [botStatus]);
+  const voiceChannels = useMemo(() => (botStatus?.channels || []).filter((channel) => channel.type === 2), [botStatus]);
+  const botCards = useMemo(() => managedBots.map((bot) => {
+    const isSelected = bot.id === selectedManagedBot.id;
+    return {
+      ...bot,
+      name: isSelected ? botStatus?.bot?.username || control.profileDisplayName || bot.name : bot.name,
+      avatarUrl: isSelected ? botStatus?.bot?.avatarUrl || control.profileAvatarUrl || bot.avatarUrl : bot.avatarUrl,
+      status: isSelected && botStatus?.bot?.online ? control.desiredStatus : bot.desiredStatus || 'offline',
+      guildCount: isSelected ? botStatus?.bot?.guildCount || 0 : bot.guildCount || 0,
+      ping: isSelected ? botStatus?.bot?.ping || 0 : bot.ping || 0,
+      memberCount: isSelected ? botStatus?.guild?.memberCount || 0 : bot.memberCount || 0,
+      onlineCount: isSelected ? botStatus?.guild?.onlineCount || 0 : bot.onlineCount || 0,
+      voiceConnected: isSelected ? control.voiceConnected : bot.voiceConnected,
+      uptime: bot.lastRestartAt ? formatDate(bot.lastRestartAt) : 'Nao reiniciado'
+    };
+  }), [managedBots, selectedManagedBot.id, botStatus, control]);
   const visibleLogs = useMemo(() => logs.filter((log) => {
     const matchesType = !logFilters.type || log.type === logFilters.type;
     const matchesUser = !logFilters.user || String(log.user || '').includes(logFilters.user);
@@ -2155,6 +2276,16 @@ function DiscordToolsPage() {
   useEffect(() => () => {
     repeatStopRef.current = true;
   }, []);
+
+  useEffect(() => {
+    setBotConfig((current) => {
+      if (current.botToken || current.guildId) return current;
+      return {
+        botToken: botTokens[selectedManagedBot.id] || '',
+        guildId: selectedManagedBot.guildId || ''
+      };
+    });
+  }, [selectedManagedBot.id, selectedManagedBot.guildId, botTokens]);
 
   function showNotice(message) {
     setNotice(message);
@@ -2178,13 +2309,154 @@ function DiscordToolsPage() {
     setRepeatOptions((current) => ({ ...current, [field]: value }));
   }
 
+  function saveManagedBots(nextBots) {
+    localStorage.setItem('nexus-discord-managed-bots', JSON.stringify(nextBots));
+  }
+
+  function updateManagedBot(botId, patch) {
+    setManagedBots((current) => {
+      const next = current.map((bot) => bot.id === botId ? { ...bot, ...patch } : bot);
+      saveManagedBots(next);
+      return next;
+    });
+  }
+
+  function updateControl(patch) {
+    setControl((current) => {
+      const next = { ...current, ...patch };
+      localStorage.setItem('nexus-discord-control-center', JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function selectManagedBot(botId) {
+    const nextBot = managedBots.find((bot) => bot.id === botId);
+    if (!nextBot) return;
+    updateControl({
+      selectedBotId: botId,
+      desiredStatus: nextBot.desiredStatus || 'online',
+      voiceChannelId: nextBot.voiceChannelId || '',
+      voiceDuration: nextBot.voiceDuration || 'forever',
+      voiceConnected: Boolean(nextBot.voiceConnected),
+      voiceStartedAt: nextBot.voiceStartedAt || '',
+      voiceStayUntilStopped: nextBot.voiceDuration === 'forever'
+    });
+    setBotConfig({ botToken: botTokens[botId] || '', guildId: nextBot.guildId || '' });
+    setBotStatus(null);
+    showNotice(`Bot selecionado: ${nextBot.name}`);
+  }
+
+  function addManagedBot() {
+    const id = `bot-${crypto.randomUUID()}`;
+    const nextBot = {
+      ...defaultDiscordManagedBots[0],
+      id,
+      name: `Bot ${managedBots.length + 1}`,
+      color: '#23a55a'
+    };
+    setManagedBots((current) => {
+      const next = [...current, nextBot];
+      saveManagedBots(next);
+      return next;
+    });
+    updateControl({ selectedBotId: id, desiredStatus: nextBot.desiredStatus, voiceDuration: 'forever' });
+    setBotConfig({ botToken: '', guildId: '' });
+    setBotStatus(null);
+    showNotice('Novo bot adicionado ao painel.');
+  }
+
+  function removeManagedBot(botId) {
+    if (managedBots.length <= 1) return showNotice('Deixe pelo menos um bot no painel.');
+    const next = managedBots.filter((bot) => bot.id !== botId);
+    const fallback = next[0];
+    setManagedBots(next);
+    saveManagedBots(next);
+    if (control.selectedBotId === botId && fallback) {
+      updateControl({ selectedBotId: fallback.id });
+      setBotConfig({ botToken: botTokens[fallback.id] || '', guildId: fallback.guildId || '' });
+      setBotStatus(null);
+    }
+    showNotice('Bot removido do painel.');
+  }
+
   function updateBot(field, value) {
     setBotConfig((current) => ({ ...current, [field]: value }));
+    if (field === 'guildId') {
+      updateManagedBot(control.selectedBotId, { guildId: value });
+    }
+    if (field === 'botToken') {
+      setBotTokens((current) => ({ ...current, [control.selectedBotId]: value }));
+    }
   }
 
   function updateSettings(nextSettings) {
     setSettings(nextSettings);
     localStorage.setItem('nexus-discord-tools-settings', JSON.stringify(nextSettings));
+  }
+
+  function updateCommandConfig(commandId, patch) {
+    setControl((current) => {
+      const nextCommand = {
+        ...(current.commandConfig?.[commandId] || {}),
+        ...patch
+      };
+      const next = {
+        ...current,
+        commandConfig: {
+          ...(current.commandConfig || {}),
+          [commandId]: nextCommand
+        }
+      };
+      localStorage.setItem('nexus-discord-control-center', JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function runBotLifecycle(action) {
+    const labels = {
+      start: 'Start Bot',
+      stop: 'Stop Bot',
+      restart: 'Restart Bot',
+      reconnect: 'Reconnect Bot'
+    };
+    const nextStatus = action === 'stop' ? 'offline' : 'online';
+    const restartedAt = action === 'restart' || action === 'reconnect' ? new Date().toISOString() : selectedManagedBot.lastRestartAt || '';
+    updateControl({
+      desiredStatus: nextStatus,
+      lastRestartAt: restartedAt || control.lastRestartAt
+    });
+    updateManagedBot(control.selectedBotId, {
+      desiredStatus: nextStatus,
+      lastRestartAt: restartedAt,
+      lastLifecycleAction: action
+    });
+    pushLog('bot', `${labels[action]} solicitado no painel`, selectedManagedBot.name);
+    showNotice(`${labels[action]} registrado no painel.`);
+  }
+
+  function saveVoicePlan(action) {
+    const channel = voiceChannels.find((item) => item.id === control.voiceChannelId);
+    const isLeaving = action === 'Leave voice';
+    const startedAt = isLeaving ? '' : new Date().toISOString();
+    const voiceConnected = !isLeaving;
+    updateControl({
+      voiceConnected,
+      voiceStartedAt: startedAt,
+      voiceStayUntilStopped: control.voiceDuration === 'forever'
+    });
+    updateManagedBot(control.selectedBotId, {
+      voiceChannelId: control.voiceChannelId,
+      voiceDuration: control.voiceDuration,
+      voiceConnected,
+      voiceStartedAt: startedAt,
+      voiceVolume: control.voiceVolume,
+      voiceAfkMode: control.voiceAfkMode,
+      voiceAutoReconnect: control.voiceAutoReconnect
+    });
+    pushLog('voice', `${action}: ${channel?.name || 'canal nao selecionado'}`, selectedManagedBot.name);
+    showNotice(control.voiceDuration === 'forever' && !isLeaving
+      ? 'Call salva como permanente ate voce desligar.'
+      : 'Plano de voz salvo no painel.');
   }
 
   async function runAction(key, action) {
@@ -2287,8 +2559,21 @@ function DiscordToolsPage() {
       const nextSettings = { ...settings, guildId: botConfig.guildId || payload.guild?.id || settings.guildId };
       updateSettings(nextSettings);
       if (!botConfig.guildId && payload.guild?.id) updateBot('guildId', payload.guild.id);
+      updateManagedBot(control.selectedBotId, {
+        name: payload.bot?.username || selectedManagedBot.name,
+        avatarUrl: payload.bot?.avatarUrl || selectedManagedBot.avatarUrl,
+        guildId: botConfig.guildId || payload.guild?.id || selectedManagedBot.guildId,
+        guildName: payload.guild?.name || selectedManagedBot.guildName,
+        guildCount: payload.bot?.guildCount || 0,
+        memberCount: payload.guild?.memberCount || 0,
+        onlineCount: payload.guild?.onlineCount || 0,
+        channelCount: payload.guild?.channelCount || 0,
+        roleCount: payload.guild?.roleCount || 0,
+        ping: payload.bot?.ping || 0,
+        desiredStatus: payload.bot?.online ? control.desiredStatus : 'offline'
+      });
       pushLog('bot', `Status carregado para ${payload.guild?.name || 'bot'}`);
-      showNotice('Bot conectado.');
+      showNotice(payload.warnings?.length ? payload.warnings[0] : 'Bot conectado.');
     });
   }
 
@@ -2416,6 +2701,354 @@ function DiscordToolsPage() {
     updateSettings(settings);
     pushLog('settings', 'Configuracoes do bot salvas');
     showNotice('Configuracoes salvas.');
+  }
+
+  function renderControlOverview() {
+    const selectedBot = botCards.find((bot) => bot.id === control.selectedBotId) || botCards[0];
+    const selectedGuild = botStatus?.guild;
+    const permissionChecks = [
+      { label: 'Token do bot', ok: Boolean(botStatus?.bot), detail: botStatus?.bot ? 'Validado' : 'Carregue o bot' },
+      { label: 'Servidor selecionado', ok: Boolean(selectedGuild || selectedManagedBot.guildId), detail: selectedGuild?.name || selectedManagedBot.guildId || 'Sem Guild ID' },
+      { label: 'Canais acessiveis', ok: Boolean(botStatus?.channels?.length), detail: `${botStatus?.channels?.length || 0} canais` },
+      { label: 'Cargos acessiveis', ok: Boolean(botStatus?.roles?.length), detail: `${botStatus?.roles?.length || 0} cargos` }
+    ];
+
+    return (
+      <div className="discord-control-stack">
+        <section className="panel discord-control-hero">
+          <div>
+            <p className="eyebrow">Control center</p>
+            <h3>{selectedBot?.name || 'Discord Bot'}</h3>
+            <p className="muted">Painel multi-bot com servidores, membros, voz, comandos, webhooks, logs e seguranca.</p>
+          </div>
+          <div className="discord-control-topbar">
+            <label>
+              Bot
+              <select value={control.selectedBotId} onChange={(event) => selectManagedBot(event.target.value)}>
+                {botCards.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}
+              </select>
+            </label>
+            <label>
+              Servidor
+              <select value={botConfig.guildId} onChange={(event) => updateBot('guildId', event.target.value)}>
+                <option value={botConfig.guildId}>{selectedGuild?.name || botConfig.guildId || 'Carregue o bot'}</option>
+                {(botStatus?.guilds || []).map((guild) => (
+                  <option key={guild.id} value={guild.id}>{guild.name}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Buscar
+              <input value={control.search || ''} onChange={(event) => updateControl({ search: event.target.value })} placeholder="Comandos, logs, usuarios" />
+            </label>
+          </div>
+        </section>
+
+        <div className="discord-control-grid">
+          <section className="panel discord-tool-card">
+            <div className="panel-title">
+              <h3>Bots</h3>
+              <button className="ghost-button" type="button" onClick={addManagedBot}><Plus size={16} /> Bot</button>
+            </div>
+            <div className="discord-bot-card-grid">
+              {botCards.map((bot) => (
+                <article className={`discord-bot-card ${bot.id === control.selectedBotId ? 'active' : ''}`} key={bot.id}>
+                  <Avatar src={bot.avatarUrl} name={bot.name} size="lg" />
+                  <span>
+                    <strong>{bot.name}</strong>
+                    <small>{bot.guildCount || 0} servidor(es) - {bot.memberCount || 0} membros - {bot.ping || 0}ms</small>
+                    <small>{bot.voiceConnected ? 'Call ativa no painel' : bot.guildName || bot.guildId || 'Sem servidor carregado'}</small>
+                  </span>
+                  <i className={`discord-status-dot ${bot.status}`} />
+                  <div className="card-actions compact-actions">
+                    {bot.id === control.selectedBotId ? (
+                      <>
+                        <button className="ghost-button" onClick={() => runBotLifecycle('start')}><ToggleRight size={16} /> Start</button>
+                        <button className="ghost-button" onClick={() => runBotLifecycle('restart')}><RefreshCw size={16} /> Restart</button>
+                      </>
+                    ) : (
+                      <button className="ghost-button" onClick={() => selectManagedBot(bot.id)}><Check size={16} /> Usar</button>
+                    )}
+                    <button className="ghost-button" onClick={() => removeManagedBot(bot.id)} disabled={managedBots.length <= 1}><Trash2 size={16} /> Remover</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel discord-tool-card">
+            <div className="panel-title">
+              <h3>Servidor ativo</h3>
+              <Server size={18} />
+            </div>
+            {selectedGuild ? (
+              <>
+                <div className="discord-server-card">
+                  <Avatar src={selectedGuild.iconUrl} name={selectedGuild.name} />
+                  <span>
+                    <strong>{selectedGuild.name}</strong>
+                    <small>ID {selectedGuild.id}</small>
+                  </span>
+                </div>
+                <div className="discord-stat-grid">
+                  <Metric icon={Users} label="Membros" value={selectedGuild.memberCount || 0} />
+                  <Metric icon={Activity} label="Online" value={selectedGuild.onlineCount || 0} />
+                  <Metric icon={Hash} label="Canais" value={selectedGuild.channelCount || 0} />
+                  <Metric icon={Crown} label="Cargos" value={selectedGuild.roleCount || 0} />
+                  <Metric icon={Bot} label="Bots" value={managedBots.length} />
+                </div>
+              </>
+            ) : (
+              <EmptyState icon={Server} title="Carregue o bot para ver servidores" />
+            )}
+          </section>
+        </div>
+
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Permission checker</h3>
+            <ShieldCheck size={18} />
+          </div>
+          <div className="discord-check-grid">
+            {permissionChecks.map((item) => (
+              <article className={item.ok ? 'ok' : 'warn'} key={item.label}>
+                {item.ok ? <Check size={18} /> : <AlertTriangle size={18} />}
+                <span>
+                  <strong>{item.label}</strong>
+                  <small>{item.detail}</small>
+                </span>
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  function renderRuntimeControl() {
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Online / Offline</h3>
+            <Activity size={18} />
+          </div>
+          <div className="discord-status-console">
+            <span>
+              <i className={`discord-status-dot ${control.desiredStatus}`} />
+              <strong>{control.desiredStatus}</strong>
+              <small>{control.maintenanceMode ? 'Maintenance mode ativo' : 'Comandos liberados'}</small>
+            </span>
+            <div className="discord-action-grid">
+              <button className="primary-button" onClick={() => runBotLifecycle('start')}><ToggleRight size={17} /> Start Bot</button>
+              <button className="ghost-button" onClick={() => runBotLifecycle('stop')}><ToggleLeft size={17} /> Stop Bot</button>
+              <button className="ghost-button" onClick={() => runBotLifecycle('restart')}><RefreshCw size={17} /> Restart Bot</button>
+              <button className="ghost-button" onClick={() => runBotLifecycle('reconnect')}><Shuffle size={17} /> Reconnect</button>
+            </div>
+          </div>
+          <div className="discord-form-grid">
+            <label>
+              Status desejado
+              <select value={control.desiredStatus} onChange={(event) => updateControl({ desiredStatus: event.target.value })}>
+                {discordStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
+              </select>
+            </label>
+            <label>
+              Ao terminar timer
+              <select value={control.timerEndAction} onChange={(event) => updateControl({ timerEndAction: event.target.value })}>
+                <option value="offline">Offline</option>
+                <option value="idle">Idle</option>
+                <option value="dnd">Do Not Disturb</option>
+              </select>
+            </label>
+          </div>
+          <div className="discord-toggle-grid">
+            <label className="switch-line"><input type="checkbox" checked={control.autoReconnect} onChange={(event) => updateControl({ autoReconnect: event.target.checked })} /> Auto reconnect</label>
+            <label className="switch-line"><input type="checkbox" checked={control.maintenanceMode} onChange={(event) => updateControl({ maintenanceMode: event.target.checked })} /> Maintenance mode</label>
+            <label className="switch-line"><input type="checkbox" checked={control.statusRotation} onChange={(event) => updateControl({ statusRotation: event.target.checked })} /> Status rotation</label>
+          </div>
+        </section>
+
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Agenda</h3>
+            <Clock3 size={18} />
+          </div>
+          <div className="discord-preset-grid">
+            {discordSchedulePresets.map((preset) => (
+              <button key={preset.id} className={control.schedulePreset === preset.id ? 'active' : ''} onClick={() => updateControl({ schedulePreset: preset.id })}>{preset.label}</button>
+            ))}
+          </div>
+          <div className="discord-form-grid">
+            <label>Horas<input type="number" min="0" value={control.customHours} onChange={(event) => updateControl({ customHours: Number(event.target.value) })} /></label>
+            <label>Minutos<input type="number" min="0" max="59" value={control.customMinutes} onChange={(event) => updateControl({ customMinutes: Number(event.target.value) })} /></label>
+            <label>Segundos<input type="number" min="0" max="59" value={control.customSeconds} onChange={(event) => updateControl({ customSeconds: Number(event.target.value) })} /></label>
+          </div>
+          <button className="primary-button" onClick={() => { pushLog('bot', `Agenda salva: ${control.schedulePreset}`); showNotice('Agenda operacional salva.'); }}><Save size={17} /> Salvar agenda</button>
+        </section>
+      </div>
+    );
+  }
+
+  function renderVoiceControl() {
+    const activeVoice = voiceChannels.find((channel) => channel.id === control.voiceChannelId);
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Voice control</h3>
+            <Volume2 size={18} />
+          </div>
+          <div className="discord-form-grid">
+            <label className="wide">
+              Canal de voz
+              <select value={control.voiceChannelId} onChange={(event) => updateControl({ voiceChannelId: event.target.value })}>
+                <option value="">Selecione um canal</option>
+                {voiceChannels.map((channel) => <option key={channel.id} value={channel.id}>{channel.name}</option>)}
+              </select>
+            </label>
+            <label>
+              Duracao
+              <select value={control.voiceDuration} onChange={(event) => updateControl({ voiceDuration: event.target.value })}>
+                <option value="30m">30 minutos</option>
+                <option value="1h">1 hora</option>
+                <option value="6h">6 horas</option>
+                <option value="forever">Ate desligar</option>
+                <option value="custom">Personalizado</option>
+              </select>
+            </label>
+            <label>Volume<input type="range" min="0" max="100" value={control.voiceVolume} onChange={(event) => updateControl({ voiceVolume: Number(event.target.value) })} /></label>
+            {control.voiceDuration === 'custom' && (
+              <>
+                <label>Horas em call<input type="number" min="0" value={control.voiceHours} onChange={(event) => updateControl({ voiceHours: Number(event.target.value) })} /></label>
+                <label>Minutos em call<input type="number" min="0" max="59" value={control.voiceMinutes} onChange={(event) => updateControl({ voiceMinutes: Number(event.target.value) })} /></label>
+              </>
+            )}
+          </div>
+          <div className="discord-toggle-grid">
+            <label className="switch-line"><input type="checkbox" checked={control.voiceDuration === 'forever'} onChange={(event) => updateControl({ voiceDuration: event.target.checked ? 'forever' : '1h', voiceStayUntilStopped: event.target.checked })} /> Ficar em call ate eu desligar</label>
+            <label className="switch-line"><input type="checkbox" checked={control.voiceAfkMode} onChange={(event) => updateControl({ voiceAfkMode: event.target.checked })} /> AFK voice mode</label>
+            <label className="switch-line"><input type="checkbox" checked={control.voiceAutoReconnect} onChange={(event) => updateControl({ voiceAutoReconnect: event.target.checked })} /> Auto reconnect voice</label>
+          </div>
+          <div className="card-actions">
+            <button className="primary-button" onClick={() => saveVoicePlan('Join voice')}><Volume2 size={17} /> Join voice</button>
+            <button className="ghost-button" onClick={() => saveVoicePlan('Move voice')}><Shuffle size={17} /> Move</button>
+            <button className="ghost-button" onClick={() => saveVoicePlan('Leave voice')}><X size={17} /> Leave</button>
+          </div>
+        </section>
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Estado da call</h3>
+            <Activity size={18} />
+          </div>
+          <div className="discord-status-hero">
+            <Volume2 size={28} />
+            <span>
+              <strong>{control.voiceConnected ? activeVoice?.name || 'Call marcada como ativa' : 'Nenhum canal conectado'}</strong>
+              <small>{control.voiceDuration === 'forever' ? 'Fica ate voce desligar' : `Duracao: ${control.voiceDuration}`} - volume {control.voiceVolume}%</small>
+              {control.voiceStartedAt && <small>Inicio salvo: {formatDate(control.voiceStartedAt)}</small>}
+            </span>
+          </div>
+          <div className="discord-check-grid mini">
+            <article className={control.voiceConnected ? 'ok' : 'warn'}>{control.voiceConnected ? <Check size={18} /> : <AlertTriangle size={18} />}<span><strong>{control.voiceConnected ? 'Ativo no painel' : 'Desligado no painel'}</strong><small>{selectedManagedBot.name}</small></span></article>
+            <article className={control.voiceDuration === 'forever' ? 'ok' : 'warn'}><Clock3 size={18} /><span><strong>{control.voiceDuration === 'forever' ? 'Sem timer' : 'Com timer'}</strong><small>{control.voiceDuration === 'custom' ? `${control.voiceHours}h ${control.voiceMinutes}m` : control.voiceDuration}</small></span></article>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  function renderProfileControl() {
+    const previewName = control.profileDisplayName || botStatus?.bot?.username || selectedManagedBot.name || 'Nexus Bot';
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title"><h3>Bot profile</h3><Palette size={18} /></div>
+          <div className="discord-form-grid">
+            <label>Display name<input value={control.profileDisplayName} onChange={(event) => updateControl({ profileDisplayName: event.target.value })} placeholder={botStatus?.bot?.username || 'Nexus Bot'} /></label>
+            <label>Status text<input value={control.profileStatusText} onChange={(event) => updateControl({ profileStatusText: event.target.value })} placeholder="Online agora" /></label>
+            <label>Activity type<select value={control.profileActivityType} onChange={(event) => updateControl({ profileActivityType: event.target.value })}><option>Watching</option><option>Playing</option><option>Listening</option><option>Competing</option></select></label>
+            <label>Activity message<input value={control.profileActivityMessage} onChange={(event) => updateControl({ profileActivityMessage: event.target.value })} /></label>
+            <label className="wide">Avatar URL<input value={control.profileAvatarUrl} onChange={(event) => updateControl({ profileAvatarUrl: event.target.value })} placeholder="https://..." /></label>
+            <label className="wide">Banner URL<input value={control.profileBannerUrl} onChange={(event) => updateControl({ profileBannerUrl: event.target.value })} placeholder="https://..." /></label>
+          </div>
+          <div className="card-actions">
+            <button className="primary-button" onClick={() => { pushLog('bot', `Perfil salvo para ${previewName}`); showNotice('Perfil salvo no painel.'); }}><Save size={17} /> Salvar perfil</button>
+            <button className="ghost-button" onClick={() => updateControl({ profileDisplayName: '', profileStatusText: '', profileAvatarUrl: '', profileBannerUrl: '' })}><RefreshCw size={17} /> Reset</button>
+          </div>
+        </section>
+        <section className="panel discord-tool-card">
+          <div className="panel-title"><h3>Preview</h3><Eye size={18} /></div>
+          <div className="discord-profile-preview">
+            <div className="discord-profile-banner" style={control.profileBannerUrl ? { backgroundImage: `url(${control.profileBannerUrl})` } : undefined} />
+            <Avatar src={control.profileAvatarUrl || botStatus?.bot?.avatarUrl || selectedManagedBot.avatarUrl} name={previewName} size="xl" />
+            <span><strong>{previewName}</strong><small>{control.profileActivityType} {control.profileActivityMessage}</small><small>{control.profileStatusText || control.desiredStatus}</small></span>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  function renderCommandCenter() {
+    return (
+      <div className="discord-control-stack">
+        <section className="panel discord-tool-card">
+          <div className="panel-title"><h3>Command Center</h3><SlidersHorizontal size={18} /></div>
+          <div className="discord-form-grid">
+            <label>Cooldown global<input type="number" min="0" value={control.commandCooldown} onChange={(event) => updateControl({ commandCooldown: Number(event.target.value) })} /></label>
+            <label>Role permitida<input value={control.commandRole} onChange={(event) => updateControl({ commandRole: event.target.value })} placeholder="Role ID opcional" /></label>
+            <label className="wide">Canal permitido<input value={control.commandChannel} onChange={(event) => updateControl({ commandChannel: event.target.value })} placeholder="Channel ID opcional" /></label>
+          </div>
+        </section>
+        <div className="discord-command-grid">
+          {discordCommandCatalog.map((command) => {
+            const current = { enabled: command.enabled, ...(control.commandConfig?.[command.id] || {}) };
+            return (
+              <article className="panel discord-tool-card discord-command-card" key={command.id}>
+                <strong>/{command.id}</strong>
+                <small>{command.label} - {command.category}</small>
+                <label className="switch-line"><input type="checkbox" checked={current.enabled} onChange={(event) => updateCommandConfig(command.id, { enabled: event.target.checked })} /> Ativo</label>
+                <label>Cooldown<input type="number" min="0" value={current.cooldown ?? control.commandCooldown} onChange={(event) => updateCommandConfig(command.id, { cooldown: Number(event.target.value) })} /></label>
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  function renderSecurityCenter() {
+    const checks = [
+      { label: 'Protecao ativa', ok: antiNuke.enabled, detail: antiNuke.enabled ? 'Monitoramento ligado' : 'Desativada' },
+      { label: 'Logs locais', ok: settings.modules?.logs !== false, detail: `${logs.length} eventos` },
+      { label: 'Token protegido', ok: true, detail: 'Token temporario nao fica salvo no navegador' },
+      { label: 'Backup config', ok: true, detail: 'Exportacao pronta' }
+    ];
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title"><h3>Seguranca</h3><ShieldCheck size={18} /></div>
+          <div className="discord-check-grid">
+            {checks.map((item) => (
+              <article className={item.ok ? 'ok' : 'warn'} key={item.label}>{item.ok ? <Check size={18} /> : <AlertTriangle size={18} />}<span><strong>{item.label}</strong><small>{item.detail}</small></span></article>
+            ))}
+          </div>
+          <div className="card-actions">
+            <button className="ghost-button" onClick={() => { copyText(JSON.stringify({ settings, antiNuke, control, managedBots }, null, 2)); showNotice('Configuracao copiada.'); }}><Copy size={17} /> Exportar config</button>
+            <button className="primary-button" onClick={saveAntiNuke}><Save size={17} /> Salvar protecao</button>
+          </div>
+        </section>
+        <section className="panel discord-tool-card">
+          <div className="panel-title"><h3>Ultimos eventos</h3><ScrollText size={18} /></div>
+          <div className="discord-list">
+            {visibleLogs.slice(0, 8).map((log) => (
+              <article className="discord-log-row" key={log.id}><span className={`discord-log-dot ${log.type}`} /><span><strong>{log.detail}</strong><small>{formatDate(log.createdAt)}</small></span></article>
+            ))}
+            {visibleLogs.length === 0 && <EmptyState icon={ScrollText} title="Nenhum log recente" />}
+          </div>
+        </section>
+      </div>
+    );
   }
 
   function renderWebhook() {
@@ -2608,13 +3241,24 @@ function DiscordToolsPage() {
       <div className="discord-section-grid">
         <section className="panel discord-tool-card">
           <div className="panel-title">
-            <h3>Bot Server Manager</h3>
-            <Server size={18} />
+            <h3>{selectedManagedBot.name}</h3>
+            <button className="ghost-button" type="button" onClick={addManagedBot}>
+              <Plus size={16} />
+              Bot
+            </button>
           </div>
-          <div className="notice subtle">Para ficar seguro, use DISCORD_BOT_TOKEN no Render. O campo abaixo e temporario e nao fica salvo.</div>
+          <div className="notice subtle">O token fica so nesta sessao. Salvo no navegador: nome do bot, servidor e preferencias do painel.</div>
           <div className="discord-form-grid">
             <label>
-              Token do bot
+              Nome no painel
+              <input value={selectedManagedBot.name} onChange={(event) => updateManagedBot(control.selectedBotId, { name: event.target.value })} placeholder="Meu bot" />
+            </label>
+            <label>
+              Cor
+              <input type="color" value={selectedManagedBot.color || '#5865f2'} onChange={(event) => updateManagedBot(control.selectedBotId, { color: event.target.value })} />
+            </label>
+            <label>
+              Token do bot temporario
               <input type="password" value={botConfig.botToken} onChange={(event) => updateBot('botToken', event.target.value)} placeholder="Opcional se DISCORD_BOT_TOKEN estiver no backend" />
             </label>
             <label>
@@ -2622,10 +3266,29 @@ function DiscordToolsPage() {
               <input value={botConfig.guildId} onChange={(event) => updateBot('guildId', event.target.value)} placeholder="Guild ID" />
             </label>
           </div>
-          <button className="primary-button" onClick={loadBotStatus} disabled={loading === 'bot'}>
-            <RefreshCw size={17} />
-            {loading === 'bot' ? 'Conectando' : 'Carregar servidor'}
-          </button>
+          <div className="card-actions">
+            <button className="primary-button" onClick={loadBotStatus} disabled={loading === 'bot'}>
+              <RefreshCw size={17} />
+              {loading === 'bot' ? 'Conectando' : 'Carregar servidor'}
+            </button>
+            <button className="ghost-button" onClick={() => runBotLifecycle('restart')}><RefreshCw size={17} /> Restart painel</button>
+          </div>
+          <div className="discord-list compact-list">
+            {botCards.map((bot) => (
+              <article className="discord-list-item" key={bot.id}>
+                <button onClick={() => selectManagedBot(bot.id)}>
+                  <Avatar src={bot.avatarUrl} name={bot.name} />
+                  <span>
+                    <strong>{bot.name}</strong>
+                    <small>{bot.guildName || bot.guildId || 'Sem servidor'} - {bot.status}</small>
+                  </span>
+                </button>
+                <IconButton label="Remover bot" onClick={() => removeManagedBot(bot.id)} disabled={managedBots.length <= 1}>
+                  <Trash2 size={15} />
+                </IconButton>
+              </article>
+            ))}
+          </div>
         </section>
         <section className="panel discord-tool-card">
           <div className="panel-title">
@@ -2643,8 +3306,10 @@ function DiscordToolsPage() {
               </div>
               <div className="discord-stat-grid">
                 <Metric icon={Users} label="Membros" value={botStatus.guild?.memberCount || 0} />
+                <Metric icon={Activity} label="Online" value={botStatus.guild?.onlineCount || 0} />
                 <Metric icon={Hash} label="Canais" value={botStatus.guild?.channelCount || 0} />
                 <Metric icon={Crown} label="Cargos" value={botStatus.guild?.roleCount || 0} />
+                <Metric icon={Server} label="Servidores" value={botStatus.bot.guildCount || 0} />
               </div>
               {botStatus.guild && (
                 <div className="discord-server-card">
@@ -3104,11 +3769,17 @@ function DiscordToolsPage() {
   }
 
   const renderers = {
+    overview: renderControlOverview,
+    runtime: renderRuntimeControl,
+    voice: renderVoiceControl,
+    'profile-control': renderProfileControl,
     webhook: renderWebhook,
     embed: renderEmbedBuilder,
     bot: renderBotManager,
+    commands: renderCommandCenter,
     channels: renderChannels,
     roles: renderRoles,
+    security: renderSecurityCenter,
     'anti-nuke': renderAntiNuke,
     moderation: renderModeration,
     lookup: renderLookup,

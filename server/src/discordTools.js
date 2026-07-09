@@ -236,6 +236,7 @@ export async function getDiscordBotStatus({ botToken, guildId } = {}) {
       name: guild.name,
       iconUrl: guild.icon ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png?size=128` : null,
       memberCount: guild.approximate_member_count || null,
+      onlineCount: guild.approximate_presence_count || null,
       channelCount: channels.length,
       roleCount: roles.length
     } : null,
