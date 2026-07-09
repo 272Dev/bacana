@@ -82,6 +82,10 @@ export const config = {
     redirectUri: env('DISCORD_REDIRECT_URI', `http://localhost:${env('PORT', '4000')}/api/auth/discord/callback`),
     oauthFlow: env('DISCORD_OAUTH_FLOW', 'code')
   },
+  discordBot: {
+    token: env('DISCORD_BOT_TOKEN'),
+    defaultGuildId: env('DISCORD_DEFAULT_GUILD_ID')
+  },
   security: {
     masterKey: env('APP_MASTER_KEY'),
     sessionSecret: env('SESSION_SECRET'),

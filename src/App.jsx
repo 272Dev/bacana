@@ -1,14 +1,19 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  AlertTriangle,
   BadgeCheck,
+  Ban,
   Bell,
+  Bot,
   Boxes,
   Check,
   ChevronRight,
   Clipboard,
   Clock3,
+  Code2,
   Copy,
+  Crown,
   DatabaseBackup,
   Download,
   Eye,
@@ -17,6 +22,8 @@ import {
   Film,
   FolderPlus,
   Gamepad2,
+  Gavel,
+  Hash,
   History,
   Image as ImageIcon,
   KeyRound,
@@ -32,18 +39,24 @@ import {
   RefreshCw,
   Save,
   Search,
+  Send,
+  Server,
   Settings,
   Share2,
   Shield,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  ScrollText,
   Shuffle,
   Sun,
+  ToggleLeft,
+  ToggleRight,
   Trash2,
   Upload,
   UserCog,
   Users,
+  Volume2,
   Maximize2,
   X
 } from 'lucide-react';
@@ -135,6 +148,7 @@ function Shell({ user, theme, resolvedTheme, onToggleTheme, onLogout, view, setV
     { id: 'authenticator', label: 'Codigos', icon: Lock },
     { id: 'temp-email', label: 'Temp Email', icon: Mail },
     { id: 'images', label: 'Midia', icon: Film },
+    { id: 'discord-tools', label: 'Discord', icon: Bot },
     { id: 'history', label: 'Historico', icon: History },
     { id: 'users', label: 'Usuarios', icon: Users, admin: true },
     { id: 'settings', label: 'Ajustes', icon: Settings },
@@ -1915,6 +1929,1089 @@ function MediaPage() {
   );
 }
 
+const discordSections = [
+  { id: 'webhook', label: 'Webhook', icon: MessageSquare },
+  { id: 'embed', label: 'Embed Builder', icon: Code2 },
+  { id: 'bot', label: 'Bot Manager', icon: Bot },
+  { id: 'channels', label: 'Canais', icon: Hash },
+  { id: 'roles', label: 'Cargos', icon: Crown },
+  { id: 'anti-nuke', label: 'Anti-Nuke', icon: Shield },
+  { id: 'moderation', label: 'Moderacao', icon: Gavel },
+  { id: 'lookup', label: 'User Lookup', icon: Search },
+  { id: 'logs', label: 'Logs', icon: ScrollText },
+  { id: 'settings', label: 'Configuracoes', icon: Settings }
+];
+
+const defaultDiscordEmbed = {
+  title: '',
+  description: '',
+  color: '#ff4058',
+  image: '',
+  thumbnail: '',
+  footer: '',
+  fields: []
+};
+
+const defaultDiscordSettings = {
+  prefix: '!',
+  logChannelId: '',
+  welcomeMessage: 'Bem-vindo ao servidor, {user}.',
+  leaveMessage: '{user} saiu do servidor.',
+  modules: {
+    antiNuke: true,
+    logs: true,
+    moderation: true,
+    welcome: false,
+    webhookTools: true,
+    channelManager: true,
+    roleManager: true
+  }
+};
+
+function discordColorToHex(value) {
+  const number = Number(value || 0);
+  return `#${number.toString(16).padStart(6, '0').slice(-6)}`;
+}
+
+function channelIcon(type) {
+  if (type === 2) return Volume2;
+  if (type === 4) return FolderPlus;
+  return Hash;
+}
+
+function channelLabel(type) {
+  if (type === 2) return 'Voz';
+  if (type === 4) return 'Categoria';
+  return 'Texto';
+}
+
+function makeDiscordEmbedJson(embed) {
+  const fields = (embed.fields || [])
+    .filter((field) => field.name || field.value)
+    .map((field) => ({
+      name: field.name || 'Campo',
+      value: field.value || '-',
+      inline: Boolean(field.inline)
+    }));
+
+  const payload = {};
+  if (embed.title) payload.title = embed.title;
+  if (embed.description) payload.description = embed.description;
+  if (embed.color) payload.color = Number.parseInt(embed.color.replace('#', ''), 16) || 0xff4058;
+  if (embed.image) payload.image = { url: embed.image };
+  if (embed.thumbnail) payload.thumbnail = { url: embed.thumbnail };
+  if (embed.footer) payload.footer = { text: embed.footer };
+  if (fields.length) payload.fields = fields;
+  return payload;
+}
+
+function DiscordEmbedPreview({ embed, content, username, avatarUrl }) {
+  const hasEmbed = Boolean(embed.title || embed.description || embed.image || embed.thumbnail || embed.footer || embed.fields?.length);
+
+  return (
+    <div className="discord-message-preview">
+      <div className="discord-message-author">
+        <Avatar src={avatarUrl} name={username || 'Nexus'} />
+        <span>
+          <strong>{username || 'Nexus Webhook'}</strong>
+          <small>Hoje as 21:15</small>
+        </span>
+      </div>
+      {content && <p className="discord-preview-content">{content}</p>}
+      {hasEmbed && (
+        <div className="discord-embed-preview" style={{ '--embed-color': embed.color || '#ff4058' }}>
+          {embed.thumbnail && <img className="discord-embed-thumb" src={embed.thumbnail} alt="" />}
+          {embed.title && <strong>{embed.title}</strong>}
+          {embed.description && <p>{embed.description}</p>}
+          {embed.fields?.length > 0 && (
+            <div className="discord-embed-fields">
+              {embed.fields.filter((field) => field.name || field.value).map((field, index) => (
+                <span key={`${field.name}-${index}`}>
+                  <b>{field.name || 'Campo'}</b>
+                  <small>{field.value || '-'}</small>
+                </span>
+              ))}
+            </div>
+          )}
+          {embed.image && <img className="discord-embed-image" src={embed.image} alt="" />}
+          {embed.footer && <small className="discord-embed-footer">{embed.footer}</small>}
+        </div>
+      )}
+      {!content && !hasEmbed && <p className="muted">A preview aparece aqui conforme voce preenche.</p>}
+    </div>
+  );
+}
+
+function DiscordFieldEditor({ embed, setEmbed }) {
+  function updateField(index, field, value) {
+    setEmbed((current) => ({
+      ...current,
+      fields: current.fields.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: value } : item)
+    }));
+  }
+
+  function addField() {
+    setEmbed((current) => ({
+      ...current,
+      fields: [...current.fields, { name: '', value: '', inline: false }]
+    }));
+  }
+
+  function removeField(index) {
+    setEmbed((current) => ({
+      ...current,
+      fields: current.fields.filter((_, itemIndex) => itemIndex !== index)
+    }));
+  }
+
+  return (
+    <div className="discord-field-editor">
+      <div className="panel-title compact">
+        <h3>Campos personalizados</h3>
+        <button className="ghost-button" type="button" onClick={addField}>
+          <Plus size={16} />
+          Campo
+        </button>
+      </div>
+      {embed.fields.map((field, index) => (
+        <div className="discord-field-row" key={index}>
+          <input value={field.name} onChange={(event) => updateField(index, 'name', event.target.value)} placeholder="Nome do campo" />
+          <input value={field.value} onChange={(event) => updateField(index, 'value', event.target.value)} placeholder="Valor" />
+          <label className="switch-line">
+            <input type="checkbox" checked={field.inline} onChange={(event) => updateField(index, 'inline', event.target.checked)} />
+            Inline
+          </label>
+          <IconButton label="Remover campo" type="button" onClick={() => removeField(index)}>
+            <Trash2 size={15} />
+          </IconButton>
+        </div>
+      ))}
+      {embed.fields.length === 0 && <p className="muted">Adicione campos quando quiser montar embeds maiores.</p>}
+    </div>
+  );
+}
+
+function DiscordToolsPage() {
+  const savedSettings = useMemo(() => {
+    try {
+      return JSON.parse(localStorage.getItem('nexus-discord-tools-settings') || 'null');
+    } catch {
+      return null;
+    }
+  }, []);
+  const [section, setSection] = useState('webhook');
+  const [notice, setNotice] = useState('');
+  const [loading, setLoading] = useState('');
+  const [webhook, setWebhook] = useState({ webhookUrl: '', content: '', username: '', avatarUrl: '' });
+  const [embed, setEmbed] = useState(defaultDiscordEmbed);
+  const [botConfig, setBotConfig] = useState({ botToken: '', guildId: savedSettings?.guildId || '' });
+  const [botStatus, setBotStatus] = useState(null);
+  const [channelForm, setChannelForm] = useState({ name: '', type: 0, parentId: '', channelId: '', position: '' });
+  const [roleForm, setRoleForm] = useState({ name: '', color: '#ff4058', permissions: '0', roleId: '', userId: '', action: 'add' });
+  const [antiNuke, setAntiNuke] = useState(savedSettings?.antiNuke || {
+    enabled: true,
+    limitPerMinute: 5,
+    punishment: 'remove_roles',
+    whitelist: '',
+    ignoredRoles: '',
+    logChannelId: savedSettings?.logChannelId || ''
+  });
+  const [moderation, setModeration] = useState({ userId: '', channelId: '', reason: '', durationMinutes: 10, amount: 10, message: '' });
+  const [lookupId, setLookupId] = useState('');
+  const [lookupResult, setLookupResult] = useState(null);
+  const [logs, setLogs] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('nexus-discord-tools-logs') || '[]');
+    } catch {
+      return [];
+    }
+  });
+  const [logFilters, setLogFilters] = useState({ type: '', user: '', date: '' });
+  const [settings, setSettings] = useState(savedSettings || defaultDiscordSettings);
+
+  const categories = useMemo(() => (botStatus?.channels || []).filter((channel) => channel.type === 4), [botStatus]);
+  const visibleLogs = useMemo(() => logs.filter((log) => {
+    const matchesType = !logFilters.type || log.type === logFilters.type;
+    const matchesUser = !logFilters.user || String(log.user || '').includes(logFilters.user);
+    const matchesDate = !logFilters.date || log.createdAt.startsWith(logFilters.date);
+    return matchesType && matchesUser && matchesDate;
+  }), [logs, logFilters]);
+
+  function showNotice(message) {
+    setNotice(message);
+    window.clearTimeout(showNotice.timer);
+    showNotice.timer = window.setTimeout(() => setNotice(''), 4200);
+  }
+
+  function pushLog(type, detail, user = '') {
+    setLogs((current) => {
+      const next = [{ id: crypto.randomUUID(), type, detail, user, createdAt: new Date().toISOString() }, ...current].slice(0, 120);
+      localStorage.setItem('nexus-discord-tools-logs', JSON.stringify(next));
+      return next;
+    });
+  }
+
+  function updateWebhook(field, value) {
+    setWebhook((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateBot(field, value) {
+    setBotConfig((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateSettings(nextSettings) {
+    setSettings(nextSettings);
+    localStorage.setItem('nexus-discord-tools-settings', JSON.stringify(nextSettings));
+  }
+
+  async function runAction(key, action) {
+    setLoading(key);
+    setNotice('');
+    try {
+      await action();
+    } catch (error) {
+      showNotice(error.message);
+    } finally {
+      setLoading('');
+    }
+  }
+
+  async function sendWebhookMessage() {
+    await runAction('webhook', async () => {
+      const result = await api('/discord-tools/webhook/send', {
+        method: 'POST',
+        body: { ...webhook, embed }
+      });
+      pushLog('webhook', `Mensagem enviada pelo webhook ${result.messageId || ''}`);
+      showNotice('Mensagem enviada no Discord.');
+    });
+  }
+
+  async function loadBotStatus() {
+    await runAction('bot', async () => {
+      const payload = await api('/discord-tools/bot/status', {
+        method: 'POST',
+        body: botConfig
+      });
+      setBotStatus(payload);
+      const nextSettings = { ...settings, guildId: botConfig.guildId || payload.guild?.id || settings.guildId };
+      updateSettings(nextSettings);
+      if (!botConfig.guildId && payload.guild?.id) updateBot('guildId', payload.guild.id);
+      pushLog('bot', `Status carregado para ${payload.guild?.name || 'bot'}`);
+      showNotice('Bot conectado.');
+    });
+  }
+
+  async function createChannel() {
+    await runAction('channel', async () => {
+      const payload = await api('/discord-tools/channels', {
+        method: 'POST',
+        body: { ...botConfig, ...channelForm }
+      });
+      pushLog('channel', `Canal criado: ${payload.channel.name}`);
+      setChannelForm((current) => ({ ...current, name: '' }));
+      await loadBotStatus();
+    });
+  }
+
+  async function updateChannel() {
+    if (!channelForm.channelId) return showNotice('Informe o ID do canal.');
+    await runAction('channel-update', async () => {
+      const payload = await api(`/discord-tools/channels/${channelForm.channelId}`, {
+        method: 'PATCH',
+        body: { ...botConfig, ...channelForm }
+      });
+      pushLog('channel', `Canal alterado: ${payload.channel.name}`);
+      await loadBotStatus();
+    });
+  }
+
+  async function deleteChannel(channelId = channelForm.channelId) {
+    if (!channelId) return showNotice('Informe o ID do canal.');
+    if (!window.confirm('Excluir este canal? Essa acao nao volta.')) return;
+    await runAction('channel-delete', async () => {
+      await api(`/discord-tools/channels/${channelId}`, { method: 'DELETE', body: botConfig });
+      pushLog('channel', `Canal excluido: ${channelId}`);
+      await loadBotStatus();
+    });
+  }
+
+  async function createRole() {
+    await runAction('role', async () => {
+      const payload = await api('/discord-tools/roles', {
+        method: 'POST',
+        body: { ...botConfig, ...roleForm }
+      });
+      pushLog('role', `Cargo criado: ${payload.role.name}`);
+      setRoleForm((current) => ({ ...current, name: '' }));
+      await loadBotStatus();
+    });
+  }
+
+  async function updateRole() {
+    if (!roleForm.roleId) return showNotice('Informe o ID do cargo.');
+    await runAction('role-update', async () => {
+      const payload = await api(`/discord-tools/roles/${roleForm.roleId}`, {
+        method: 'PATCH',
+        body: { ...botConfig, ...roleForm }
+      });
+      pushLog('role', `Cargo alterado: ${payload.role.name}`);
+      await loadBotStatus();
+    });
+  }
+
+  async function deleteRole(roleId = roleForm.roleId) {
+    if (!roleId) return showNotice('Informe o ID do cargo.');
+    if (!window.confirm('Excluir este cargo?')) return;
+    await runAction('role-delete', async () => {
+      await api(`/discord-tools/roles/${roleId}`, { method: 'DELETE', body: botConfig });
+      pushLog('role', `Cargo excluido: ${roleId}`);
+      await loadBotStatus();
+    });
+  }
+
+  async function setMemberRole(action = roleForm.action) {
+    if (!roleForm.userId || !roleForm.roleId) return showNotice('Informe usuario e cargo.');
+    await runAction('member-role', async () => {
+      await api('/discord-tools/roles/member', {
+        method: 'POST',
+        body: { ...botConfig, ...roleForm, action }
+      });
+      pushLog('role', `${action === 'remove' ? 'Removido' : 'Adicionado'} cargo ${roleForm.roleId}`, roleForm.userId);
+      showNotice('Cargo do usuario atualizado.');
+    });
+  }
+
+  async function runModeration(action) {
+    await runAction(`moderation-${action}`, async () => {
+      await api('/discord-tools/moderation', {
+        method: 'POST',
+        body: { ...botConfig, ...moderation, action }
+      });
+      pushLog('moderation', `Acao executada: ${action}`, moderation.userId);
+      showNotice('Acao de moderacao enviada.');
+    });
+  }
+
+  async function lookupUser() {
+    await runAction('lookup', async () => {
+      const payload = await api('/discord-tools/user-lookup', {
+        method: 'POST',
+        body: { userId: lookupId, botToken: botConfig.botToken }
+      });
+      setLookupResult(payload.user);
+      pushLog('lookup', `Lookup de usuario ${payload.user.id}`, payload.user.id);
+      showNotice('Usuario consultado.');
+    });
+  }
+
+  function copyEmbedJson() {
+    copyText(JSON.stringify(makeDiscordEmbedJson(embed), null, 2));
+    showNotice('JSON do embed copiado.');
+  }
+
+  function clearWebhook() {
+    setWebhook({ webhookUrl: '', content: '', username: '', avatarUrl: '' });
+    setEmbed(defaultDiscordEmbed);
+    showNotice('Campos limpos.');
+  }
+
+  function saveAntiNuke() {
+    updateSettings({ ...settings, antiNuke, logChannelId: antiNuke.logChannelId });
+    pushLog('anti-nuke', `Anti-Nuke ${antiNuke.enabled ? 'ativo' : 'desativado'}`);
+    showNotice('Anti-Nuke salvo localmente.');
+  }
+
+  function saveBotSettings() {
+    updateSettings(settings);
+    pushLog('settings', 'Configuracoes do bot salvas');
+    showNotice('Configuracoes salvas.');
+  }
+
+  function renderWebhook() {
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Webhook Messenger</h3>
+            <MessageSquare size={18} />
+          </div>
+          <div className="discord-form-grid">
+            <label>
+              URL do webhook
+              <input value={webhook.webhookUrl} onChange={(event) => updateWebhook('webhookUrl', event.target.value)} placeholder="https://discord.com/api/webhooks/..." />
+            </label>
+            <label>
+              Nome personalizado
+              <input value={webhook.username} onChange={(event) => updateWebhook('username', event.target.value)} placeholder="Nexus Bot" />
+            </label>
+            <label>
+              Avatar URL
+              <input value={webhook.avatarUrl} onChange={(event) => updateWebhook('avatarUrl', event.target.value)} placeholder="https://..." />
+            </label>
+            <label className="wide">
+              Mensagem
+              <textarea value={webhook.content} onChange={(event) => updateWebhook('content', event.target.value)} rows={5} placeholder="Escreva a mensagem" />
+            </label>
+          </div>
+          <div className="discord-form-grid">
+            <label>
+              Titulo do embed
+              <input value={embed.title} onChange={(event) => setEmbed((current) => ({ ...current, title: event.target.value }))} />
+            </label>
+            <label>
+              Cor
+              <input type="color" value={embed.color} onChange={(event) => setEmbed((current) => ({ ...current, color: event.target.value }))} />
+            </label>
+            <label className="wide">
+              Descricao do embed
+              <textarea value={embed.description} onChange={(event) => setEmbed((current) => ({ ...current, description: event.target.value }))} rows={4} />
+            </label>
+            <label>
+              Imagem
+              <input value={embed.image} onChange={(event) => setEmbed((current) => ({ ...current, image: event.target.value }))} placeholder="https://..." />
+            </label>
+            <label>
+              Thumbnail
+              <input value={embed.thumbnail} onChange={(event) => setEmbed((current) => ({ ...current, thumbnail: event.target.value }))} placeholder="https://..." />
+            </label>
+            <label className="wide">
+              Footer
+              <input value={embed.footer} onChange={(event) => setEmbed((current) => ({ ...current, footer: event.target.value }))} />
+            </label>
+          </div>
+          <DiscordFieldEditor embed={embed} setEmbed={setEmbed} />
+          <div className="card-actions">
+            <button className="primary-button" onClick={sendWebhookMessage} disabled={loading === 'webhook'}>
+              <Send size={17} />
+              {loading === 'webhook' ? 'Enviando' : 'Enviar mensagem'}
+            </button>
+            <button className="ghost-button" onClick={clearWebhook}>
+              <Trash2 size={17} />
+              Limpar
+            </button>
+          </div>
+        </section>
+        <section className="panel discord-preview-panel">
+          <div className="panel-title">
+            <h3>Preview</h3>
+            <Eye size={18} />
+          </div>
+          <DiscordEmbedPreview embed={embed} content={webhook.content} username={webhook.username} avatarUrl={webhook.avatarUrl} />
+        </section>
+      </div>
+    );
+  }
+
+  function renderEmbedBuilder() {
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Embed Builder</h3>
+            <Code2 size={18} />
+          </div>
+          <div className="discord-form-grid">
+            <label>
+              Cor do embed
+              <input type="color" value={embed.color} onChange={(event) => setEmbed((current) => ({ ...current, color: event.target.value }))} />
+            </label>
+            <label>
+              Titulo
+              <input value={embed.title} onChange={(event) => setEmbed((current) => ({ ...current, title: event.target.value }))} />
+            </label>
+            <label className="wide">
+              Descricao
+              <textarea rows={6} value={embed.description} onChange={(event) => setEmbed((current) => ({ ...current, description: event.target.value }))} />
+            </label>
+            <label>
+              Imagem
+              <input value={embed.image} onChange={(event) => setEmbed((current) => ({ ...current, image: event.target.value }))} />
+            </label>
+            <label>
+              Thumbnail
+              <input value={embed.thumbnail} onChange={(event) => setEmbed((current) => ({ ...current, thumbnail: event.target.value }))} />
+            </label>
+            <label className="wide">
+              Footer
+              <input value={embed.footer} onChange={(event) => setEmbed((current) => ({ ...current, footer: event.target.value }))} />
+            </label>
+          </div>
+          <DiscordFieldEditor embed={embed} setEmbed={setEmbed} />
+          <div className="card-actions">
+            <button className="primary-button" onClick={copyEmbedJson}>
+              <Copy size={17} />
+              Copiar JSON
+            </button>
+            <button className="ghost-button" onClick={sendWebhookMessage} disabled={loading === 'webhook'}>
+              <Send size={17} />
+              Enviar pelo webhook
+            </button>
+          </div>
+        </section>
+        <section className="panel discord-preview-panel">
+          <div className="panel-title">
+            <h3>Preview em tempo real</h3>
+            <Eye size={18} />
+          </div>
+          <DiscordEmbedPreview embed={embed} content={webhook.content} username={webhook.username} avatarUrl={webhook.avatarUrl} />
+          <pre className="discord-json-preview">{JSON.stringify(makeDiscordEmbedJson(embed), null, 2)}</pre>
+        </section>
+      </div>
+    );
+  }
+
+  function renderBotManager() {
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Bot Server Manager</h3>
+            <Server size={18} />
+          </div>
+          <div className="notice subtle">Para ficar seguro, use DISCORD_BOT_TOKEN no Render. O campo abaixo e temporario e nao fica salvo.</div>
+          <div className="discord-form-grid">
+            <label>
+              Token do bot
+              <input type="password" value={botConfig.botToken} onChange={(event) => updateBot('botToken', event.target.value)} placeholder="Opcional se DISCORD_BOT_TOKEN estiver no backend" />
+            </label>
+            <label>
+              ID do servidor
+              <input value={botConfig.guildId} onChange={(event) => updateBot('guildId', event.target.value)} placeholder="Guild ID" />
+            </label>
+          </div>
+          <button className="primary-button" onClick={loadBotStatus} disabled={loading === 'bot'}>
+            <RefreshCw size={17} />
+            {loading === 'bot' ? 'Conectando' : 'Carregar servidor'}
+          </button>
+        </section>
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Status do bot</h3>
+            <Activity size={18} />
+          </div>
+          {botStatus ? (
+            <>
+              <div className="discord-status-hero">
+                <Avatar src={botStatus.bot.avatarUrl} name={botStatus.bot.username} size="lg" />
+                <span>
+                  <strong>{botStatus.bot.username}</strong>
+                  <small>{botStatus.bot.online ? 'Online' : 'Offline'} - {botStatus.bot.ping}ms - {botStatus.bot.guildCount} servidor(es)</small>
+                </span>
+              </div>
+              <div className="discord-stat-grid">
+                <Metric icon={Users} label="Membros" value={botStatus.guild?.memberCount || 0} />
+                <Metric icon={Hash} label="Canais" value={botStatus.guild?.channelCount || 0} />
+                <Metric icon={Crown} label="Cargos" value={botStatus.guild?.roleCount || 0} />
+              </div>
+              {botStatus.guild && (
+                <div className="discord-server-card">
+                  <Avatar src={botStatus.guild.iconUrl} name={botStatus.guild.name} />
+                  <span>
+                    <strong>{botStatus.guild.name}</strong>
+                    <small>ID {botStatus.guild.id}</small>
+                  </span>
+                </div>
+              )}
+            </>
+          ) : (
+            <EmptyState icon={Bot} title="Bot ainda nao conectado" />
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  function renderChannels() {
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Channel Manager</h3>
+            <Hash size={18} />
+          </div>
+          <div className="discord-form-grid">
+            <label>
+              Nome
+              <input value={channelForm.name} onChange={(event) => setChannelForm((current) => ({ ...current, name: event.target.value }))} placeholder="geral" />
+            </label>
+            <label>
+              Tipo
+              <select value={channelForm.type} onChange={(event) => setChannelForm((current) => ({ ...current, type: Number(event.target.value) }))}>
+                <option value={0}>Texto</option>
+                <option value={2}>Voz</option>
+                <option value={4}>Categoria</option>
+              </select>
+            </label>
+            <label>
+              Categoria
+              <select value={channelForm.parentId} onChange={(event) => setChannelForm((current) => ({ ...current, parentId: event.target.value }))}>
+                <option value="">Sem categoria</option>
+                {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+              </select>
+            </label>
+            <label>
+              Posicao
+              <input value={channelForm.position} onChange={(event) => setChannelForm((current) => ({ ...current, position: event.target.value }))} placeholder="0" />
+            </label>
+            <label className="wide">
+              ID do canal para editar/excluir
+              <input value={channelForm.channelId} onChange={(event) => setChannelForm((current) => ({ ...current, channelId: event.target.value }))} placeholder="Channel ID" />
+            </label>
+          </div>
+          <div className="discord-permission-grid">
+            {['Ver canal', 'Enviar mensagens', 'Conectar', 'Falar'].map((item) => (
+              <label className="switch-line" key={item}>
+                <input type="checkbox" defaultChecked />
+                {item}
+              </label>
+            ))}
+          </div>
+          <div className="card-actions">
+            <button className="primary-button" onClick={createChannel} disabled={loading === 'channel'}><Plus size={17} /> Criar</button>
+            <button className="ghost-button" onClick={updateChannel} disabled={loading === 'channel-update'}><Save size={17} /> Salvar edicao</button>
+            <button className="danger-button" onClick={() => deleteChannel()} disabled={loading === 'channel-delete'}><Trash2 size={17} /> Excluir</button>
+          </div>
+        </section>
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Canais do servidor</h3>
+            <button className="ghost-button" onClick={loadBotStatus}><RefreshCw size={16} /> Atualizar</button>
+          </div>
+          <div className="discord-list">
+            {(botStatus?.channels || []).map((channel) => {
+              const Icon = channelIcon(channel.type);
+              return (
+                <article className="discord-list-item" key={channel.id}>
+                  <button onClick={() => setChannelForm((current) => ({ ...current, channelId: channel.id, name: channel.name, type: channel.type, parentId: channel.parent_id || '', position: channel.position ?? '' }))}>
+                    <Icon size={18} />
+                    <span>
+                      <strong>{channel.name}</strong>
+                      <small>{channelLabel(channel.type)} - ID {channel.id}</small>
+                    </span>
+                  </button>
+                  <IconButton label="Excluir canal" onClick={() => deleteChannel(channel.id)}>
+                    <Trash2 size={15} />
+                  </IconButton>
+                </article>
+              );
+            })}
+            {!botStatus && <EmptyState icon={Hash} title="Carregue o bot para listar canais" />}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  function renderRoles() {
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Role Manager</h3>
+            <Crown size={18} />
+          </div>
+          <div className="discord-form-grid">
+            <label>
+              Nome
+              <input value={roleForm.name} onChange={(event) => setRoleForm((current) => ({ ...current, name: event.target.value }))} placeholder="Membro" />
+            </label>
+            <label>
+              Cor
+              <input type="color" value={roleForm.color} onChange={(event) => setRoleForm((current) => ({ ...current, color: event.target.value }))} />
+            </label>
+            <label>
+              Permissoes
+              <input value={roleForm.permissions} onChange={(event) => setRoleForm((current) => ({ ...current, permissions: event.target.value }))} placeholder="0" />
+            </label>
+            <label>
+              ID do cargo
+              <input value={roleForm.roleId} onChange={(event) => setRoleForm((current) => ({ ...current, roleId: event.target.value }))} />
+            </label>
+            <label className="wide">
+              ID do usuario
+              <input value={roleForm.userId} onChange={(event) => setRoleForm((current) => ({ ...current, userId: event.target.value }))} placeholder="Para adicionar/remover cargo" />
+            </label>
+          </div>
+          <div className="discord-permission-grid">
+            {['Administrador', 'Gerenciar servidor', 'Gerenciar cargos', 'Banir', 'Expulsar', 'Gerenciar canais'].map((item) => (
+              <label className="switch-line" key={item}>
+                <input type="checkbox" />
+                {item}
+              </label>
+            ))}
+          </div>
+          <div className="card-actions">
+            <button className="primary-button" onClick={createRole} disabled={loading === 'role'}><Plus size={17} /> Criar</button>
+            <button className="ghost-button" onClick={updateRole} disabled={loading === 'role-update'}><Save size={17} /> Renomear/alterar</button>
+            <button className="ghost-button" onClick={() => setMemberRole('add')}><Users size={17} /> Adicionar a usuario</button>
+            <button className="ghost-button" onClick={() => setMemberRole('remove')}><X size={17} /> Remover de usuario</button>
+            <button className="danger-button" onClick={() => deleteRole()}><Trash2 size={17} /> Excluir</button>
+          </div>
+        </section>
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Cargos</h3>
+            <Crown size={18} />
+          </div>
+          <div className="discord-role-grid">
+            {(botStatus?.roles || []).slice().reverse().map((role) => (
+              <article className="discord-role-card" key={role.id} style={{ '--role-color': discordColorToHex(role.color) }}>
+                <button onClick={() => setRoleForm((current) => ({ ...current, roleId: role.id, name: role.name, color: discordColorToHex(role.color), permissions: role.permissions || '0' }))}>
+                  <span className="role-dot" />
+                  <span>
+                    <strong>{role.name}</strong>
+                    <small>ID {role.id}</small>
+                  </span>
+                </button>
+                <IconButton label="Excluir cargo" onClick={() => deleteRole(role.id)}>
+                  <Trash2 size={15} />
+                </IconButton>
+              </article>
+            ))}
+            {!botStatus && <EmptyState icon={Crown} title="Carregue o bot para listar cargos" />}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  function renderAntiNuke() {
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Anti-Nuke</h3>
+            <AlertTriangle size={18} />
+          </div>
+          <div className="discord-status-banner">
+            {antiNuke.enabled ? <ToggleRight size={22} /> : <ToggleLeft size={22} />}
+            <span>
+              <strong>{antiNuke.enabled ? 'Ativo' : 'Desativado'}</strong>
+              <small>Monitor configurado para logs, limites e punicoes automaticas.</small>
+            </span>
+          </div>
+          <div className="discord-form-grid">
+            <label className="switch-line wide">
+              <input type="checkbox" checked={antiNuke.enabled} onChange={(event) => setAntiNuke((current) => ({ ...current, enabled: event.target.checked }))} />
+              Ativar protecao Anti-Nuke
+            </label>
+            <label>
+              Limite por minuto
+              <input type="number" min="1" max="60" value={antiNuke.limitPerMinute} onChange={(event) => setAntiNuke((current) => ({ ...current, limitPerMinute: Number(event.target.value) }))} />
+            </label>
+            <label>
+              Punicao automatica
+              <select value={antiNuke.punishment} onChange={(event) => setAntiNuke((current) => ({ ...current, punishment: event.target.value }))}>
+                <option value="remove_roles">Remover cargos perigosos</option>
+                <option value="ban">Banir usuario</option>
+                <option value="kick">Expulsar usuario</option>
+                <option value="alert">Apenas alertar</option>
+              </select>
+            </label>
+            <label>
+              Canal de logs
+              <input value={antiNuke.logChannelId} onChange={(event) => setAntiNuke((current) => ({ ...current, logChannelId: event.target.value }))} placeholder="Channel ID" />
+            </label>
+            <label className="wide">
+              Whitelist de usuarios confiaveis
+              <textarea rows={3} value={antiNuke.whitelist} onChange={(event) => setAntiNuke((current) => ({ ...current, whitelist: event.target.value }))} placeholder="Um Discord ID por linha" />
+            </label>
+            <label className="wide">
+              Cargos ignorados
+              <textarea rows={3} value={antiNuke.ignoredRoles} onChange={(event) => setAntiNuke((current) => ({ ...current, ignoredRoles: event.target.value }))} placeholder="Um Role ID por linha" />
+            </label>
+          </div>
+          <button className="primary-button" onClick={saveAntiNuke}><Save size={17} /> Salvar Anti-Nuke</button>
+        </section>
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Status e eventos</h3>
+            <Shield size={18} />
+          </div>
+          <div className="discord-stat-grid">
+            <Metric icon={AlertTriangle} label="Acoes detectadas" value={logs.filter((log) => log.type === 'anti-nuke').length} />
+            <Metric icon={Ban} label="Usuarios punidos" value={logs.filter((log) => log.type === 'moderation').length} />
+          </div>
+          <div className="discord-list">
+            {logs.slice(0, 8).map((log) => (
+              <article className="discord-log-row" key={log.id}>
+                <span className={`discord-log-dot ${log.type}`} />
+                <span>
+                  <strong>{log.detail}</strong>
+                  <small>{formatDate(log.createdAt)}</small>
+                </span>
+              </article>
+            ))}
+            {logs.length === 0 && <EmptyState icon={ScrollText} title="Nenhum log recente" />}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  function renderModeration() {
+    const ruleMessage = 'Leia as regras do servidor antes de participar. Respeito, seguranca e bom senso sao obrigatorios.';
+    const punishmentMessage = `Usuario punido. Motivo: ${moderation.reason || 'violacao das regras'}.`;
+    const welcomeEmbed = {
+      ...embed,
+      title: 'Bem-vindo',
+      description: 'Seja bem-vindo ao servidor. Confira as regras e aproveite.',
+      color: '#ff4058'
+    };
+
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Moderation Tools</h3>
+            <Gavel size={18} />
+          </div>
+          <div className="discord-form-grid">
+            <label>
+              Usuario ID
+              <input value={moderation.userId} onChange={(event) => setModeration((current) => ({ ...current, userId: event.target.value }))} />
+            </label>
+            <label>
+              Canal ID
+              <input value={moderation.channelId} onChange={(event) => setModeration((current) => ({ ...current, channelId: event.target.value }))} />
+            </label>
+            <label>
+              Timeout
+              <input type="number" min="1" value={moderation.durationMinutes} onChange={(event) => setModeration((current) => ({ ...current, durationMinutes: Number(event.target.value) }))} />
+            </label>
+            <label>
+              Mensagens para limpar
+              <input type="number" min="1" max="100" value={moderation.amount} onChange={(event) => setModeration((current) => ({ ...current, amount: Number(event.target.value) }))} />
+            </label>
+            <label className="wide">
+              Motivo
+              <input value={moderation.reason} onChange={(event) => setModeration((current) => ({ ...current, reason: event.target.value }))} />
+            </label>
+            <label className="wide">
+              Mensagem
+              <textarea rows={4} value={moderation.message} onChange={(event) => setModeration((current) => ({ ...current, message: event.target.value }))} />
+            </label>
+          </div>
+          <div className="discord-action-grid">
+            <button className="danger-button" onClick={() => runModeration('ban')}><Ban size={17} /> Banir</button>
+            <button className="danger-button" onClick={() => runModeration('kick')}><LogOut size={17} /> Expulsar</button>
+            <button className="ghost-button" onClick={() => runModeration('timeout')}><Clock3 size={17} /> Silenciar</button>
+            <button className="ghost-button" onClick={() => runModeration('untimeout')}><Check size={17} /> Remover timeout</button>
+            <button className="ghost-button" onClick={() => runModeration('warn')}><AlertTriangle size={17} /> Enviar aviso</button>
+            <button className="ghost-button" onClick={() => runModeration('clear')}><Trash2 size={17} /> Limpar mensagens</button>
+          </div>
+        </section>
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Geradores rapidos</h3>
+            <Sparkles size={18} />
+          </div>
+          <div className="discord-action-grid">
+            <button className="ghost-button" onClick={() => setModeration((current) => ({ ...current, message: ruleMessage }))}><Clipboard size={17} /> Mensagem de regras</button>
+            <button className="ghost-button" onClick={() => setModeration((current) => ({ ...current, message: punishmentMessage }))}><Gavel size={17} /> Mensagem de punicao</button>
+            <button className="ghost-button" onClick={() => setEmbed((current) => ({ ...current, title: 'Anuncio', description: moderation.message || 'Novo anuncio do servidor.', color: '#ff4058' }))}><Bell size={17} /> Embed de anuncio</button>
+            <button className="ghost-button" onClick={() => setEmbed(welcomeEmbed)}><Users size={17} /> Embed boas-vindas</button>
+          </div>
+          <DiscordEmbedPreview embed={embed} content={moderation.message} username="Nexus Moderation" />
+        </section>
+      </div>
+    );
+  }
+
+  function renderLookup() {
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>User Lookup</h3>
+            <Search size={18} />
+          </div>
+          <div className="discord-form-grid">
+            <label className="wide">
+              Discord ID
+              <input value={lookupId} onChange={(event) => setLookupId(event.target.value)} placeholder="1144781565839294604" />
+            </label>
+          </div>
+          <button className="primary-button" onClick={lookupUser} disabled={loading === 'lookup'}>
+            <Search size={17} />
+            Buscar usuario
+          </button>
+        </section>
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <h3>Resultado</h3>
+            <UserCog size={18} />
+          </div>
+          {lookupResult ? (
+            <div className="discord-lookup-card">
+              <Avatar src={lookupResult.avatarUrl} name={lookupResult.username || lookupResult.id} size="xl" />
+              <span>
+                <strong>{lookupResult.globalName || lookupResult.username || 'Usuario Discord'}</strong>
+                <small>ID {lookupResult.id}</small>
+                <small>Criada em {formatDate(lookupResult.createdAt)}</small>
+                <small>Badges/flags publicas: {lookupResult.flags ?? 'nao disponivel'}</small>
+                <small>Fonte: {lookupResult.source === 'bot' ? 'Bot API' : 'Snowflake'}</small>
+              </span>
+            </div>
+          ) : (
+            <EmptyState icon={Search} title="Nenhum usuario consultado" />
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  function renderLogs() {
+    return (
+      <section className="panel discord-tool-card">
+        <div className="panel-title">
+          <h3>Server Logs</h3>
+          <button className="danger-button" onClick={() => {
+            setLogs([]);
+            localStorage.removeItem('nexus-discord-tools-logs');
+          }}>
+            <Trash2 size={16} />
+            Limpar logs
+          </button>
+        </div>
+        <div className="discord-form-grid">
+          <label>
+            Tipo
+            <select value={logFilters.type} onChange={(event) => setLogFilters((current) => ({ ...current, type: event.target.value }))}>
+              <option value="">Todos</option>
+              <option value="webhook">Webhook</option>
+              <option value="bot">Bot</option>
+              <option value="channel">Canais</option>
+              <option value="role">Cargos</option>
+              <option value="anti-nuke">Anti-Nuke</option>
+              <option value="moderation">Moderacao</option>
+              <option value="lookup">Lookup</option>
+              <option value="settings">Config</option>
+            </select>
+          </label>
+          <label>
+            Usuario
+            <input value={logFilters.user} onChange={(event) => setLogFilters((current) => ({ ...current, user: event.target.value }))} />
+          </label>
+          <label>
+            Data
+            <input type="date" value={logFilters.date} onChange={(event) => setLogFilters((current) => ({ ...current, date: event.target.value }))} />
+          </label>
+        </div>
+        <div className="discord-log-table">
+          {visibleLogs.map((log) => (
+            <article className="discord-log-row" key={log.id}>
+              <span className={`discord-log-dot ${log.type}`} />
+              <span>
+                <strong>{log.detail}</strong>
+                <small>{log.type} {log.user ? `- ${log.user}` : ''}</small>
+              </span>
+              <small>{formatDate(log.createdAt)}</small>
+            </article>
+          ))}
+          {visibleLogs.length === 0 && <EmptyState icon={ScrollText} title="Nenhum log encontrado" />}
+        </div>
+      </section>
+    );
+  }
+
+  function renderBotSettings() {
+    return (
+      <section className="panel discord-tool-card">
+        <div className="panel-title">
+          <h3>Bot Settings</h3>
+          <Settings size={18} />
+        </div>
+        <div className="discord-form-grid">
+          <label>
+            Prefixo
+            <input value={settings.prefix} onChange={(event) => setSettings((current) => ({ ...current, prefix: event.target.value }))} />
+          </label>
+          <label>
+            Canal de logs
+            <input value={settings.logChannelId} onChange={(event) => setSettings((current) => ({ ...current, logChannelId: event.target.value }))} />
+          </label>
+          <label className="wide">
+            Mensagem de boas-vindas
+            <textarea rows={3} value={settings.welcomeMessage} onChange={(event) => setSettings((current) => ({ ...current, welcomeMessage: event.target.value }))} />
+          </label>
+          <label className="wide">
+            Mensagem de saida
+            <textarea rows={3} value={settings.leaveMessage} onChange={(event) => setSettings((current) => ({ ...current, leaveMessage: event.target.value }))} />
+          </label>
+        </div>
+        <div className="discord-toggle-grid">
+          {Object.entries(settings.modules).map(([key, value]) => (
+            <label className="switch-line" key={key}>
+              <input
+                type="checkbox"
+                checked={value}
+                onChange={(event) => setSettings((current) => ({
+                  ...current,
+                  modules: { ...current.modules, [key]: event.target.checked }
+                }))}
+              />
+              {key.replace(/([A-Z])/g, ' $1')}
+            </label>
+          ))}
+        </div>
+        <button className="primary-button" onClick={saveBotSettings}><Save size={17} /> Salvar configuracoes</button>
+      </section>
+    );
+  }
+
+  const renderers = {
+    webhook: renderWebhook,
+    embed: renderEmbedBuilder,
+    bot: renderBotManager,
+    channels: renderChannels,
+    roles: renderRoles,
+    'anti-nuke': renderAntiNuke,
+    moderation: renderModeration,
+    lookup: renderLookup,
+    logs: renderLogs,
+    settings: renderBotSettings
+  };
+
+  return (
+    <section className="page discord-tools-page">
+      <PageHeader
+        eyebrow="Discord"
+        title="Discord Tools"
+        actions={(
+          <button className="ghost-button" onClick={loadBotStatus}>
+            <RefreshCw size={17} />
+            Atualizar bot
+          </button>
+        )}
+      />
+      {notice && (
+        <button className="toast discord-toast" onClick={() => setNotice('')}>
+          {notice}
+          <X size={16} />
+        </button>
+      )}
+      <div className="discord-tools-layout">
+        <aside className="discord-tools-sidebar">
+          {discordSections.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button key={item.id} className={section === item.id ? 'active' : ''} onClick={() => setSection(item.id)}>
+                <Icon size={18} />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+        </aside>
+        <div className="discord-tools-content">
+          {renderers[section]()}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function ProfilePage({ user }) {
   return (
     <section className="page">
@@ -2226,6 +3323,7 @@ export default function App() {
       {view === 'authenticator' && <AuthenticatorPage />}
       {view === 'temp-email' && <TempEmailPage />}
       {view === 'images' && <MediaPage />}
+      {view === 'discord-tools' && <DiscordToolsPage />}
       {view === 'users' && <UsersPage users={authorizedUsers} reloadUsers={loadAuthorizedUsers} />}
       {view === 'settings' && <SettingsPage theme={theme} resolvedTheme={resolvedTheme} setTheme={setTheme} onBackup={exportBackup} />}
       {view === 'profile' && <ProfilePage user={session.user} />}

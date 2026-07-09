@@ -37,6 +37,19 @@ import {
   listTempEmailInboxes,
   listTempEmailMessages
 } from './tempEmail.js';
+import {
+  createDiscordChannel,
+  createDiscordRole,
+  deleteDiscordChannel,
+  deleteDiscordRole,
+  getDiscordBotStatus,
+  lookupDiscordUser,
+  runDiscordModerationAction,
+  sendDiscordWebhookMessage,
+  setDiscordMemberRole,
+  updateDiscordChannel,
+  updateDiscordRole
+} from './discordTools.js';
 import { lookupRobloxUsername } from './roblox.js';
 import {
   getRobloxGeneratorAccount,
@@ -331,6 +344,68 @@ const tempEmailCreateSchema = z.object({
   label: z.string().trim().max(120).optional().or(z.literal('')),
   prefix: z.string().trim().max(40).optional().or(z.literal('')),
   domain: z.string().trim().max(180).optional().or(z.literal(''))
+});
+
+const discordEmbedFieldSchema = z.object({
+  name: z.string().trim().max(256).optional().or(z.literal('')),
+  value: z.string().trim().max(1024).optional().or(z.literal('')),
+  inline: z.boolean().optional().default(false)
+});
+
+const discordEmbedSchema = z.object({
+  title: z.string().trim().max(256).optional().or(z.literal('')),
+  description: z.string().trim().max(4096).optional().or(z.literal('')),
+  color: z.string().trim().max(16).optional().or(z.literal('')),
+  image: z.string().trim().max(500).optional().or(z.literal('')),
+  thumbnail: z.string().trim().max(500).optional().or(z.literal('')),
+  footer: z.string().trim().max(2048).optional().or(z.literal('')),
+  fields: z.array(discordEmbedFieldSchema).max(25).optional().default([])
+});
+
+const discordWebhookSchema = z.object({
+  webhookUrl: z.string().trim().url(),
+  content: z.string().max(2000).optional().or(z.literal('')),
+  username: z.string().trim().max(80).optional().or(z.literal('')),
+  avatarUrl: z.string().trim().max(500).optional().or(z.literal('')),
+  embed: discordEmbedSchema.optional().default({})
+});
+
+const discordBotRequestSchema = z.object({
+  botToken: z.string().trim().max(300).optional().or(z.literal('')),
+  guildId: z.string().trim().max(32).optional().or(z.literal(''))
+});
+
+const discordChannelSchema = discordBotRequestSchema.extend({
+  channelId: z.string().trim().max(32).optional().or(z.literal('')),
+  name: z.string().trim().max(100).optional().or(z.literal('')),
+  type: z.coerce.number().int().min(0).max(15).optional().default(0),
+  parentId: z.string().trim().max(32).optional().nullable().or(z.literal('')),
+  position: z.union([z.string(), z.number()]).optional(),
+  permissionOverwrites: z.array(z.any()).optional()
+});
+
+const discordRoleSchema = discordBotRequestSchema.extend({
+  roleId: z.string().trim().max(32).optional().or(z.literal('')),
+  name: z.string().trim().max(100).optional().or(z.literal('')),
+  color: z.string().trim().max(16).optional().or(z.literal('')),
+  permissions: z.string().trim().max(32).optional().or(z.literal('')),
+  userId: z.string().trim().max(32).optional().or(z.literal('')),
+  action: z.enum(['add', 'remove']).optional().default('add')
+});
+
+const discordModerationSchema = discordBotRequestSchema.extend({
+  userId: z.string().trim().max(32).optional().or(z.literal('')),
+  channelId: z.string().trim().max(32).optional().or(z.literal('')),
+  action: z.enum(['ban', 'kick', 'timeout', 'untimeout', 'warn', 'clear']),
+  reason: z.string().trim().max(512).optional().or(z.literal('')),
+  durationMinutes: z.coerce.number().int().min(1).max(40320).optional().default(10),
+  amount: z.coerce.number().int().min(1).max(100).optional().default(10),
+  message: z.string().max(2000).optional().or(z.literal(''))
+});
+
+const discordUserLookupSchema = z.object({
+  userId: z.string().trim().min(5).max(32),
+  botToken: z.string().trim().max(300).optional().or(z.literal(''))
 });
 
 const previewImageTypes = new Set([
@@ -1110,6 +1185,158 @@ app.get('/api/temp-email/inboxes/:id/messages/:messageId', requireAuth, async (r
     messageId: req.params.messageId
   });
   res.json({ message });
+});
+
+app.post('/api/discord-tools/webhook/send', requireAuth, async (req, res) => {
+  const payload = discordWebhookSchema.parse(req.body);
+  const result = await sendDiscordWebhookMessage(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.webhook_sent',
+    targetType: 'discord_webhook',
+    metadata: {
+      hasContent: Boolean(payload.content),
+      hasEmbed: Boolean(payload.embed && Object.values(payload.embed).some(Boolean))
+    },
+    ip: req.ip
+  });
+  res.json(result);
+});
+
+app.post('/api/discord-tools/user-lookup', requireAuth, async (req, res) => {
+  const payload = discordUserLookupSchema.parse(req.body);
+  const user = await lookupDiscordUser(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.user_lookup',
+    targetType: 'discord_user',
+    targetId: user.id,
+    ip: req.ip
+  });
+  res.json({ user });
+});
+
+app.post('/api/discord-tools/bot/status', requireAuth, async (req, res) => {
+  const payload = discordBotRequestSchema.parse(req.body);
+  const status = await getDiscordBotStatus(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.bot_status',
+    targetType: 'discord_guild',
+    targetId: status.guild?.id || payload.guildId || null,
+    ip: req.ip
+  });
+  res.json(status);
+});
+
+app.post('/api/discord-tools/channels', requireAuth, async (req, res) => {
+  const payload = discordChannelSchema.parse(req.body);
+  const channel = await createDiscordChannel(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.channel_created',
+    targetType: 'discord_channel',
+    targetId: channel.id,
+    metadata: { name: channel.name, type: channel.type },
+    ip: req.ip
+  });
+  res.status(201).json({ channel });
+});
+
+app.patch('/api/discord-tools/channels/:id', requireAuth, async (req, res) => {
+  const payload = discordChannelSchema.parse({ ...req.body, channelId: req.params.id });
+  const channel = await updateDiscordChannel(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.channel_updated',
+    targetType: 'discord_channel',
+    targetId: req.params.id,
+    metadata: { name: channel.name, type: channel.type },
+    ip: req.ip
+  });
+  res.json({ channel });
+});
+
+app.delete('/api/discord-tools/channels/:id', requireAuth, async (req, res) => {
+  const payload = discordChannelSchema.parse({ ...req.body, channelId: req.params.id });
+  const result = await deleteDiscordChannel(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.channel_deleted',
+    targetType: 'discord_channel',
+    targetId: req.params.id,
+    ip: req.ip
+  });
+  res.json(result);
+});
+
+app.post('/api/discord-tools/roles', requireAuth, async (req, res) => {
+  const payload = discordRoleSchema.parse(req.body);
+  const role = await createDiscordRole(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.role_created',
+    targetType: 'discord_role',
+    targetId: role.id,
+    metadata: { name: role.name },
+    ip: req.ip
+  });
+  res.status(201).json({ role });
+});
+
+app.patch('/api/discord-tools/roles/:id', requireAuth, async (req, res) => {
+  const payload = discordRoleSchema.parse({ ...req.body, roleId: req.params.id });
+  const role = await updateDiscordRole(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.role_updated',
+    targetType: 'discord_role',
+    targetId: req.params.id,
+    metadata: { name: role.name },
+    ip: req.ip
+  });
+  res.json({ role });
+});
+
+app.delete('/api/discord-tools/roles/:id', requireAuth, async (req, res) => {
+  const payload = discordRoleSchema.parse({ ...req.body, roleId: req.params.id });
+  const result = await deleteDiscordRole(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.role_deleted',
+    targetType: 'discord_role',
+    targetId: req.params.id,
+    ip: req.ip
+  });
+  res.json(result);
+});
+
+app.post('/api/discord-tools/roles/member', requireAuth, async (req, res) => {
+  const payload = discordRoleSchema.parse(req.body);
+  const result = await setDiscordMemberRole(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: payload.action === 'remove' ? 'discord_tools.member_role_removed' : 'discord_tools.member_role_added',
+    targetType: 'discord_user',
+    targetId: payload.userId,
+    metadata: { roleId: payload.roleId },
+    ip: req.ip
+  });
+  res.json(result);
+});
+
+app.post('/api/discord-tools/moderation', requireAuth, async (req, res) => {
+  const payload = discordModerationSchema.parse(req.body);
+  const result = await runDiscordModerationAction(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: `discord_tools.moderation_${payload.action}`,
+    targetType: payload.action === 'warn' || payload.action === 'clear' ? 'discord_channel' : 'discord_user',
+    targetId: payload.action === 'warn' || payload.action === 'clear' ? payload.channelId : payload.userId,
+    metadata: { reason: payload.reason || null },
+    ip: req.ip
+  });
+  res.json(result);
 });
 
 app.get('/api/accounts', requireAuth, async (req, res) => {
