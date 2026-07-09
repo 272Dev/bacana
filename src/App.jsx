@@ -2119,7 +2119,12 @@ function DiscordToolsPage() {
   const [repeatStatus, setRepeatStatus] = useState({ active: false, sent: 0, total: 0 });
   const repeatStopRef = useRef(false);
   const [embed, setEmbed] = useState(defaultDiscordEmbed);
-  const [botConfig, setBotConfig] = useState({ botToken: '', guildId: savedSettings?.guildId || '' });
+  const [botConfig, setBotConfig] = useState({
+    botToken: '',
+    guildId: savedSettings?.guildId || '',
+    clientId: savedSettings?.botClientId || '',
+    invitePermissions: savedSettings?.botInvitePermissions || '8'
+  });
   const [botStatus, setBotStatus] = useState(null);
   const [channelForm, setChannelForm] = useState({ name: '', type: 0, parentId: '', channelId: '', position: '' });
   const [roleForm, setRoleForm] = useState({ name: '', color: '#ff4058', permissions: '0', roleId: '', userId: '', action: 'add' });
@@ -2180,6 +2185,14 @@ function DiscordToolsPage() {
 
   function updateBot(field, value) {
     setBotConfig((current) => ({ ...current, [field]: value }));
+    if (field === 'guildId' || field === 'clientId' || field === 'invitePermissions') {
+      updateSettings({
+        ...settings,
+        ...(field === 'guildId' ? { guildId: value } : {}),
+        ...(field === 'clientId' ? { botClientId: value } : {}),
+        ...(field === 'invitePermissions' ? { botInvitePermissions: value } : {})
+      });
+    }
   }
 
   function updateSettings(nextSettings) {
@@ -2241,8 +2254,8 @@ function DiscordToolsPage() {
 
     const requestedCount = Number(repeatOptions.count);
     const requestedDelay = Number(repeatOptions.delaySeconds);
-    const total = Math.min(100, Number.isFinite(requestedCount) ? Math.max(1, Math.floor(requestedCount)) : 1);
-    const delaySeconds = Math.min(300, Number.isFinite(requestedDelay) ? Math.max(1, requestedDelay) : 1);
+    const total = Math.min(100000, Number.isFinite(requestedCount) ? Math.max(1, Math.floor(requestedCount)) : 1);
+    const delaySeconds = Math.min(300, Number.isFinite(requestedDelay) ? Math.max(0,1, requestedDelay) : 0.1);
     repeatStopRef.current = false;
     setLoading('webhook-repeat');
     setNotice('');
@@ -2284,12 +2297,47 @@ function DiscordToolsPage() {
         body: botConfig
       });
       setBotStatus(payload);
-      const nextSettings = { ...settings, guildId: botConfig.guildId || payload.guild?.id || settings.guildId };
+      const nextSettings = {
+        ...settings,
+        guildId: botConfig.guildId || payload.guild?.id || settings.guildId,
+        botClientId: botConfig.clientId || payload.bot?.id || settings.botClientId,
+        botInvitePermissions: botConfig.invitePermissions || settings.botInvitePermissions
+      };
       updateSettings(nextSettings);
       if (!botConfig.guildId && payload.guild?.id) updateBot('guildId', payload.guild.id);
+      if (!botConfig.clientId && payload.bot?.id) updateBot('clientId', payload.bot.id);
       pushLog('bot', `Status carregado para ${payload.guild?.name || 'bot'}`);
       showNotice('Bot conectado.');
     });
+  }
+
+  function makeBotInviteUrl() {
+    const clientId = String(botConfig.clientId || botStatus?.bot?.id || '').trim();
+    if (!clientId) return '';
+    const url = new URL('https://discord.com/oauth2/authorize');
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('permissions', String(botConfig.invitePermissions || '8').trim() || '8');
+    url.searchParams.set('scope', 'bot applications.commands');
+    const guildId = String(botConfig.guildId || '').trim();
+    if (guildId) {
+      url.searchParams.set('guild_id', guildId);
+      url.searchParams.set('disable_guild_select', 'true');
+    }
+    return url.toString();
+  }
+
+  function openBotInvite() {
+    const inviteUrl = makeBotInviteUrl();
+    if (!inviteUrl) return showNotice('Informe o Client ID do bot ou carregue o status do bot.');
+    window.open(inviteUrl, '_blank', 'noopener,noreferrer');
+    pushLog('bot', 'Convite do bot aberto');
+  }
+
+  function copyBotInvite() {
+    const inviteUrl = makeBotInviteUrl();
+    if (!inviteUrl) return showNotice('Informe o Client ID do bot ou carregue o status do bot.');
+    copyText(inviteUrl);
+    showNotice('Link de convite do bot copiado.');
   }
 
   async function createChannel() {
@@ -2479,7 +2527,7 @@ function DiscordToolsPage() {
             <div className="discord-repeat-status">
               <span>
                 <strong>{repeatStatus.active ? 'Enviando repetidas' : 'Pronto para repetir'}</strong>
-                <small>{repeatStatus.total ? `${repeatStatus.sent}/${repeatStatus.total} enviadas` : 'Limite de 100 por rodada, delay minimo de 1s'}</small>
+                <small>{repeatStatus.total ? `${repeatStatus.sent}/${repeatStatus.total} enviadas` : ''}</small>
               </span>
               <div className="discord-repeat-progress">
                 <span style={{ width: repeatStatus.total ? `${Math.min(100, (repeatStatus.sent / repeatStatus.total) * 100)}%` : '0%' }} />
@@ -2626,6 +2674,39 @@ function DiscordToolsPage() {
             <RefreshCw size={17} />
             {loading === 'bot' ? 'Conectando' : 'Carregar servidor'}
           </button>
+          <div className="discord-invite-box">
+            <div className="panel-title compact">
+              <div>
+                <h3>Adicionar bot ao servidor</h3>
+                <small>Gera o convite oficial do Discord para instalar o bot no servidor escolhido.</small>
+              </div>
+              <Bot size={18} />
+            </div>
+            <div className="discord-form-grid">
+              <label>
+                Client ID do bot
+                <input value={botConfig.clientId} onChange={(event) => updateBot('clientId', event.target.value)} placeholder="Client ID da aplicacao" />
+              </label>
+              <label>
+                Permissoes
+                <input value={botConfig.invitePermissions} onChange={(event) => updateBot('invitePermissions', event.target.value)} placeholder="8" />
+              </label>
+              <label className="wide">
+                Link de convite
+                <input value={makeBotInviteUrl()} readOnly placeholder="Carregue o bot ou informe o Client ID" />
+              </label>
+            </div>
+            <div className="card-actions">
+              <button className="primary-button" onClick={openBotInvite}>
+                <Plus size={17} />
+                Abrir convite
+              </button>
+              <button className="ghost-button" onClick={copyBotInvite}>
+                <Copy size={17} />
+                Copiar link
+              </button>
+            </div>
+          </div>
         </section>
         <section className="panel discord-tool-card">
           <div className="panel-title">
