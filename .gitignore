@@ -11,3 +11,5 @@ data/
 *.db-wal
 .deploy-git/
 .deploy-package*/
+.publish-github*/
+*.bak
