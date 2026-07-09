@@ -1935,6 +1935,7 @@ const discordSections = [
   { id: 'runtime', label: 'Online e Agenda', icon: Activity },
   { id: 'voice', label: 'Voz', icon: Volume2 },
   { id: 'profile-control', label: 'Perfil do Bot', icon: Palette },
+  { id: 'invite', label: 'Convite', icon: Share2 },
   { id: 'webhook', label: 'Webhook', icon: MessageSquare },
   { id: 'embed', label: 'Embed Builder', icon: Code2 },
   { id: 'bot', label: 'Bot Manager', icon: Bot },
@@ -2031,6 +2032,11 @@ const defaultDiscordControl = {
   counterTemplate: 'Membros: {members}',
   counterIntervalMinutes: 5,
   counterAuto: false,
+  invitePermissions: '8',
+  inviteGuildId: '',
+  inviteClientId: '',
+  inviteIncludeCommands: true,
+  inviteDisableGuildSelect: false,
   commandCooldown: 5,
   commandRole: '',
   commandChannel: '',
@@ -2041,6 +2047,7 @@ const defaultDiscordManagedBots = [
   {
     id: 'render-bot',
     name: 'Render Bot',
+    applicationId: '',
     guildId: '',
     avatarUrl: '',
     color: '#5865f2',
@@ -2072,6 +2079,20 @@ const discordCommandCatalog = [
   { id: 'welcome', label: 'Welcome setup', category: 'Admin', enabled: false }
 ];
 
+const discordInvitePresets = [
+  { id: 'admin', label: 'Administrador completo', permissions: '8' },
+  {
+    id: 'protection',
+    label: 'Protecao e moderacao',
+    permissions: String(2n + 4n + 16n + 32n + 128n + 1024n + 2048n + 8192n + 268435456n + 536870912n + 1099511627776n)
+  },
+  {
+    id: 'basic',
+    label: 'Basico e comandos',
+    permissions: String(1024n + 2048n + 64n + 16384n + 32768n + 65536n + 262144n + 1048576n + 2097152n)
+  }
+];
+
 function discordColorToHex(value) {
   const number = Number(value || 0);
   return `#${number.toString(16).padStart(6, '0').slice(-6)}`;
@@ -2087,6 +2108,10 @@ function channelLabel(type) {
   if (type === 2) return 'Voz';
   if (type === 4) return 'Categoria';
   return 'Texto';
+}
+
+function extractApplicationIdFromBotCard(bot) {
+  return bot?.applicationId || String(bot?.id || '').match(/^bot-(\d{5,32})/)?.[1] || '';
 }
 
 function makeDiscordEmbedJson(embed) {
@@ -2419,6 +2444,7 @@ function DiscordToolsPage() {
         ...defaultDiscordManagedBots[0],
         id,
         name: newBotForm.name.trim() || payload.bot?.username || `Bot ${managedBots.length + 1}`,
+        applicationId: payload.application?.id || payload.bot?.id || '',
         guildId: newBotForm.guildId.trim() || payload.guild?.id || '',
         guildName: payload.guild?.name || '',
         avatarUrl: payload.bot?.avatarUrl || '',
@@ -2676,6 +2702,7 @@ function DiscordToolsPage() {
       if (!botConfig.guildId && payload.guild?.id) updateBot('guildId', payload.guild.id);
       updateManagedBot(control.selectedBotId, {
         name: payload.bot?.username || selectedManagedBot.name,
+        applicationId: payload.application?.id || payload.bot?.id || selectedManagedBot.applicationId || '',
         avatarUrl: payload.bot?.avatarUrl || selectedManagedBot.avatarUrl,
         guildId: botConfig.guildId || payload.guild?.id || selectedManagedBot.guildId,
         guildName: payload.guild?.name || selectedManagedBot.guildName,
@@ -2859,6 +2886,43 @@ function DiscordToolsPage() {
   function copyEmbedJson() {
     copyText(JSON.stringify(makeDiscordEmbedJson(embed), null, 2));
     showNotice('JSON do embed copiado.');
+  }
+
+  function getInviteClientId(bot = selectedManagedBot) {
+    if (bot.id === selectedManagedBot.id && control.inviteClientId.trim()) return control.inviteClientId.trim();
+    if (bot.id === selectedManagedBot.id && botStatus?.application?.id) return botStatus.application.id;
+    if (bot.id === selectedManagedBot.id && botStatus?.bot?.id) return botStatus.bot.id;
+    return extractApplicationIdFromBotCard(bot);
+  }
+
+  function buildInviteUrl(bot = selectedManagedBot) {
+    const clientId = getInviteClientId(bot);
+    if (!clientId) return '';
+    const scopes = ['bot'];
+    if (control.inviteIncludeCommands) scopes.push('applications.commands');
+    const params = new URLSearchParams({
+      client_id: clientId,
+      permissions: String(control.invitePermissions || '8'),
+      scope: scopes.join(' ')
+    });
+    const guildId = (bot.id === selectedManagedBot.id ? control.inviteGuildId : '') || botConfig.guildId || bot.guildId || '';
+    if (guildId) params.set('guild_id', guildId);
+    if (control.inviteDisableGuildSelect && guildId) params.set('disable_guild_select', 'true');
+    return `https://discord.com/oauth2/authorize?${params.toString()}`;
+  }
+
+  function copyInviteLink(bot = selectedManagedBot) {
+    const inviteUrl = buildInviteUrl(bot);
+    if (!inviteUrl) return showNotice('Carregue o bot ou informe o Client/Application ID.');
+    copyText(inviteUrl);
+    pushLog('bot', `Convite copiado para ${bot.name || 'bot'}`);
+    showNotice('Link de convite copiado.');
+  }
+
+  function openInviteLink(bot = selectedManagedBot) {
+    const inviteUrl = buildInviteUrl(bot);
+    if (!inviteUrl) return showNotice('Carregue o bot ou informe o Client/Application ID.');
+    window.open(inviteUrl, '_blank', 'noopener,noreferrer');
   }
 
   function clearWebhook() {
@@ -3198,6 +3262,94 @@ function DiscordToolsPage() {
           </div>
           <div className="card-actions">
             <button className="primary-button" onClick={() => applyCounterNow(false)} disabled={loading === 'counter'}><RefreshCw size={17} /> Atualizar agora</button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  function renderInviteManager() {
+    const inviteUrl = buildInviteUrl();
+    const selectedClientId = getInviteClientId();
+    const selectedPreset = discordInvitePresets.find((preset) => preset.permissions === String(control.invitePermissions))?.id || 'custom';
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title"><h3>Criar convite do bot</h3><Share2 size={18} /></div>
+          <div className="discord-form-grid">
+            <label>
+              Bot
+              <select value={control.selectedBotId} onChange={(event) => selectManagedBot(event.target.value)}>
+                {managedBots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}
+              </select>
+            </label>
+            <label>
+              Client/Application ID
+              <input value={control.inviteClientId} onChange={(event) => updateControl({ inviteClientId: event.target.value })} placeholder={selectedClientId || 'Carregue o bot ou cole o ID'} />
+            </label>
+            <label>
+              Permissoes
+              <select
+                value={selectedPreset}
+                onChange={(event) => {
+                  const preset = discordInvitePresets.find((item) => item.id === event.target.value);
+                  if (preset) updateControl({ invitePermissions: preset.permissions });
+                }}
+              >
+                {discordInvitePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+                <option value="custom">Personalizado</option>
+              </select>
+            </label>
+            <label>
+              Valor das permissoes
+              <input value={control.invitePermissions} onChange={(event) => updateControl({ invitePermissions: event.target.value.replace(/[^\d]/g, '') })} placeholder="8" />
+            </label>
+            <label>
+              Servidor alvo
+              <input value={control.inviteGuildId} onChange={(event) => updateControl({ inviteGuildId: event.target.value })} placeholder={botConfig.guildId || selectedManagedBot.guildId || 'Opcional'} />
+            </label>
+            <label className="wide">
+              Link gerado
+              <input readOnly value={inviteUrl || 'Carregue o bot ou informe o Client/Application ID'} />
+            </label>
+          </div>
+          <div className="discord-toggle-grid">
+            <label className="switch-line"><input type="checkbox" checked={control.inviteIncludeCommands} onChange={(event) => updateControl({ inviteIncludeCommands: event.target.checked })} /> Incluir slash commands</label>
+            <label className="switch-line"><input type="checkbox" checked={control.inviteDisableGuildSelect} onChange={(event) => updateControl({ inviteDisableGuildSelect: event.target.checked })} /> Fixar nesse servidor</label>
+          </div>
+          <div className="card-actions">
+            <button className="primary-button" type="button" onClick={() => copyInviteLink()}><Copy size={17} /> Copiar convite</button>
+            <button className="ghost-button" type="button" onClick={() => openInviteLink()}><Share2 size={17} /> Abrir convite</button>
+            <button className="ghost-button" type="button" onClick={loadBotStatus}><RefreshCw size={17} /> Pegar ID pelo token</button>
+          </div>
+          <div className="notice subtle">Para o link funcionar, use o Application ID do bot. Quando voce adiciona ou carrega o bot pelo token, o painel pega esse ID automatico.</div>
+        </section>
+
+        <section className="panel discord-tool-card">
+          <div className="panel-title"><h3>Convites por bot</h3><Bot size={18} /></div>
+          <div className="discord-list compact-list">
+            {botCards.map((bot) => {
+              const clientId = getInviteClientId(bot);
+              return (
+                <article className="discord-list-item" key={bot.id}>
+                  <button type="button" onClick={() => selectManagedBot(bot.id)}>
+                    <Avatar src={bot.avatarUrl} name={bot.name} />
+                    <span>
+                      <strong>{bot.name}</strong>
+                      <small>{clientId ? `Client ID ${clientId}` : 'Carregue esse bot para gerar convite'}</small>
+                    </span>
+                  </button>
+                  <div className="footer-actions">
+                    <IconButton label="Copiar convite" onClick={() => copyInviteLink(bot)} disabled={!clientId}>
+                      <Copy size={15} />
+                    </IconButton>
+                    <IconButton label="Abrir convite" onClick={() => openInviteLink(bot)} disabled={!clientId}>
+                      <Share2 size={15} />
+                    </IconButton>
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </section>
       </div>
@@ -4117,6 +4269,7 @@ function DiscordToolsPage() {
     runtime: renderRuntimeControl,
     voice: renderVoiceControl,
     'profile-control': renderProfileControl,
+    invite: renderInviteManager,
     webhook: renderWebhook,
     embed: renderEmbedBuilder,
     bot: renderBotManager,

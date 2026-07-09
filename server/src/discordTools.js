@@ -200,6 +200,13 @@ export async function lookupDiscordUser({ userId, botToken }) {
 export async function getDiscordBotStatus({ botToken, guildId } = {}) {
   const token = getBotToken(botToken);
   const meResult = await discordRequest('/users/@me', { token });
+  let application = null;
+  try {
+    const applicationResult = await discordRequest('/oauth2/applications/@me', { token });
+    application = applicationResult.payload;
+  } catch {
+    application = null;
+  }
   let guilds = [];
   try {
     const guildsResult = await discordRequest('/users/@me/guilds', { token });
@@ -230,6 +237,13 @@ export async function getDiscordBotStatus({ botToken, guildId } = {}) {
       ping: meResult.ping,
       guildCount: guilds.length
     },
+    application: application ? {
+      id: application.id,
+      name: application.name,
+      description: application.description || '',
+      botPublic: Boolean(application.bot_public),
+      iconUrl: application.icon ? `https://cdn.discordapp.com/app-icons/${application.id}/${application.icon}.png?size=128` : null
+    } : null,
     guilds,
     guild: guild ? {
       id: guild.id,
