@@ -3050,6 +3050,210 @@ label {
   line-height: 1.5;
 }
 
+/* Nexus polish for the Discord channel manager */
+.discord-channel-page {
+  gap: 12px;
+  color: var(--muted);
+}
+
+.discord-channel-topbar,
+.discord-server-picker,
+.discord-channel-workspace {
+  border-color: rgba(255, 255, 255, 0.10);
+  background:
+    radial-gradient(circle at 76% 0%, rgba(255, 64, 88, 0.10), transparent 34%),
+    linear-gradient(180deg, rgba(26, 27, 27, 0.74), rgba(9, 10, 10, 0.70));
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.30);
+  backdrop-filter: var(--glass-blur);
+}
+
+.discord-channel-topbar {
+  padding: 12px 14px;
+  border-radius: 16px;
+}
+
+.discord-channel-topbar h2 {
+  font-size: 1.12rem;
+  letter-spacing: 0;
+}
+
+.discord-bot-state {
+  min-height: 30px;
+  color: rgba(248, 250, 247, 0.76);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.discord-server-picker {
+  border-radius: 16px;
+  background:
+    linear-gradient(90deg, rgba(255, 64, 88, 0.08), transparent 40%),
+    rgba(16, 17, 17, 0.74);
+}
+
+.discord-server-current {
+  min-height: 64px;
+  padding: 10px 12px;
+}
+
+.discord-server-current small,
+.discord-server-dropdown small,
+.discord-category-row > button:first-child small,
+.discord-channel-row small {
+  color: rgba(236, 241, 232, 0.48);
+}
+
+.discord-server-permission.ok,
+.discord-server-dropdown .ok {
+  color: #77e58a;
+}
+
+.discord-server-dropdown {
+  border-color: rgba(255, 255, 255, 0.11);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(255, 64, 88, 0.12), transparent 42%),
+    rgba(15, 16, 16, 0.96);
+  backdrop-filter: var(--glass-blur);
+}
+
+.discord-server-dropdown button:hover,
+.discord-server-dropdown button.active {
+  background: rgba(255, 255, 255, 0.075);
+}
+
+.discord-channel-workspace {
+  grid-template-columns: minmax(250px, 320px) minmax(0, 1fr);
+  min-height: 520px;
+  border-radius: 18px;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 64% 12%, rgba(255, 64, 88, 0.10), transparent 32%),
+    rgba(10, 11, 11, 0.64);
+}
+
+.discord-channel-sidebar-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.045), transparent 28%),
+    rgba(9, 10, 10, 0.62);
+  border-right-color: rgba(255, 255, 255, 0.08);
+}
+
+.discord-channel-sidebar-head {
+  min-height: 44px;
+  color: rgba(248, 250, 247, 0.92);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+
+.discord-channel-sidebar-head button:hover {
+  background: rgba(255, 64, 88, 0.13);
+}
+
+.discord-channel-sidebar {
+  gap: 3px;
+  padding: 9px;
+}
+
+.discord-category-row {
+  min-height: 28px;
+}
+
+.discord-category-row > button:first-child {
+  padding: 5px 6px;
+  color: rgba(236, 241, 232, 0.54);
+  letter-spacing: 0;
+}
+
+.discord-channel-row {
+  min-height: 39px;
+  color: rgba(236, 241, 232, 0.68);
+}
+
+.discord-channel-row:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.065);
+}
+
+.discord-channel-row.selected {
+  color: var(--text);
+  background:
+    linear-gradient(90deg, rgba(255, 64, 88, 0.22), rgba(255, 255, 255, 0.075));
+  box-shadow: inset 2px 0 0 rgba(255, 64, 88, 0.9);
+}
+
+.discord-channel-row > button:first-child {
+  padding: 7px 8px;
+}
+
+.discord-channel-row strong {
+  font-size: 0.84rem;
+}
+
+.discord-category-row .icon-button,
+.discord-channel-row .icon-button {
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.discord-category-row .icon-button:hover,
+.discord-channel-row .icon-button:hover {
+  color: #fff;
+  background: rgba(255, 64, 88, 0.22);
+}
+
+.discord-channel-editor {
+  position: relative;
+  gap: 12px;
+  padding: 18px;
+  background:
+    radial-gradient(circle at 78% 8%, rgba(255, 64, 88, 0.08), transparent 36%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 44%);
+}
+
+.discord-channel-editor::before {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  border-radius: 18px;
+}
+
+.discord-channel-editor > * {
+  position: relative;
+  z-index: 1;
+}
+
+.discord-channel-editor .panel-title {
+  padding-bottom: 4px;
+}
+
+.discord-channel-editor .discord-form-grid {
+  max-width: 920px;
+  margin-top: 8px;
+}
+
+.discord-channel-editor .discord-permission-grid {
+  max-width: 920px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.discord-channel-editor .card-actions {
+  margin-top: 2px;
+}
+
+.discord-channel-empty-state {
+  padding: 42px 18px;
+}
+
+.discord-channel-skeleton i {
+  background: linear-gradient(90deg, rgba(255,255,255,0.035), rgba(255,64,88,0.13), rgba(255,255,255,0.035));
+  background-size: 200% 100%;
+}
+
 .mobile-nav {
   display: none;
 }
@@ -3272,6 +3476,10 @@ label {
 
   .discord-channel-editor {
     padding: 14px;
+  }
+
+  .discord-channel-editor .discord-permission-grid {
+    grid-template-columns: 1fr 1fr;
   }
 
   .discord-tools-sidebar {
