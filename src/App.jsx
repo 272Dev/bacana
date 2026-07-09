@@ -33,6 +33,7 @@ import {
   LogOut,
   Mail,
   MailOpen,
+  MessageSquare,
   Moon,
   Palette,
   Plus,
