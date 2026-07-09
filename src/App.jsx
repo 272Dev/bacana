@@ -2115,6 +2115,9 @@ function DiscordToolsPage() {
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState('');
   const [webhook, setWebhook] = useState({ webhookUrl: '', content: '', username: '', avatarUrl: '' });
+  const [repeatOptions, setRepeatOptions] = useState({ count: 5, delaySeconds: 3 });
+  const [repeatStatus, setRepeatStatus] = useState({ active: false, sent: 0, total: 0 });
+  const repeatStopRef = useRef(false);
   const [embed, setEmbed] = useState(defaultDiscordEmbed);
   const [botConfig, setBotConfig] = useState({ botToken: '', guildId: savedSettings?.guildId || '' });
   const [botStatus, setBotStatus] = useState(null);
@@ -2149,6 +2152,10 @@ function DiscordToolsPage() {
     return matchesType && matchesUser && matchesDate;
   }), [logs, logFilters]);
 
+  useEffect(() => () => {
+    repeatStopRef.current = true;
+  }, []);
+
   function showNotice(message) {
     setNotice(message);
     window.clearTimeout(showNotice.timer);
@@ -2165,6 +2172,10 @@ function DiscordToolsPage() {
 
   function updateWebhook(field, value) {
     setWebhook((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateRepeatOption(field, value) {
+    setRepeatOptions((current) => ({ ...current, [field]: value }));
   }
 
   function updateBot(field, value) {
@@ -2188,20 +2199,80 @@ function DiscordToolsPage() {
     }
   }
 
-  async function sendWebhookMessage() {
+  function validateWebhookContent() {
     if (!webhook.content.trim() && !hasDiscordEmbedContent(embed)) {
       showNotice('Escreva uma mensagem ou preencha algum campo do embed.');
-      return;
+      return false;
     }
+    return true;
+  }
+
+  async function postWebhookMessage() {
+    return api('/discord-tools/webhook/send', {
+      method: 'POST',
+      body: { ...webhook, embed }
+    });
+  }
+
+  async function waitForRepeatDelay(ms) {
+    const step = 250;
+    let elapsed = 0;
+    while (elapsed < ms) {
+      if (repeatStopRef.current) return false;
+      await new Promise((resolve) => window.setTimeout(resolve, Math.min(step, ms - elapsed)));
+      elapsed += step;
+    }
+    return !repeatStopRef.current;
+  }
+
+  async function sendWebhookMessage() {
+    if (!validateWebhookContent()) return;
 
     await runAction('webhook', async () => {
-      const result = await api('/discord-tools/webhook/send', {
-        method: 'POST',
-        body: { ...webhook, embed }
-      });
+      const result = await postWebhookMessage();
       pushLog('webhook', `Mensagem enviada pelo webhook ${result.messageId || ''}`);
       showNotice('Mensagem enviada no Discord.');
     });
+  }
+
+  async function sendRepeatedWebhookMessages() {
+    if (!validateWebhookContent()) return;
+    if (loading === 'webhook-repeat') return;
+
+    const total = Math.min(25, Math.max(1, Number(repeatOptions.count) || 1));
+    const delaySeconds = Math.min(300, Math.max(2, Number(repeatOptions.delaySeconds) || 2));
+    repeatStopRef.current = false;
+    setLoading('webhook-repeat');
+    setNotice('');
+    setRepeatStatus({ active: true, sent: 0, total });
+
+    try {
+      let sent = 0;
+      for (let index = 1; index <= total; index += 1) {
+        if (repeatStopRef.current) break;
+        const result = await postWebhookMessage();
+        sent = index;
+        setRepeatStatus({ active: true, sent, total });
+        pushLog('webhook', `Mensagem repetida ${sent}/${total} ${result.messageId || ''}`);
+        if (index < total) {
+          const shouldContinue = await waitForRepeatDelay(delaySeconds * 1000);
+          if (!shouldContinue) break;
+        }
+      }
+      showNotice(repeatStopRef.current ? `Envio repetido parado em ${sent}/${total}.` : `Envio repetido concluido (${total}).`);
+    } catch (error) {
+      showNotice(error.message);
+    } finally {
+      repeatStopRef.current = false;
+      setLoading('');
+      setRepeatStatus((current) => ({ ...current, active: false }));
+    }
+  }
+
+  function stopRepeatedWebhookMessages() {
+    if (loading !== 'webhook-repeat') return;
+    repeatStopRef.current = true;
+    showNotice('Parando envio repetido...');
   }
 
   async function loadBotStatus() {
@@ -2370,6 +2441,58 @@ function DiscordToolsPage() {
               Mensagem
               <textarea value={webhook.content} onChange={(event) => updateWebhook('content', event.target.value)} rows={5} placeholder="Escreva a mensagem" />
             </label>
+          </div>
+          <div className="discord-repeat-panel">
+            <div className="panel-title compact">
+              <div>
+                <h3>Mensagens repetidas</h3>
+                <small>Envio controlado com limite e delay para evitar rate limit.</small>
+              </div>
+              <Clock3 size={18} />
+            </div>
+            <div className="discord-form-grid">
+              <label>
+                Quantas vezes
+                <input
+                  type="number"
+                  min="1"
+                  max="25"
+                  value={repeatOptions.count}
+                  onChange={(event) => updateRepeatOption('count', event.target.value)}
+                  disabled={loading === 'webhook-repeat'}
+                />
+              </label>
+              <label>
+                Delay entre mensagens
+                <input
+                  type="number"
+                  min="2"
+                  max="300"
+                  value={repeatOptions.delaySeconds}
+                  onChange={(event) => updateRepeatOption('delaySeconds', event.target.value)}
+                  disabled={loading === 'webhook-repeat'}
+                />
+              </label>
+            </div>
+            <div className="discord-repeat-status">
+              <span>
+                <strong>{repeatStatus.active ? 'Enviando repetidas' : 'Pronto para repetir'}</strong>
+                <small>{repeatStatus.total ? `${repeatStatus.sent}/${repeatStatus.total} enviadas` : 'Limite de 25 por rodada, delay minimo de 2s'}</small>
+              </span>
+              <div className="discord-repeat-progress">
+                <span style={{ width: repeatStatus.total ? `${Math.min(100, (repeatStatus.sent / repeatStatus.total) * 100)}%` : '0%' }} />
+              </div>
+            </div>
+            <div className="card-actions">
+              <button className="ghost-button" onClick={sendRepeatedWebhookMessages} disabled={loading === 'webhook-repeat'}>
+                <RefreshCw size={17} />
+                {loading === 'webhook-repeat' ? 'Enviando...' : 'Enviar repetidas'}
+              </button>
+              <button className="danger-button" onClick={stopRepeatedWebhookMessages} disabled={loading !== 'webhook-repeat'}>
+                <X size={17} />
+                Parar
+              </button>
+            </div>
           </div>
           <div className="discord-form-grid">
             <label>
