@@ -27,13 +27,35 @@ function assertSnowflake(id, label = 'ID') {
   return clean;
 }
 
-function isWebhookUrl(url) {
+const DISCORD_WEBHOOK_HOSTS = new Set([
+  'discord.com',
+  'discordapp.com',
+  'canary.discord.com',
+  'ptb.discord.com'
+]);
+
+function normalizeWebhookUrl(rawUrl) {
+  let clean = cleanText(rawUrl).replace(/^<|>$/g, '');
+  if (!/^https?:\/\//i.test(clean) && /^(discord|canary\.discord|ptb\.discord|discordapp)\.com\//i.test(clean)) {
+    clean = `https://${clean}`;
+  }
+
   try {
-    const parsed = new URL(url);
-    return ['discord.com', 'discordapp.com'].includes(parsed.hostname)
-      && parsed.pathname.startsWith('/api/webhooks/');
+    const parsed = new URL(clean);
+    const hostname = parsed.hostname.toLowerCase();
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    const isDiscordHost = DISCORD_WEBHOOK_HOSTS.has(hostname);
+    const isWebhookPath = parts[0] === 'api'
+      && parts[1] === 'webhooks'
+      && /^\d{5,32}$/.test(parts[2] || '')
+      && Boolean(parts[3]);
+    if (!isDiscordHost || !isWebhookPath) return '';
+    parsed.protocol = 'https:';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString();
   } catch {
-    return false;
+    return '';
   }
 }
 
@@ -87,8 +109,8 @@ async function discordRequest(path, { method = 'GET', token, body } = {}) {
 }
 
 export async function sendDiscordWebhookMessage(payload = {}) {
-  const webhookUrl = cleanText(payload.webhookUrl);
-  if (!isWebhookUrl(webhookUrl)) throw makeHttpError('URL de webhook invalida.', 400);
+  const webhookUrl = normalizeWebhookUrl(payload.webhookUrl);
+  if (!webhookUrl) throw makeHttpError('URL de webhook invalida. Cole a URL completa copiada no Discord.', 400);
 
   const embed = normalizeEmbed(payload.embed);
   const body = {
@@ -101,13 +123,20 @@ export async function sendDiscordWebhookMessage(payload = {}) {
 
   if (!body.content && !body.embeds) throw makeHttpError('Informe uma mensagem ou embed.', 400);
 
-  const response = await fetch(`${webhookUrl}?wait=true`, {
+  const endpoint = new URL(webhookUrl);
+  endpoint.searchParams.set('wait', 'true');
+  const response = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
   const text = await response.text();
-  const result = text ? JSON.parse(text) : null;
+  let result = null;
+  try {
+    result = text ? JSON.parse(text) : null;
+  } catch {
+    result = { message: text };
+  }
   if (!response.ok) throw makeHttpError(result?.message || 'Webhook recusou a mensagem.', response.status);
   return { ok: true, messageId: result?.id || null };
 }

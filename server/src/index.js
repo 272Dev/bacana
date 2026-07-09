@@ -363,7 +363,7 @@ const discordEmbedSchema = z.object({
 });
 
 const discordWebhookSchema = z.object({
-  webhookUrl: z.string().trim().url(),
+  webhookUrl: z.string().trim().min(10).max(1000),
   content: z.string().max(2000).optional().or(z.literal('')),
   username: z.string().trim().max(80).optional().or(z.literal('')),
   avatarUrl: z.string().trim().max(500).optional().or(z.literal('')),
