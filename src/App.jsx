@@ -1986,6 +1986,20 @@ function channelLabel(type) {
   return 'Texto';
 }
 
+function guildIconUrl(guild) {
+  return guild?.icon ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png?size=96` : null;
+}
+
+function guildCanManageChannels(guild) {
+  if (!guild?.permissions) return true;
+  try {
+    const permissions = BigInt(guild.permissions);
+    return Boolean((permissions & 8n) === 8n || (permissions & 16n) === 16n);
+  } catch {
+    return true;
+  }
+}
+
 function makeDiscordEmbedJson(embed) {
   const fields = (embed.fields || [])
     .filter((field) => field.name || field.value)
@@ -2126,6 +2140,12 @@ function DiscordToolsPage() {
     invitePermissions: savedSettings?.botInvitePermissions || '8'
   });
   const [botStatus, setBotStatus] = useState(null);
+  const [selectedGuildId, setSelectedGuildId] = useState(savedSettings?.guildId || '');
+  const [serverDropdownOpen, setServerDropdownOpen] = useState(false);
+  const [serverChannelCache, setServerChannelCache] = useState({});
+  const [collapsedCategories, setCollapsedCategories] = useState({});
+  const [selectedChannelId, setSelectedChannelId] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState(null);
   const [channelForm, setChannelForm] = useState({ name: '', type: 0, parentId: '', channelId: '', position: '' });
   const [roleForm, setRoleForm] = useState({ name: '', color: '#ff4058', permissions: '0', roleId: '', userId: '', action: 'add' });
   const [antiNuke, setAntiNuke] = useState(savedSettings?.antiNuke || {
@@ -2149,7 +2169,21 @@ function DiscordToolsPage() {
   const [logFilters, setLogFilters] = useState({ type: '', user: '', date: '' });
   const [settings, setSettings] = useState(savedSettings || defaultDiscordSettings);
 
-  const categories = useMemo(() => (botStatus?.channels || []).filter((channel) => channel.type === 4), [botStatus]);
+  const serverList = useMemo(() => botStatus?.guilds || [], [botStatus]);
+  const activeGuildId = selectedGuildId || botConfig.guildId || botStatus?.guild?.id || serverList[0]?.id || '';
+  const activeServerCache = activeGuildId ? serverChannelCache[activeGuildId] : null;
+  const activeServer = activeServerCache?.guild
+    || (botStatus?.guild?.id === activeGuildId ? botStatus.guild : null)
+    || serverList.find((guild) => guild.id === activeGuildId)
+    || null;
+  const selectedChannels = useMemo(() => {
+    if (!activeGuildId) return [];
+    if (serverChannelCache[activeGuildId]?.loading) return [];
+    if (serverChannelCache[activeGuildId]?.channels) return serverChannelCache[activeGuildId].channels;
+    if (botStatus?.guild?.id === activeGuildId) return botStatus.channels || [];
+    return [];
+  }, [activeGuildId, serverChannelCache, botStatus]);
+  const categories = useMemo(() => selectedChannels.filter((channel) => channel.type === 4), [selectedChannels]);
   const visibleLogs = useMemo(() => logs.filter((log) => {
     const matchesType = !logFilters.type || log.type === logFilters.type;
     const matchesUser = !logFilters.user || String(log.user || '').includes(logFilters.user);
@@ -2254,8 +2288,8 @@ function DiscordToolsPage() {
 
     const requestedCount = Number(repeatOptions.count);
     const requestedDelay = Number(repeatOptions.delaySeconds);
-    const total = Math.min(100000, Number.isFinite(requestedCount) ? Math.max(1, Math.floor(requestedCount)) : 1);
-    const delaySeconds = Math.min(300, Number.isFinite(requestedDelay) ? Math.max(0,1, requestedDelay) : 0.1);
+    const total = Math.min(100, Number.isFinite(requestedCount) ? Math.max(1, Math.floor(requestedCount)) : 1);
+    const delaySeconds = Math.min(300, Number.isFinite(requestedDelay) ? Math.max(1, requestedDelay) : 1);
     repeatStopRef.current = false;
     setLoading('webhook-repeat');
     setNotice('');
@@ -2290,25 +2324,67 @@ function DiscordToolsPage() {
     showNotice('Parando envio repetido...');
   }
 
-  async function loadBotStatus() {
-    await runAction('bot', async () => {
+  async function loadBotStatus(guildIdOverride = botConfig.guildId || selectedGuildId) {
+    const requestedGuildId = String(guildIdOverride || '').trim();
+    setLoading('bot');
+    setNotice('');
+    if (requestedGuildId) {
+      setServerChannelCache((current) => ({
+        ...current,
+        [requestedGuildId]: {
+          ...(current[requestedGuildId] || {}),
+          loading: true,
+          error: ''
+        }
+      }));
+    }
+    try {
       const payload = await api('/discord-tools/bot/status', {
         method: 'POST',
-        body: botConfig
+        body: { ...botConfig, guildId: requestedGuildId || botConfig.guildId }
       });
       setBotStatus(payload);
+      const resolvedGuildId = requestedGuildId || payload.guild?.id || payload.guilds?.[0]?.id || '';
       const nextSettings = {
         ...settings,
-        guildId: botConfig.guildId || payload.guild?.id || settings.guildId,
+        guildId: resolvedGuildId || settings.guildId,
         botClientId: botConfig.clientId || payload.bot?.id || settings.botClientId,
         botInvitePermissions: botConfig.invitePermissions || settings.botInvitePermissions
       };
       updateSettings(nextSettings);
-      if (!botConfig.guildId && payload.guild?.id) updateBot('guildId', payload.guild.id);
+      if (resolvedGuildId) {
+        setSelectedGuildId(resolvedGuildId);
+        setBotConfig((current) => ({ ...current, guildId: resolvedGuildId }));
+        setServerChannelCache((current) => ({
+          ...current,
+          [resolvedGuildId]: {
+            guild: payload.guild || payload.guilds?.find((guild) => guild.id === resolvedGuildId) || null,
+            channels: payload.channels || [],
+            roles: payload.roles || [],
+            loading: false,
+            error: '',
+            loadedAt: Date.now()
+          }
+        }));
+      }
       if (!botConfig.clientId && payload.bot?.id) updateBot('clientId', payload.bot.id);
       pushLog('bot', `Status carregado para ${payload.guild?.name || 'bot'}`);
       showNotice('Bot conectado.');
-    });
+    } catch (error) {
+      if (requestedGuildId) {
+        setServerChannelCache((current) => ({
+          ...current,
+          [requestedGuildId]: {
+            ...(current[requestedGuildId] || {}),
+            loading: false,
+            error: error.message
+          }
+        }));
+      }
+      showNotice(error.message);
+    } finally {
+      setLoading('');
+    }
   }
 
   function makeBotInviteUrl() {
@@ -2340,15 +2416,58 @@ function DiscordToolsPage() {
     showNotice('Link de convite do bot copiado.');
   }
 
+  async function selectServer(guildId) {
+    if (!guildId || guildId === activeGuildId) {
+      setServerDropdownOpen(false);
+      return;
+    }
+    setSelectedGuildId(guildId);
+    setSelectedChannelId('');
+    setChannelForm((current) => ({ ...current, parentId: '', channelId: '' }));
+    setBotConfig((current) => ({ ...current, guildId }));
+    updateSettings({ ...settings, guildId });
+    setServerDropdownOpen(false);
+    await loadBotStatus(guildId);
+    showNotice('Servidor alterado.');
+  }
+
+  async function refreshServers() {
+    await loadBotStatus('');
+  }
+
+  async function refreshChannels() {
+    await loadBotStatus(activeGuildId);
+    showNotice('Canais atualizados.');
+  }
+
+  function toggleCategory(categoryId) {
+    setCollapsedCategories((current) => ({
+      ...current,
+      [`${activeGuildId}:${categoryId}`]: !current[`${activeGuildId}:${categoryId}`]
+    }));
+  }
+
+  function selectChannel(channel) {
+    setSelectedChannelId(channel.id);
+    setChannelForm((current) => ({
+      ...current,
+      channelId: channel.id,
+      name: channel.name,
+      type: channel.type,
+      parentId: channel.parent_id || '',
+      position: channel.position ?? ''
+    }));
+  }
+
   async function createChannel() {
     await runAction('channel', async () => {
       const payload = await api('/discord-tools/channels', {
         method: 'POST',
-        body: { ...botConfig, ...channelForm }
+        body: { ...botConfig, guildId: activeGuildId, ...channelForm }
       });
       pushLog('channel', `Canal criado: ${payload.channel.name}`);
       setChannelForm((current) => ({ ...current, name: '' }));
-      await loadBotStatus();
+      await loadBotStatus(activeGuildId);
     });
   }
 
@@ -2357,20 +2476,33 @@ function DiscordToolsPage() {
     await runAction('channel-update', async () => {
       const payload = await api(`/discord-tools/channels/${channelForm.channelId}`, {
         method: 'PATCH',
-        body: { ...botConfig, ...channelForm }
+        body: { ...botConfig, guildId: activeGuildId, ...channelForm }
       });
       pushLog('channel', `Canal alterado: ${payload.channel.name}`);
-      await loadBotStatus();
+      await loadBotStatus(activeGuildId);
     });
   }
 
-  async function deleteChannel(channelId = channelForm.channelId) {
+  function deleteChannel(channelId = channelForm.channelId) {
     if (!channelId) return showNotice('Informe o ID do canal.');
-    if (!window.confirm('Excluir este canal? Essa acao nao volta.')) return;
+    const channel = selectedChannels.find((item) => item.id === channelId);
+    setDeleteTarget({
+      id: channelId,
+      name: channel?.name || channelId,
+      type: channel?.type ?? channelForm.type
+    });
+  }
+
+  async function confirmDeleteChannel() {
+    if (!deleteTarget?.id) return;
+    const channelId = deleteTarget.id;
+    setDeleteTarget(null);
     await runAction('channel-delete', async () => {
-      await api(`/discord-tools/channels/${channelId}`, { method: 'DELETE', body: botConfig });
+      await api(`/discord-tools/channels/${channelId}`, { method: 'DELETE', body: { ...botConfig, guildId: activeGuildId } });
       pushLog('channel', `Canal excluido: ${channelId}`);
-      await loadBotStatus();
+      setSelectedChannelId((current) => (current === channelId ? '' : current));
+      await loadBotStatus(activeGuildId);
+      showNotice('Canal excluido.');
     });
   }
 
@@ -2746,82 +2878,241 @@ function DiscordToolsPage() {
   }
 
   function renderChannels() {
+    const sortedServers = [...serverList].sort((a, b) => a.name.localeCompare(b.name));
+    const serverLoading = loading === 'bot' || Boolean(activeServerCache?.loading);
+    const serverError = activeServerCache?.error;
+    const canManageChannels = activeServer ? guildCanManageChannels(activeServer) : true;
+    const sortedChannels = [...selectedChannels].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+    const categoryRows = sortedChannels.filter((channel) => channel.type === 4);
+    const looseChannels = sortedChannels.filter((channel) => channel.type !== 4 && !channel.parent_id);
+    const channelsForCategory = (categoryId) => sortedChannels.filter((channel) => channel.parent_id === categoryId && channel.type !== 4);
+    const statusLabel = serverLoading ? 'Loading' : serverError ? 'Error' : !botStatus ? 'Bot disconnected' : !canManageChannels ? 'Missing permissions' : 'Bot connected';
+    const statusKind = serverLoading ? 'loading' : serverError ? 'error' : !botStatus ? 'offline' : !canManageChannels ? 'warning' : 'online';
+
+    const renderChannelRow = (channel) => {
+      const Icon = channelIcon(channel.type);
+      const selected = selectedChannelId === channel.id;
+      return (
+        <div className={`discord-channel-row ${selected ? 'selected' : ''}`} key={channel.id}>
+          <button type="button" onClick={() => selectChannel(channel)}>
+            <Icon size={17} />
+            <span>
+              <strong>{channel.name}</strong>
+              <small>{channelLabel(channel.type)} Channel - ID: {channel.id}</small>
+            </span>
+          </button>
+          <IconButton label="Excluir canal" onClick={() => deleteChannel(channel.id)}>
+            <Trash2 size={14} />
+          </IconButton>
+        </div>
+      );
+    };
+
+    const renderCategory = (category) => {
+      const collapsed = Boolean(collapsedCategories[`${activeGuildId}:${category.id}`]);
+      const children = channelsForCategory(category.id);
+      return (
+        <div className="discord-category-block" key={category.id}>
+          <div className="discord-category-row">
+            <button type="button" onClick={() => toggleCategory(category.id)}>
+              <ChevronRight size={14} className={collapsed ? '' : 'expanded'} />
+              <span>{category.name}</span>
+              <small>ID: {category.id}</small>
+            </button>
+            <IconButton label="Excluir categoria" onClick={() => deleteChannel(category.id)}>
+              <Trash2 size={13} />
+            </IconButton>
+          </div>
+          <div className={`discord-category-channels ${collapsed ? 'collapsed' : ''}`}>
+            {children.length ? children.map(renderChannelRow) : <div className="discord-channel-empty">Nenhum canal nesta categoria</div>}
+          </div>
+        </div>
+      );
+    };
+
     return (
-      <div className="discord-section-grid">
-        <section className="panel discord-tool-card">
-          <div className="panel-title">
-            <h3>Channel Manager</h3>
-            <Hash size={18} />
+      <div className="discord-channel-page">
+        <section className="discord-channel-topbar">
+          <div>
+            <span className="eyebrow">Discord Tools</span>
+            <h2>Server Channels</h2>
           </div>
-          <div className="discord-form-grid">
-            <label>
-              Nome
-              <input value={channelForm.name} onChange={(event) => setChannelForm((current) => ({ ...current, name: event.target.value }))} placeholder="geral" />
-            </label>
-            <label>
-              Tipo
-              <select value={channelForm.type} onChange={(event) => setChannelForm((current) => ({ ...current, type: Number(event.target.value) }))}>
-                <option value={0}>Texto</option>
-                <option value={2}>Voz</option>
-                <option value={4}>Categoria</option>
-              </select>
-            </label>
-            <label>
-              Categoria
-              <select value={channelForm.parentId} onChange={(event) => setChannelForm((current) => ({ ...current, parentId: event.target.value }))}>
-                <option value="">Sem categoria</option>
-                {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
-              </select>
-            </label>
-            <label>
-              Posicao
-              <input value={channelForm.position} onChange={(event) => setChannelForm((current) => ({ ...current, position: event.target.value }))} placeholder="0" />
-            </label>
-            <label className="wide">
-              ID do canal para editar/excluir
-              <input value={channelForm.channelId} onChange={(event) => setChannelForm((current) => ({ ...current, channelId: event.target.value }))} placeholder="Channel ID" />
-            </label>
+          <div className={`discord-bot-state ${statusKind}`}>
+            <i />
+            {statusLabel}
           </div>
-          <div className="discord-permission-grid">
-            {['Ver canal', 'Enviar mensagens', 'Conectar', 'Falar'].map((item) => (
-              <label className="switch-line" key={item}>
-                <input type="checkbox" defaultChecked />
-                {item}
-              </label>
-            ))}
-          </div>
-          <div className="card-actions">
-            <button className="primary-button" onClick={createChannel} disabled={loading === 'channel'}><Plus size={17} /> Criar</button>
-            <button className="ghost-button" onClick={updateChannel} disabled={loading === 'channel-update'}><Save size={17} /> Salvar edicao</button>
-            <button className="danger-button" onClick={() => deleteChannel()} disabled={loading === 'channel-delete'}><Trash2 size={17} /> Excluir</button>
-          </div>
+          <button className="ghost-button" onClick={refreshServers} disabled={loading === 'bot'}>
+            <RefreshCw size={16} />
+            Update Servers
+          </button>
         </section>
-        <section className="panel discord-tool-card">
-          <div className="panel-title">
-            <h3>Canais do servidor</h3>
-            <button className="ghost-button" onClick={loadBotStatus}><RefreshCw size={16} /> Atualizar</button>
-          </div>
-          <div className="discord-list">
-            {(botStatus?.channels || []).map((channel) => {
-              const Icon = channelIcon(channel.type);
-              return (
-                <article className="discord-list-item" key={channel.id}>
-                  <button onClick={() => setChannelForm((current) => ({ ...current, channelId: channel.id, name: channel.name, type: channel.type, parentId: channel.parent_id || '', position: channel.position ?? '' }))}>
-                    <Icon size={18} />
+
+        <section className="discord-server-picker">
+          <button className="discord-server-current" type="button" onClick={() => setServerDropdownOpen((current) => !current)}>
+            <Avatar src={guildIconUrl(activeServer)} name={activeServer?.name || 'Server'} />
+            <span>
+              <strong>{activeServer?.name || 'No server selected'}</strong>
+              <small>{activeGuildId ? `ID: ${activeGuildId}` : 'Connect the bot to load servers'}</small>
+            </span>
+            <span className={`discord-server-permission ${canManageChannels ? 'ok' : 'warning'}`}>
+              {canManageChannels ? 'Bot connected' : 'Missing permissions'}
+            </span>
+            <ChevronRight size={18} className={serverDropdownOpen ? 'expanded' : ''} />
+          </button>
+          {serverDropdownOpen && (
+            <div className="discord-server-dropdown">
+              {sortedServers.length ? sortedServers.map((guild) => {
+                const guildAllowed = guildCanManageChannels(guild);
+                return (
+                  <button className={guild.id === activeGuildId ? 'active' : ''} type="button" key={guild.id} onClick={() => selectServer(guild.id)}>
+                    <Avatar src={guildIconUrl(guild)} name={guild.name} />
                     <span>
-                      <strong>{channel.name}</strong>
-                      <small>{channelLabel(channel.type)} - ID {channel.id}</small>
+                      <strong>{guild.name}</strong>
+                      <small>ID: {guild.id}</small>
+                      <small className={guildAllowed ? 'ok' : 'warning'}>{guildAllowed ? 'Bot connected' : 'Missing permissions'}</small>
                     </span>
                   </button>
-                  <IconButton label="Excluir canal" onClick={() => deleteChannel(channel.id)}>
-                    <Trash2 size={15} />
-                  </IconButton>
-                </article>
-              );
-            })}
-            {!botStatus && <EmptyState icon={Hash} title="Carregue o bot para listar canais" />}
-          </div>
+                );
+              }) : (
+                <div className="discord-server-empty">
+                  <strong>No servers found</strong>
+                  <small>The bot is not connected to any server yet.</small>
+                </div>
+              )}
+            </div>
+          )}
         </section>
+
+        <div className="discord-channel-workspace">
+          <aside className="discord-channel-sidebar-panel">
+            <div className="discord-channel-sidebar-head">
+              <span>Channels</span>
+              <button type="button" onClick={refreshChannels} disabled={!activeGuildId || loading === 'bot'}>
+                <RefreshCw size={15} />
+              </button>
+            </div>
+            <div className="discord-channel-sidebar">
+              {serverLoading && (
+                <div className="discord-channel-skeleton">
+                  <i />
+                  <i />
+                  <i />
+                  <i />
+                </div>
+              )}
+              {!serverLoading && serverError && (
+                <div className="discord-channel-empty-state">
+                  <AlertTriangle size={22} />
+                  <strong>Failed to load server</strong>
+                  <small>{serverError}</small>
+                  <button className="ghost-button" onClick={refreshChannels}>Retry</button>
+                </div>
+              )}
+              {!serverLoading && !serverError && !sortedServers.length && (
+                <div className="discord-channel-empty-state">
+                  <Server size={22} />
+                  <strong>No servers found</strong>
+                  <small>The bot is not connected to any server yet.</small>
+                  <button className="ghost-button" onClick={refreshServers}>Refresh servers</button>
+                </div>
+              )}
+              {!serverLoading && !serverError && sortedServers.length > 0 && !selectedChannels.length && (
+                <div className="discord-channel-empty-state">
+                  <Hash size={22} />
+                  <strong>No channels found</strong>
+                  <small>This server has no channels available or the bot does not have permission to view them.</small>
+                </div>
+              )}
+              {!serverLoading && !serverError && selectedChannels.length > 0 && (
+                <>
+                  {looseChannels.length > 0 && (
+                    <div className="discord-category-block">
+                      <div className="discord-category-row static">
+                        <span>NO CATEGORY</span>
+                      </div>
+                      <div className="discord-category-channels">
+                        {looseChannels.map(renderChannelRow)}
+                      </div>
+                    </div>
+                  )}
+                  {categoryRows.map(renderCategory)}
+                </>
+              )}
+            </div>
+          </aside>
+
+          <section className="discord-channel-editor">
+            <div className="panel-title">
+              <h3>Manage Channel</h3>
+              <Hash size={18} />
+            </div>
+            <div className="discord-form-grid">
+              <label>
+                Nome
+                <input value={channelForm.name} onChange={(event) => setChannelForm((current) => ({ ...current, name: event.target.value }))} placeholder="geral" />
+              </label>
+              <label>
+                Tipo
+                <select value={channelForm.type} onChange={(event) => setChannelForm((current) => ({ ...current, type: Number(event.target.value) }))}>
+                  <option value={0}>Texto</option>
+                  <option value={2}>Voz</option>
+                  <option value={4}>Categoria</option>
+                </select>
+              </label>
+              <label>
+                Categoria
+                <select value={channelForm.parentId} onChange={(event) => setChannelForm((current) => ({ ...current, parentId: event.target.value }))}>
+                  <option value="">Sem categoria</option>
+                  {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+                </select>
+              </label>
+              <label>
+                Posicao
+                <input value={channelForm.position} onChange={(event) => setChannelForm((current) => ({ ...current, position: event.target.value }))} placeholder="0" />
+              </label>
+              <label className="wide">
+                ID do canal para editar/excluir
+                <input value={channelForm.channelId} onChange={(event) => setChannelForm((current) => ({ ...current, channelId: event.target.value }))} placeholder="Channel ID" />
+              </label>
+            </div>
+            <div className="discord-permission-grid">
+              {['Ver canal', 'Enviar mensagens', 'Conectar', 'Falar'].map((item) => (
+                <label className="switch-line" key={item}>
+                  <input type="checkbox" defaultChecked />
+                  {item}
+                </label>
+              ))}
+            </div>
+            {!canManageChannels && (
+              <div className="discord-channel-warning">
+                <AlertTriangle size={17} />
+                The bot needs permission to view and manage channels in this server.
+              </div>
+            )}
+            <div className="card-actions">
+              <button className="primary-button" onClick={createChannel} disabled={loading === 'channel' || !activeGuildId}><Plus size={17} /> Criar</button>
+              <button className="ghost-button" onClick={updateChannel} disabled={loading === 'channel-update' || !channelForm.channelId}><Save size={17} /> Salvar edicao</button>
+              <button className="danger-button" onClick={() => deleteChannel()} disabled={loading === 'channel-delete' || !channelForm.channelId}><Trash2 size={17} /> Excluir</button>
+            </div>
+          </section>
+        </div>
+        {deleteTarget && (
+          <div className="modal-backdrop">
+            <div className="modal delete-channel-modal">
+              <div className="modal-header">
+                <div>
+                  <h3>Delete Channel?</h3>
+                  <p>Are you sure you want to delete <strong>{deleteTarget.name}</strong>? This action cannot be undone.</p>
+                </div>
+                <IconButton label="Fechar" onClick={() => setDeleteTarget(null)}><X size={18} /></IconButton>
+              </div>
+              <div className="modal-actions">
+                <button className="ghost-button" onClick={() => setDeleteTarget(null)}>Cancel</button>
+                <button className="danger-button" onClick={confirmDeleteChannel} disabled={loading === 'channel-delete'}><Trash2 size={17} /> Delete</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
