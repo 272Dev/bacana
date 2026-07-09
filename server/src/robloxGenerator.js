@@ -10,6 +10,9 @@ const ROBLOX_PROFILE_IMPORT_BATCH_SIZE = 25;
 const ROBLOX_PROFILE_IMPORT_RETRIES = 3;
 const ROBLOX_GENERATOR_PAGE_SIZE = 24;
 const ROBLOX_GENERATOR_MAX_PAGE_SIZE = 80;
+const ROBLOX_GENERATOR_STATUS_SCAN_SIZE = 100;
+const ROBLOX_PRESENCE_CACHE_TTL_MS = 15_000;
+const presenceCache = new Map();
 
 function cleanText(value) {
   return String(value || '').trim();
@@ -119,12 +122,89 @@ async function enrichRobloxAccounts(accounts) {
   };
 }
 
-async function getPresencesForRows(rows) {
+async function hydrateMissingRobloxProfiles(rows) {
+  const missingRows = rows.filter((row) => !cleanText(row.user_id));
+  if (missingRows.length === 0) return rows;
+
+  let profiles = new Map();
   try {
-    return await lookupRobloxPresences(rows.map((row) => row.user_id));
+    profiles = await lookupRobloxUsernames(missingRows.map((row) => row.username), { excludeBannedUsers: false });
   } catch {
-    return new Map();
+    return rows;
   }
+
+  const now = nowIso();
+  const hydratedRows = [];
+
+  for (const row of rows) {
+    const profile = profiles.get(cleanText(row.username).toLowerCase());
+    if (!profile) {
+      hydratedRows.push(row);
+      continue;
+    }
+
+    const nextRow = {
+      ...row,
+      display_name: profile.displayName || row.display_name,
+      user_id: profile.userId || row.user_id,
+      profile_url: profile.profileUrl || row.profile_url,
+      avatar_url: profile.avatarUrl || row.avatar_url,
+      updated_at: now
+    };
+
+    await db.prepare(`
+      UPDATE roblox_generator_accounts SET
+        display_name = ?,
+        user_id = ?,
+        profile_url = ?,
+        avatar_url = ?,
+        updated_at = ?
+      WHERE id = ?
+    `).run(
+      nextRow.display_name,
+      nextRow.user_id,
+      nextRow.profile_url,
+      nextRow.avatar_url,
+      now,
+      row.id
+    );
+
+    hydratedRows.push(nextRow);
+  }
+
+  return hydratedRows;
+}
+
+async function getPresencesForRows(rows) {
+  const now = Date.now();
+  const ids = [...new Set(
+    rows
+      .map((row) => cleanText(row.user_id))
+      .filter((value) => /^\d+$/.test(value))
+  )];
+  const result = new Map();
+  const missingIds = [];
+
+  for (const id of ids) {
+    const cached = presenceCache.get(id);
+    if (cached && now - cached.time < ROBLOX_PRESENCE_CACHE_TTL_MS) {
+      result.set(id, cached.presence);
+    } else {
+      missingIds.push(id);
+    }
+  }
+
+  try {
+    const freshPresences = await lookupRobloxPresences(missingIds);
+    for (const [id, presence] of freshPresences.entries()) {
+      presenceCache.set(id, { presence, time: now });
+      result.set(id, presence);
+    }
+  } catch {
+    return result;
+  }
+
+  return result;
 }
 
 function mapStoredAccount(row, { includePassword = false, presence = null } = {}) {
@@ -301,13 +381,13 @@ export async function listRobloxGeneratorAccounts({ search = '', status = '', li
   const { whereSql, params } = buildListQuery({ search });
 
   if (!shouldFilterStatus) {
-    const rows = await db.prepare(`
+    const rows = await hydrateMissingRobloxProfiles(await db.prepare(`
       SELECT *
       FROM roblox_generator_accounts
       ${whereSql}
       ORDER BY username ASC
       LIMIT ? OFFSET ?
-    `).all(...params, pageLimit, pageOffset);
+    `).all(...params, pageLimit, pageOffset));
     const totalRow = await db.prepare(`
       SELECT COUNT(*) AS total
       FROM roblox_generator_accounts
@@ -333,13 +413,13 @@ export async function listRobloxGeneratorAccounts({ search = '', status = '', li
   let hasMore = true;
 
   while (accounts.length < pageLimit && hasMore) {
-    const rows = await db.prepare(`
+    const rows = await hydrateMissingRobloxProfiles(await db.prepare(`
       SELECT *
       FROM roblox_generator_accounts
       ${whereSql}
       ORDER BY username ASC
       LIMIT ? OFFSET ?
-    `).all(...params, pageLimit, scannedOffset);
+    `).all(...params, ROBLOX_GENERATOR_STATUS_SCAN_SIZE, scannedOffset));
 
     if (rows.length === 0) {
       hasMore = false;
@@ -354,7 +434,7 @@ export async function listRobloxGeneratorAccounts({ search = '', status = '', li
     }
 
     scannedOffset += rows.length;
-    hasMore = rows.length === pageLimit;
+    hasMore = rows.length === ROBLOX_GENERATOR_STATUS_SCAN_SIZE;
   }
 
   return {
@@ -370,11 +450,11 @@ export async function listRobloxGeneratorAccounts({ search = '', status = '', li
 }
 
 export async function listAllRobloxGeneratorAccounts({ search = '', status = '' } = {}) {
-  const rows = await db.prepare(`
+  const rows = await hydrateMissingRobloxProfiles(await db.prepare(`
     SELECT *
     FROM roblox_generator_accounts
     ORDER BY username ASC
-  `).all();
+  `).all());
   const presences = await getPresencesForRows(rows);
   const cleanSearch = cleanText(search).toLowerCase();
   const shouldFilterStatus = status === 'available' || status === 'in_use';
@@ -391,7 +471,9 @@ export async function listAllRobloxGeneratorAccounts({ search = '', status = '' 
 }
 
 export async function getRobloxGeneratorAccount(id, options = {}) {
-  const row = await db.prepare('SELECT * FROM roblox_generator_accounts WHERE id = ?').get(id);
+  const [row] = await hydrateMissingRobloxProfiles([
+    await db.prepare('SELECT * FROM roblox_generator_accounts WHERE id = ?').get(id)
+  ].filter(Boolean));
   if (!row) return null;
   const presences = await getPresencesForRows([row]);
   return mapStoredAccount(row, {
@@ -401,7 +483,9 @@ export async function getRobloxGeneratorAccount(id, options = {}) {
 }
 
 export async function selectRobloxGeneratorAccount({ id }) {
-  const row = await db.prepare('SELECT * FROM roblox_generator_accounts WHERE id = ?').get(id);
+  const [row] = await hydrateMissingRobloxProfiles([
+    await db.prepare('SELECT * FROM roblox_generator_accounts WHERE id = ?').get(id)
+  ].filter(Boolean));
   if (!row) {
     const error = new Error('Conta Roblox nao encontrada.');
     error.status = 404;
@@ -420,11 +504,11 @@ export async function selectRobloxGeneratorAccount({ id }) {
 }
 
 export async function selectRandomRobloxGeneratorAccount() {
-  const rows = await db.prepare(`
+  const rows = await hydrateMissingRobloxProfiles(await db.prepare(`
     SELECT *
     FROM roblox_generator_accounts
     ORDER BY RANDOM()
-  `).all();
+  `).all());
   if (rows.length === 0) {
     const error = new Error('Nenhuma conta Roblox disponivel.');
     error.status = 404;
