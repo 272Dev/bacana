@@ -3287,6 +3287,29 @@ label {
   border-color: rgba(255, 64, 88, 0.34);
 }
 
+.discord-channel-page .discord-server-current,
+.discord-channel-page .discord-server-dropdown button,
+.discord-channel-page .discord-channel-sidebar-head button,
+.discord-channel-page .discord-category-row > button:first-child,
+.discord-channel-page .discord-channel-row > button:first-child {
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.discord-channel-page .discord-server-current {
+  background:
+    radial-gradient(circle at 2% 50%, rgba(255, 64, 88, 0.10), transparent 24%),
+    rgba(0, 0, 0, 0.36);
+}
+
+.discord-channel-page .discord-server-current:hover {
+  background:
+    radial-gradient(circle at 2% 50%, rgba(255, 64, 88, 0.16), transparent 26%),
+    rgba(0, 0, 0, 0.44);
+}
+
 .mobile-nav {
   display: none;
 }
