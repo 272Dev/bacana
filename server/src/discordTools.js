@@ -245,6 +245,60 @@ export async function getDiscordBotStatus({ botToken, guildId } = {}) {
   };
 }
 
+function renderCounterName(template, stats, targetType) {
+  const fallback = targetType === 'bot-nickname' ? 'Membros: {members}' : 'membros-{members}';
+  const source = cleanText(template) || fallback;
+  const rendered = source
+    .replaceAll('{members}', String(stats.members ?? 0))
+    .replaceAll('{online}', String(stats.online ?? 0))
+    .replaceAll('{channels}', String(stats.channels ?? 0))
+    .replaceAll('{roles}', String(stats.roles ?? 0))
+    .replaceAll('{server}', stats.server || 'Servidor');
+  return rendered.slice(0, targetType === 'bot-nickname' ? 32 : 100);
+}
+
+async function getDiscordGuildCounterStats(token, guildId) {
+  const guildResult = await discordRequest(`/guilds/${guildId}?with_counts=true`, { token });
+  const channels = (await discordRequest(`/guilds/${guildId}/channels`, { token })).payload || [];
+  const roles = (await discordRequest(`/guilds/${guildId}/roles`, { token })).payload || [];
+  return {
+    server: guildResult.payload?.name || 'Servidor',
+    members: guildResult.payload?.approximate_member_count || 0,
+    online: guildResult.payload?.approximate_presence_count || 0,
+    channels: channels.length,
+    roles: roles.length
+  };
+}
+
+export async function applyDiscordCounter({ botToken, guildId, targetType = 'bot-nickname', targetId = '', template = '' }) {
+  const token = getBotToken(botToken);
+  const guild = assertSnowflake(guildId, 'Servidor ID');
+  const cleanTargetType = cleanText(targetType) || 'bot-nickname';
+  const stats = await getDiscordGuildCounterStats(token, guild);
+  const name = renderCounterName(template, stats, cleanTargetType);
+  if (!name) throw makeHttpError('Modelo do contador ficou vazio.', 400);
+
+  if (cleanTargetType === 'bot-nickname') {
+    await discordRequest(`/guilds/${guild}/members/@me`, {
+      method: 'PATCH',
+      token,
+      body: { nick: name }
+    });
+    return { ok: true, targetType: cleanTargetType, targetId: guild, name, stats };
+  }
+
+  const channelId = assertSnowflake(targetId, cleanTargetType === 'category' ? 'Categoria ID' : 'Canal ID');
+  const target = (await discordRequest(`/channels/${channelId}`, { token })).payload;
+  if (target?.guild_id !== guild) throw makeHttpError('Esse canal/categoria nao pertence ao servidor informado.', 400);
+  if (cleanTargetType === 'category' && target?.type !== 4) throw makeHttpError('O ID informado nao e uma categoria.', 400);
+  await discordRequest(`/channels/${channelId}`, {
+    method: 'PATCH',
+    token,
+    body: { name }
+  });
+  return { ok: true, targetType: cleanTargetType, targetId: channelId, name, stats };
+}
+
 export async function createDiscordChannel({ botToken, guildId, name, type = 0, parentId = null }) {
   const guild = assertSnowflake(guildId, 'Servidor ID');
   const body = {

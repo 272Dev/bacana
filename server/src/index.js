@@ -38,6 +38,7 @@ import {
   listTempEmailMessages
 } from './tempEmail.js';
 import {
+  applyDiscordCounter,
   createDiscordChannel,
   createDiscordRole,
   deleteDiscordChannel,
@@ -51,6 +52,8 @@ import {
   updateDiscordRole
 } from './discordTools.js';
 import {
+  applyDiscordBotProfile,
+  configureDiscordProtection,
   getDiscordRuntimeState,
   runDiscordBotLifecycle,
   runDiscordVoiceAction,
@@ -416,6 +419,14 @@ const discordBotLifecycleSchema = discordBotRequestSchema.extend({
   activityMessage: z.string().trim().max(128).optional().or(z.literal(''))
 });
 
+const discordBotProfileSchema = discordBotRequestSchema.extend({
+  status: z.enum(['online', 'idle', 'dnd', 'invisible', 'offline']).optional().default('online'),
+  activityType: z.enum(['Watching', 'Playing', 'Listening', 'Competing']).optional().default('Watching'),
+  activityMessage: z.string().trim().max(128).optional().or(z.literal('')),
+  displayName: z.string().trim().max(32).optional().or(z.literal('')),
+  avatarUrl: z.string().trim().max(500).optional().or(z.literal(''))
+});
+
 const discordVoiceSchema = discordBotRequestSchema.extend({
   action: z.enum(['join', 'move', 'leave']).optional().default('join'),
   voiceChannelId: z.string().trim().max(32).optional().or(z.literal('')),
@@ -423,6 +434,23 @@ const discordVoiceSchema = discordBotRequestSchema.extend({
   voiceHours: z.coerce.number().min(0).max(168).optional().default(0),
   voiceMinutes: z.coerce.number().min(0).max(59).optional().default(0),
   voiceAfkMode: z.boolean().optional().default(true)
+});
+
+const discordCounterSchema = discordBotRequestSchema.extend({
+  targetType: z.enum(['bot-nickname', 'channel', 'category']).optional().default('bot-nickname'),
+  targetId: z.string().trim().max(32).optional().or(z.literal('')),
+  template: z.string().trim().max(100).optional().or(z.literal(''))
+});
+
+const discordProtectionSchema = discordBotRequestSchema.extend({
+  enabled: z.boolean().optional().default(true),
+  limitPerMinute: z.coerce.number().int().min(1).max(60).optional().default(5),
+  limitWindowSeconds: z.coerce.number().int().min(10).max(300).optional().default(60),
+  punishment: z.enum(['remove_roles', 'quarantine', 'kick', 'ban', 'none']).optional().default('remove_roles'),
+  whitelist: z.string().trim().max(2000).optional().or(z.literal('')),
+  ignoredRoles: z.string().trim().max(2000).optional().or(z.literal('')),
+  quarantineRoleId: z.string().trim().max(32).optional().or(z.literal('')),
+  logChannelId: z.string().trim().max(32).optional().or(z.literal(''))
 });
 
 const discordUserLookupSchema = z.object({
@@ -1267,6 +1295,25 @@ app.post('/api/discord-tools/bot/lifecycle', requireAuth, async (req, res) => {
   res.json(result);
 });
 
+app.post('/api/discord-tools/bot/profile', requireAuth, async (req, res) => {
+  const payload = discordBotProfileSchema.parse(req.body);
+  const result = await applyDiscordBotProfile(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.bot_profile',
+    targetType: 'discord_bot',
+    metadata: {
+      guildId: payload.guildId,
+      status: payload.status,
+      activityType: payload.activityType,
+      nicknameUpdated: result.nicknameUpdated,
+      avatarUpdated: result.avatarUpdated
+    },
+    ip: req.ip
+  });
+  res.json(result);
+});
+
 app.post('/api/discord-tools/voice', requireAuth, async (req, res) => {
   const payload = discordVoiceSchema.parse(req.body);
   const result = await runDiscordVoiceAction(payload);
@@ -1276,6 +1323,38 @@ app.post('/api/discord-tools/voice', requireAuth, async (req, res) => {
     targetType: 'discord_channel',
     targetId: payload.voiceChannelId || null,
     metadata: { guildId: payload.guildId, duration: payload.voiceDuration },
+    ip: req.ip
+  });
+  res.json(result);
+});
+
+app.post('/api/discord-tools/counters/apply', requireAuth, async (req, res) => {
+  const payload = discordCounterSchema.parse(req.body);
+  const result = await applyDiscordCounter(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.counter_apply',
+    targetType: payload.targetType === 'bot-nickname' ? 'discord_bot' : 'discord_channel',
+    targetId: result.targetId,
+    metadata: { guildId: payload.guildId, name: result.name, targetType: result.targetType },
+    ip: req.ip
+  });
+  res.json(result);
+});
+
+app.post('/api/discord-tools/protection/configure', requireAuth, async (req, res) => {
+  const payload = discordProtectionSchema.parse(req.body);
+  const result = await configureDiscordProtection(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.protection_configure',
+    targetType: 'discord_guild',
+    targetId: payload.guildId,
+    metadata: {
+      enabled: payload.enabled,
+      limitPerMinute: payload.limitPerMinute,
+      punishment: payload.punishment
+    },
     ip: req.ip
   });
   res.json(result);

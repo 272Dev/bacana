@@ -1,11 +1,13 @@
 import {
   ActivityType,
+  AuditLogEvent,
   ChannelType,
   Client,
   Events,
   GatewayIntentBits,
   PresenceUpdateStatus
 } from 'discord.js';
+import { Buffer } from 'node:buffer';
 import {
   VoiceConnectionStatus,
   entersState,
@@ -16,6 +18,8 @@ import { config, missingEnv } from './config.js';
 
 const clients = new Map();
 const voiceTimers = new Map();
+const protectionSettings = new Map();
+const protectionWindows = new Map();
 
 function makeHttpError(message, status = 500) {
   const error = new Error(message);
@@ -65,6 +69,138 @@ function makePresence({ status = 'online', activityType = 'Watching', activityMe
   };
 }
 
+function parseLineList(value) {
+  return String(value || '')
+    .split(/\r?\n|,/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function protectionKey(token, guildId) {
+  return `${token}:${guildId}`;
+}
+
+function protectionWindowKey(token, guildId, actorId) {
+  return `${token}:${guildId}:${actorId}`;
+}
+
+async function sendProtectionLog(guild, settings, message) {
+  const logChannelId = cleanText(settings.logChannelId);
+  if (!logChannelId) return;
+  const channel = await guild.channels.fetch(logChannelId).catch(() => null);
+  if (channel?.isTextBased?.()) {
+    await channel.send({ content: message, allowedMentions: { parse: [] } }).catch(() => {});
+  }
+}
+
+async function findAuditExecutor(guild, auditType) {
+  const logs = await guild.fetchAuditLogs({ limit: 1, type: auditType }).catch(() => null);
+  const entry = logs?.entries?.first?.();
+  if (!entry || Date.now() - entry.createdTimestamp > 15_000) return null;
+  return entry.executor?.id || null;
+}
+
+async function punishProtectionActor(guild, actorId, settings, reason) {
+  const whitelist = new Set(parseLineList(settings.whitelist));
+  if (!actorId || whitelist.has(actorId) || actorId === guild.client.user?.id || actorId === guild.ownerId) return false;
+  const member = await guild.members.fetch(actorId).catch(() => null);
+  if (!member) return false;
+  const ignoredRoles = new Set(parseLineList(settings.ignoredRoles));
+  if ([...ignoredRoles].some((roleId) => member.roles.cache.has(roleId))) return false;
+
+  const punishment = cleanText(settings.punishment) || 'remove_roles';
+  if (punishment === 'quarantine' && cleanText(settings.quarantineRoleId)) {
+    await member.roles.set([assertSnowflake(settings.quarantineRoleId, 'Cargo quarentena ID')], reason);
+    return true;
+  }
+  if (punishment === 'remove_roles') {
+    await member.roles.set([], reason);
+    return true;
+  }
+  if (punishment === 'kick') {
+    await member.kick(reason);
+    return true;
+  }
+  if (punishment === 'ban') {
+    await member.ban({ deleteMessageSeconds: 0, reason });
+    return true;
+  }
+  return false;
+}
+
+async function handleProtectionAuditEvent(entry, guild, auditType, label) {
+  const token = entry.token;
+  const settings = protectionSettings.get(protectionKey(token, guild.id));
+  if (!settings?.enabled) return;
+  const actorId = await findAuditExecutor(guild, auditType);
+  if (!actorId) return;
+
+  const now = Date.now();
+  const windowMs = Math.max(10, Number(settings.limitWindowSeconds || 60)) * 1000;
+  const key = protectionWindowKey(token, guild.id, actorId);
+  const events = (protectionWindows.get(key) || []).filter((timestamp) => now - timestamp < windowMs);
+  events.push(now);
+  protectionWindows.set(key, events);
+
+  const limit = Math.max(1, Number(settings.limitPerMinute || 5));
+  if (events.length <= limit) return;
+
+  const reason = `Nexus anti-nuke: ${events.length} acoes em ${Math.round(windowMs / 1000)}s (${label})`;
+  const punished = await punishProtectionActor(guild, actorId, settings, reason).catch(() => false);
+  await sendProtectionLog(
+    guild,
+    settings,
+    punished
+      ? `Protecao Nexus conteve <@${actorId}>: ${reason}`
+      : `Protecao Nexus detectou abuso de <@${actorId}>, mas nao conseguiu aplicar punicao: ${reason}`
+  );
+}
+
+function attachProtectionHandlers(entry) {
+  if (entry.protectionHandlersAttached) return;
+  entry.protectionHandlersAttached = true;
+  const client = entry.client;
+  const auditEvents = [
+    ['channelDelete', AuditLogEvent.ChannelDelete, 'exclusao de canais'],
+    ['channelCreate', AuditLogEvent.ChannelCreate, 'criacao de canais'],
+    ['roleDelete', AuditLogEvent.RoleDelete, 'exclusao de cargos'],
+    ['roleCreate', AuditLogEvent.RoleCreate, 'criacao de cargos'],
+    ['guildBanAdd', AuditLogEvent.MemberBanAdd, 'banimentos'],
+    ['webhooksUpdate', AuditLogEvent.WebhookCreate, 'webhooks']
+  ];
+  for (const [eventName, auditType, label] of auditEvents) {
+    client.on(eventName, (target) => {
+      const guild = target?.guild || target;
+      if (!guild?.id) return;
+      void handleProtectionAuditEvent(entry, guild, auditType, label);
+    });
+  }
+}
+
+async function fetchAvatarBuffer(avatarUrl) {
+  const rawUrl = cleanText(avatarUrl);
+  if (!rawUrl) return null;
+  let parsed;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw makeHttpError('Avatar URL invalida.', 400);
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw makeHttpError('Avatar precisa ser uma URL http/https.', 400);
+  }
+
+  const response = await fetch(parsed, { headers: { 'User-Agent': 'Nexus Discord Dashboard' } });
+  if (!response.ok) throw makeHttpError(`Nao foi possivel baixar o avatar (${response.status}).`, 400);
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.startsWith('image/')) throw makeHttpError('Avatar URL precisa apontar para uma imagem.', 400);
+  const declaredSize = Number(response.headers.get('content-length') || 0);
+  if (declaredSize > 8 * 1024 * 1024) throw makeHttpError('Avatar muito grande. Use imagem menor que 8MB.', 400);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.byteLength > 8 * 1024 * 1024) throw makeHttpError('Avatar muito grande. Use imagem menor que 8MB.', 400);
+  return buffer;
+}
+
 function clientState(entry) {
   const client = entry?.client;
   const user = client?.user;
@@ -107,16 +243,20 @@ async function ensureClient({ botToken, status, activityType, activityMessage } 
   const client = new Client({
     intents: [
       GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildModeration,
       GatewayIntentBits.GuildVoiceStates
     ]
   });
 
   const entry = {
+    token,
     client,
     desiredStatus: status || 'online',
-    readyPromise: null
+    readyPromise: null,
+    protectionHandlersAttached: false
   };
   clients.set(token, entry);
+  attachProtectionHandlers(entry);
 
   entry.readyPromise = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -174,6 +314,65 @@ export async function runDiscordBotLifecycle({ botToken, action = 'start', statu
 
   const entry = await ensureClient({ botToken, status, activityType, activityMessage });
   return { ok: true, action, runtime: clientState(entry) };
+}
+
+export async function applyDiscordBotProfile({
+  botToken,
+  guildId,
+  status = 'online',
+  activityType = 'Watching',
+  activityMessage = 'Nexus dashboard',
+  displayName = '',
+  avatarUrl = ''
+} = {}) {
+  const entry = await ensureClient({ botToken, status, activityType, activityMessage });
+  const client = entry.client;
+  const result = {
+    ok: true,
+    presenceUpdated: true,
+    nicknameUpdated: false,
+    avatarUpdated: false,
+    runtime: clientState(entry)
+  };
+
+  const nextName = cleanText(displayName).slice(0, 32);
+  if (nextName) {
+    const guild = assertSnowflake(guildId, 'Servidor ID');
+    const discordGuild = await client.guilds.fetch(guild);
+    const me = discordGuild.members.me || await discordGuild.members.fetchMe();
+    await me.setNickname(nextName, 'Nexus dashboard profile update');
+    result.nicknameUpdated = true;
+  }
+
+  const avatarBuffer = await fetchAvatarBuffer(avatarUrl);
+  if (avatarBuffer) {
+    await client.user.setAvatar(avatarBuffer);
+    result.avatarUpdated = true;
+  }
+
+  result.runtime = clientState(entry);
+  return result;
+}
+
+export async function configureDiscordProtection({ botToken, guildId, enabled = true, ...settings } = {}) {
+  const token = getRuntimeToken(botToken);
+  const guild = assertSnowflake(guildId, 'Servidor ID');
+  const entry = await ensureClient({ botToken, status: 'online' });
+  const nextSettings = {
+    enabled: Boolean(enabled),
+    limitPerMinute: Math.max(1, Math.min(60, Number(settings.limitPerMinute || 5))),
+    limitWindowSeconds: Math.max(10, Math.min(300, Number(settings.limitWindowSeconds || 60))),
+    punishment: cleanText(settings.punishment) || 'remove_roles',
+    whitelist: cleanText(settings.whitelist),
+    ignoredRoles: cleanText(settings.ignoredRoles),
+    quarantineRoleId: cleanText(settings.quarantineRoleId),
+    logChannelId: cleanText(settings.logChannelId)
+  };
+  protectionSettings.set(protectionKey(token, guild), nextSettings);
+  attachProtectionHandlers(entry);
+  const discordGuild = await entry.client.guilds.fetch(guild);
+  await sendProtectionLog(discordGuild, nextSettings, `Protecao Nexus ${nextSettings.enabled ? 'ativada' : 'desativada'} para este servidor.`);
+  return { ok: true, guildId: guild, protection: nextSettings };
 }
 
 function durationToMs({ voiceDuration, voiceHours = 0, voiceMinutes = 0 } = {}) {

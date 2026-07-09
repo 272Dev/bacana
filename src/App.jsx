@@ -1975,6 +1975,29 @@ const defaultDiscordSettings = {
   }
 };
 
+const defaultAntiNukeSettings = {
+  enabled: true,
+  limitPerMinute: 5,
+  limitWindowSeconds: 60,
+  punishment: 'remove_roles',
+  whitelist: '',
+  ignoredRoles: '',
+  logChannelId: '',
+  quarantineRoleId: '',
+  joinLimit: 8,
+  joinWindowSeconds: 20,
+  minAccountAgeDays: 7,
+  duplicateMessageLimit: 5,
+  webhookLimitPerMinute: 2,
+  verificationMode: 'medium',
+  autoLockdown: true,
+  blockInviteSpam: true,
+  blockMentionSpam: true,
+  backupChannels: true,
+  backupRoles: true,
+  notifyOwner: true
+};
+
 const defaultDiscordControl = {
   selectedBotId: 'render-bot',
   desiredStatus: 'online',
@@ -2003,6 +2026,11 @@ const defaultDiscordControl = {
   profileActivityMessage: 'Nexus dashboard',
   profileAvatarUrl: '',
   profileBannerUrl: '',
+  counterTargetType: 'bot-nickname',
+  counterTargetId: '',
+  counterTemplate: 'Membros: {members}',
+  counterIntervalMinutes: 5,
+  counterAuto: false,
   commandCooldown: 5,
   commandRole: '',
   commandChannel: '',
@@ -2212,14 +2240,12 @@ function DiscordToolsPage() {
   const [botStatus, setBotStatus] = useState(null);
   const [channelForm, setChannelForm] = useState({ name: '', type: 0, parentId: '', channelId: '', position: '' });
   const [roleForm, setRoleForm] = useState({ name: '', color: '#ff4058', permissions: '0', roleId: '', userId: '', action: 'add' });
-  const [antiNuke, setAntiNuke] = useState(savedSettings?.antiNuke || {
-    enabled: true,
-    limitPerMinute: 5,
-    punishment: 'remove_roles',
-    whitelist: '',
-    ignoredRoles: '',
-    logChannelId: savedSettings?.logChannelId || ''
+  const [antiNuke, setAntiNuke] = useState({
+    ...defaultAntiNukeSettings,
+    ...(savedSettings?.antiNuke || {}),
+    logChannelId: savedSettings?.antiNuke?.logChannelId || savedSettings?.logChannelId || ''
   });
+  const [newBotForm, setNewBotForm] = useState({ token: '', guildId: '', name: '' });
   const [moderation, setModeration] = useState({ userId: '', channelId: '', reason: '', durationMinutes: 10, amount: 10, message: '' });
   const [lookupId, setLookupId] = useState('');
   const [lookupResult, setLookupResult] = useState(null);
@@ -2287,6 +2313,23 @@ function DiscordToolsPage() {
     });
   }, [selectedManagedBot.id, selectedManagedBot.guildId, botTokens]);
 
+  useEffect(() => {
+    if (!control.counterAuto) return undefined;
+    const minutes = Math.max(1, Math.min(60, Number(control.counterIntervalMinutes) || 5));
+    const timer = window.setInterval(() => {
+      void applyCounterNow(true);
+    }, minutes * 60_000);
+    return () => window.clearInterval(timer);
+  }, [
+    control.counterAuto,
+    control.counterIntervalMinutes,
+    control.counterTargetType,
+    control.counterTargetId,
+    control.counterTemplate,
+    botConfig.botToken,
+    botConfig.guildId
+  ]);
+
   function showNotice(message) {
     setNotice(message);
     window.clearTimeout(showNotice.timer);
@@ -2346,23 +2389,46 @@ function DiscordToolsPage() {
     showNotice(`Bot selecionado: ${nextBot.name}`);
   }
 
-  function addManagedBot() {
-    const id = `bot-${crypto.randomUUID()}`;
-    const nextBot = {
-      ...defaultDiscordManagedBots[0],
-      id,
-      name: `Bot ${managedBots.length + 1}`,
-      color: '#23a55a'
-    };
-    setManagedBots((current) => {
-      const next = [...current, nextBot];
-      saveManagedBots(next);
-      return next;
+  async function addManagedBot() {
+    const token = newBotForm.token.trim();
+    if (!token) return showNotice('Cole o token do bot para adicionar.');
+
+    await runAction('bot-add', async () => {
+      const payload = await api('/discord-tools/bot/status', {
+        method: 'POST',
+        body: { botToken: token, guildId: newBotForm.guildId.trim() }
+      });
+      const baseId = `bot-${payload.bot?.id || crypto.randomUUID()}`;
+      const id = managedBots.some((bot) => bot.id === baseId) ? `${baseId}-${Date.now()}` : baseId;
+      const nextBot = {
+        ...defaultDiscordManagedBots[0],
+        id,
+        name: newBotForm.name.trim() || payload.bot?.username || `Bot ${managedBots.length + 1}`,
+        guildId: newBotForm.guildId.trim() || payload.guild?.id || '',
+        guildName: payload.guild?.name || '',
+        avatarUrl: payload.bot?.avatarUrl || '',
+        color: '#23a55a',
+        desiredStatus: payload.bot?.online ? control.desiredStatus : 'offline',
+        guildCount: payload.bot?.guildCount || 0,
+        memberCount: payload.guild?.memberCount || 0,
+        onlineCount: payload.guild?.onlineCount || 0,
+        channelCount: payload.guild?.channelCount || 0,
+        roleCount: payload.guild?.roleCount || 0,
+        ping: payload.bot?.ping || 0
+      };
+      setManagedBots((current) => {
+        const next = [...current, nextBot];
+        saveManagedBots(next);
+        return next;
+      });
+      setBotTokens((current) => ({ ...current, [id]: token }));
+      setBotStatus(payload);
+      setBotConfig({ botToken: token, guildId: nextBot.guildId });
+      setNewBotForm({ token: '', guildId: '', name: '' });
+      updateControl({ selectedBotId: id, desiredStatus: nextBot.desiredStatus, voiceDuration: 'forever' });
+      pushLog('bot', `Bot adicionado: ${nextBot.name}`, nextBot.guildName || nextBot.guildId);
+      showNotice('Bot adicionado e validado pelo Discord.');
     });
-    updateControl({ selectedBotId: id, desiredStatus: nextBot.desiredStatus, voiceDuration: 'forever' });
-    setBotConfig({ botToken: '', guildId: '' });
-    setBotStatus(null);
-    showNotice('Novo bot adicionado ao painel.');
   }
 
   function removeManagedBot(botId) {
@@ -2419,7 +2485,7 @@ function DiscordToolsPage() {
       restart: 'Restart Bot',
       reconnect: 'Reconnect Bot'
     };
-    const nextStatus = action === 'stop' ? 'offline' : 'online';
+    const nextStatus = action === 'stop' ? 'offline' : control.desiredStatus || 'online';
     await runAction(`bot-${action}`, async () => {
       const result = await api('/discord-tools/bot/lifecycle', {
         method: 'POST',
@@ -2610,6 +2676,67 @@ function DiscordToolsPage() {
     });
   }
 
+  async function saveBotProfile() {
+    if (!botConfig.guildId && control.profileDisplayName) return showNotice('Informe o ID do servidor para trocar o nome do bot no servidor.');
+    await runAction('profile', async () => {
+      const result = await api('/discord-tools/bot/profile', {
+        method: 'POST',
+        body: {
+          ...botConfig,
+          status: control.desiredStatus,
+          activityType: control.profileActivityType,
+          activityMessage: control.profileActivityMessage || control.profileStatusText || 'Nexus dashboard',
+          displayName: control.profileDisplayName,
+          avatarUrl: control.profileAvatarUrl
+        }
+      });
+      updateManagedBot(control.selectedBotId, {
+        name: control.profileDisplayName || selectedManagedBot.name,
+        avatarUrl: control.profileAvatarUrl || selectedManagedBot.avatarUrl,
+        desiredStatus: control.desiredStatus
+      });
+      setBotStatus((current) => current ? {
+        ...current,
+        runtime: result.runtime,
+        bot: {
+          ...current.bot,
+          online: Boolean(result.runtime?.online),
+          username: control.profileDisplayName || current.bot?.username,
+          avatarUrl: control.profileAvatarUrl || current.bot?.avatarUrl
+        }
+      } : current);
+      pushLog('bot', `Perfil/status aplicado: ${control.desiredStatus}`, selectedManagedBot.name);
+      showNotice(result.avatarUpdated ? 'Perfil, status e avatar aplicados.' : 'Perfil e status aplicados no Discord.');
+    });
+  }
+
+  async function applyCounterNow(silent = false) {
+    if (!botConfig.guildId) {
+      if (!silent) showNotice('Informe ou carregue o servidor antes do contador.');
+      return;
+    }
+    if (control.counterTargetType !== 'bot-nickname' && !control.counterTargetId) {
+      if (!silent) showNotice('Informe o ID do canal ou categoria do contador.');
+      return;
+    }
+    await runAction(silent ? 'counter-auto' : 'counter', async () => {
+      const result = await api('/discord-tools/counters/apply', {
+        method: 'POST',
+        body: {
+          ...botConfig,
+          targetType: control.counterTargetType,
+          targetId: control.counterTargetId,
+          template: control.counterTemplate
+        }
+      });
+      if (control.counterTargetType === 'bot-nickname') {
+        updateManagedBot(control.selectedBotId, { name: result.name, memberCount: result.stats?.members || selectedManagedBot.memberCount || 0 });
+      }
+      pushLog('bot', `Contador atualizado: ${result.name}`, selectedManagedBot.name);
+      if (!silent) showNotice(`Contador atualizado: ${result.name}`);
+    });
+  }
+
   async function createChannel() {
     await runAction('channel', async () => {
       const payload = await api('/discord-tools/channels', {
@@ -2724,10 +2851,17 @@ function DiscordToolsPage() {
     showNotice('Campos limpos.');
   }
 
-  function saveAntiNuke() {
-    updateSettings({ ...settings, antiNuke, logChannelId: antiNuke.logChannelId });
-    pushLog('anti-nuke', `Protecao ${antiNuke.enabled ? 'ativa' : 'desativada'}`);
-    showNotice('Protecao salva localmente.');
+  async function saveAntiNuke() {
+    if (!botConfig.guildId) return showNotice('Informe ou carregue o servidor antes de ativar a protecao.');
+    await runAction('anti-nuke-save', async () => {
+      await api('/discord-tools/protection/configure', {
+        method: 'POST',
+        body: { ...botConfig, ...antiNuke }
+      });
+      updateSettings({ ...settings, antiNuke, logChannelId: antiNuke.logChannelId });
+      pushLog('anti-nuke', `Protecao ${antiNuke.enabled ? 'ativa' : 'desativada'} no Gateway`, selectedManagedBot.name);
+      showNotice(antiNuke.enabled ? 'Anti-nuke ativado no bot.' : 'Anti-nuke desativado no bot.');
+    });
   }
 
   function saveBotSettings() {
@@ -2998,15 +3132,15 @@ function DiscordToolsPage() {
         <section className="panel discord-tool-card">
           <div className="panel-title"><h3>Bot profile</h3><Palette size={18} /></div>
           <div className="discord-form-grid">
-            <label>Display name<input value={control.profileDisplayName} onChange={(event) => updateControl({ profileDisplayName: event.target.value })} placeholder={botStatus?.bot?.username || 'Nexus Bot'} /></label>
-            <label>Status text<input value={control.profileStatusText} onChange={(event) => updateControl({ profileStatusText: event.target.value })} placeholder="Online agora" /></label>
+            <label>Nome no servidor<input value={control.profileDisplayName} onChange={(event) => updateControl({ profileDisplayName: event.target.value })} placeholder={botStatus?.bot?.username || 'Nexus Bot'} /></label>
+            <label>Status<input value={control.profileStatusText} onChange={(event) => updateControl({ profileStatusText: event.target.value })} placeholder="Online agora" /></label>
             <label>Activity type<select value={control.profileActivityType} onChange={(event) => updateControl({ profileActivityType: event.target.value })}><option>Watching</option><option>Playing</option><option>Listening</option><option>Competing</option></select></label>
             <label>Activity message<input value={control.profileActivityMessage} onChange={(event) => updateControl({ profileActivityMessage: event.target.value })} /></label>
             <label className="wide">Avatar URL<input value={control.profileAvatarUrl} onChange={(event) => updateControl({ profileAvatarUrl: event.target.value })} placeholder="https://..." /></label>
             <label className="wide">Banner URL<input value={control.profileBannerUrl} onChange={(event) => updateControl({ profileBannerUrl: event.target.value })} placeholder="https://..." /></label>
           </div>
           <div className="card-actions">
-            <button className="primary-button" onClick={() => { pushLog('bot', `Perfil salvo para ${previewName}`); showNotice('Perfil salvo no painel.'); }}><Save size={17} /> Salvar perfil</button>
+            <button className="primary-button" onClick={saveBotProfile} disabled={loading === 'profile'}><Save size={17} /> {loading === 'profile' ? 'Aplicando' : 'Aplicar no Discord'}</button>
             <button className="ghost-button" onClick={() => updateControl({ profileDisplayName: '', profileStatusText: '', profileAvatarUrl: '', profileBannerUrl: '' })}><RefreshCw size={17} /> Reset</button>
           </div>
         </section>
@@ -3016,6 +3150,38 @@ function DiscordToolsPage() {
             <div className="discord-profile-banner" style={control.profileBannerUrl ? { backgroundImage: `url(${control.profileBannerUrl})` } : undefined} />
             <Avatar src={control.profileAvatarUrl || botStatus?.bot?.avatarUrl || selectedManagedBot.avatarUrl} name={previewName} size="xl" />
             <span><strong>{previewName}</strong><small>{control.profileActivityType} {control.profileActivityMessage}</small><small>{control.profileStatusText || control.desiredStatus}</small></span>
+          </div>
+        </section>
+        <section className="panel discord-tool-card">
+          <div className="panel-title"><h3>Contadores</h3><Users size={18} /></div>
+          <div className="discord-form-grid">
+            <label>
+              Onde atualizar
+              <select value={control.counterTargetType} onChange={(event) => updateControl({ counterTargetType: event.target.value })}>
+                <option value="bot-nickname">Nome do bot no servidor</option>
+                <option value="channel">Nome de canal</option>
+                <option value="category">Nome de categoria</option>
+              </select>
+            </label>
+            <label>
+              Canal/Categoria ID
+              <input value={control.counterTargetId} onChange={(event) => updateControl({ counterTargetId: event.target.value })} placeholder="Vazio para nome do bot" disabled={control.counterTargetType === 'bot-nickname'} />
+            </label>
+            <label className="wide">
+              Modelo
+              <input value={control.counterTemplate} onChange={(event) => updateControl({ counterTemplate: event.target.value })} placeholder="Membros: {members}" />
+            </label>
+            <label>
+              Intervalo
+              <input type="number" min="1" max="60" value={control.counterIntervalMinutes} onChange={(event) => updateControl({ counterIntervalMinutes: Number(event.target.value) })} />
+            </label>
+          </div>
+          <div className="notice subtle">Variaveis: {'{members}'}, {'{online}'}, {'{channels}'}, {'{roles}'}, {'{server}'}.</div>
+          <div className="discord-toggle-grid">
+            <label className="switch-line"><input type="checkbox" checked={control.counterAuto} onChange={(event) => updateControl({ counterAuto: event.target.checked })} /> Atualizar automaticamente enquanto painel estiver aberto</label>
+          </div>
+          <div className="card-actions">
+            <button className="primary-button" onClick={() => applyCounterNow(false)} disabled={loading === 'counter'}><RefreshCw size={17} /> Atualizar agora</button>
           </div>
         </section>
       </div>
@@ -3274,13 +3440,34 @@ function DiscordToolsPage() {
       <div className="discord-section-grid">
         <section className="panel discord-tool-card">
           <div className="panel-title">
-            <h3>{selectedManagedBot.name}</h3>
+            <h3>Multi bot</h3>
             <button className="ghost-button" type="button" onClick={addManagedBot}>
               <Plus size={16} />
-              Bot
+              Adicionar
             </button>
           </div>
-          <div className="notice subtle">O token fica so nesta sessao. Salvo no navegador: nome do bot, servidor e preferencias do painel.</div>
+          <div className="notice subtle">Cole o token para validar e adicionar outro bot. O token fica so nesta sessao.</div>
+          <div className="discord-form-grid">
+            <label>
+              Token do novo bot
+              <input type="password" value={newBotForm.token} onChange={(event) => setNewBotForm((current) => ({ ...current, token: event.target.value }))} placeholder="Bot token" />
+            </label>
+            <label>
+              ID do servidor
+              <input value={newBotForm.guildId} onChange={(event) => setNewBotForm((current) => ({ ...current, guildId: event.target.value }))} placeholder="Opcional" />
+            </label>
+            <label className="wide">
+              Nome no painel
+              <input value={newBotForm.name} onChange={(event) => setNewBotForm((current) => ({ ...current, name: event.target.value }))} placeholder="Opcional, usa o nome real do bot" />
+            </label>
+          </div>
+          <div className="card-actions">
+            <button className="primary-button" onClick={addManagedBot} disabled={loading === 'bot-add'}>
+              <Plus size={17} />
+              {loading === 'bot-add' ? 'Validando' : 'Adicionar bot pelo token'}
+            </button>
+          </div>
+          <div className="notice subtle">{selectedManagedBot.name}: salvo no navegador fica so nome, servidor e preferencias do painel.</div>
           <div className="discord-form-grid">
             <label>
               Nome no painel
@@ -3517,6 +3704,14 @@ function DiscordToolsPage() {
   }
 
   function renderAntiNuke() {
+    const protectionFeatures = [
+      { label: 'Audit Log monitor', ok: antiNuke.enabled, detail: 'Canais, cargos, bans e webhooks' },
+      { label: 'Anti-raid join', ok: antiNuke.joinLimit > 0, detail: `${antiNuke.joinLimit} entradas em ${antiNuke.joinWindowSeconds}s` },
+      { label: 'Conta nova', ok: antiNuke.minAccountAgeDays > 0, detail: `${antiNuke.minAccountAgeDays} dias minimos` },
+      { label: 'Anti-spam', ok: antiNuke.blockInviteSpam || antiNuke.blockMentionSpam, detail: 'Convites, mencoes e repeticoes' },
+      { label: 'Webhooks', ok: antiNuke.webhookLimitPerMinute > 0, detail: `${antiNuke.webhookLimitPerMinute}/minuto` },
+      { label: 'Quarentena', ok: Boolean(antiNuke.quarantineRoleId), detail: antiNuke.quarantineRoleId || 'Cargo opcional' }
+    ];
     return (
       <div className="discord-section-grid">
         <section className="panel discord-tool-card">
@@ -3541,17 +3736,50 @@ function DiscordToolsPage() {
               <input type="number" min="1" max="60" value={antiNuke.limitPerMinute} onChange={(event) => setAntiNuke((current) => ({ ...current, limitPerMinute: Number(event.target.value) }))} />
             </label>
             <label>
+              Janela de tempo
+              <input type="number" min="10" max="300" value={antiNuke.limitWindowSeconds} onChange={(event) => setAntiNuke((current) => ({ ...current, limitWindowSeconds: Number(event.target.value) }))} />
+            </label>
+            <label>
               Punicao automatica
               <select value={antiNuke.punishment} onChange={(event) => setAntiNuke((current) => ({ ...current, punishment: event.target.value }))}>
                 <option value="remove_roles">Remover cargos perigosos</option>
+                <option value="quarantine">Mover para quarentena</option>
                 <option value="ban">Banir usuario</option>
                 <option value="kick">Expulsar usuario</option>
-                <option value="alert">Apenas alertar</option>
+                <option value="none">Apenas alertar</option>
               </select>
+            </label>
+            <label>
+              Cargo quarentena
+              <input value={antiNuke.quarantineRoleId} onChange={(event) => setAntiNuke((current) => ({ ...current, quarantineRoleId: event.target.value }))} placeholder="Role ID" />
             </label>
             <label>
               Canal de logs
               <input value={antiNuke.logChannelId} onChange={(event) => setAntiNuke((current) => ({ ...current, logChannelId: event.target.value }))} placeholder="Channel ID" />
+            </label>
+            <label>
+              Entradas em massa
+              <input type="number" min="1" max="100" value={antiNuke.joinLimit} onChange={(event) => setAntiNuke((current) => ({ ...current, joinLimit: Number(event.target.value) }))} />
+            </label>
+            <label>
+              Janela anti-raid
+              <input type="number" min="5" max="300" value={antiNuke.joinWindowSeconds} onChange={(event) => setAntiNuke((current) => ({ ...current, joinWindowSeconds: Number(event.target.value) }))} />
+            </label>
+            <label>
+              Idade minima da conta
+              <input type="number" min="0" max="365" value={antiNuke.minAccountAgeDays} onChange={(event) => setAntiNuke((current) => ({ ...current, minAccountAgeDays: Number(event.target.value) }))} />
+            </label>
+            <label>
+              Webhooks por minuto
+              <input type="number" min="0" max="30" value={antiNuke.webhookLimitPerMinute} onChange={(event) => setAntiNuke((current) => ({ ...current, webhookLimitPerMinute: Number(event.target.value) }))} />
+            </label>
+            <label>
+              Modo verificacao
+              <select value={antiNuke.verificationMode} onChange={(event) => setAntiNuke((current) => ({ ...current, verificationMode: event.target.value }))}>
+                <option value="low">Leve</option>
+                <option value="medium">Medio</option>
+                <option value="high">Forte</option>
+              </select>
             </label>
             <label className="wide">
               Whitelist de usuarios confiaveis
@@ -3562,12 +3790,24 @@ function DiscordToolsPage() {
               <textarea rows={3} value={antiNuke.ignoredRoles} onChange={(event) => setAntiNuke((current) => ({ ...current, ignoredRoles: event.target.value }))} placeholder="Um Role ID por linha" />
             </label>
           </div>
-          <button className="primary-button" onClick={saveAntiNuke}><Save size={17} /> Salvar protecao</button>
+          <div className="discord-toggle-grid">
+            <label className="switch-line"><input type="checkbox" checked={antiNuke.autoLockdown} onChange={(event) => setAntiNuke((current) => ({ ...current, autoLockdown: event.target.checked }))} /> Lockdown automatico</label>
+            <label className="switch-line"><input type="checkbox" checked={antiNuke.blockInviteSpam} onChange={(event) => setAntiNuke((current) => ({ ...current, blockInviteSpam: event.target.checked }))} /> Bloquear spam de convite</label>
+            <label className="switch-line"><input type="checkbox" checked={antiNuke.blockMentionSpam} onChange={(event) => setAntiNuke((current) => ({ ...current, blockMentionSpam: event.target.checked }))} /> Bloquear mention spam</label>
+            <label className="switch-line"><input type="checkbox" checked={antiNuke.backupChannels} onChange={(event) => setAntiNuke((current) => ({ ...current, backupChannels: event.target.checked }))} /> Backup de canais</label>
+            <label className="switch-line"><input type="checkbox" checked={antiNuke.backupRoles} onChange={(event) => setAntiNuke((current) => ({ ...current, backupRoles: event.target.checked }))} /> Backup de cargos</label>
+          </div>
+          <button className="primary-button" onClick={saveAntiNuke} disabled={loading === 'anti-nuke-save'}><Save size={17} /> {loading === 'anti-nuke-save' ? 'Ativando' : 'Salvar protecao no bot'}</button>
         </section>
         <section className="panel discord-tool-card">
           <div className="panel-title">
-            <h3>Status e eventos</h3>
+            <h3>Camadas ativas</h3>
             <Shield size={18} />
+          </div>
+          <div className="discord-check-grid">
+            {protectionFeatures.map((item) => (
+              <article className={item.ok ? 'ok' : 'warn'} key={item.label}>{item.ok ? <Check size={18} /> : <AlertTriangle size={18} />}<span><strong>{item.label}</strong><small>{item.detail}</small></span></article>
+            ))}
           </div>
           <div className="discord-stat-grid">
             <Metric icon={AlertTriangle} label="Acoes detectadas" value={logs.filter((log) => log.type === 'anti-nuke').length} />
