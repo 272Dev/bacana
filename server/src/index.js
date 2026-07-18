@@ -115,7 +115,10 @@ for (const method of ['get', 'post', 'put', 'patch', 'delete']) {
   app[method] = (pathOrRoute, ...handlers) => original(pathOrRoute, ...handlers.map(wrapAsync));
 }
 
-app.set('trust proxy', config.security.trustProxy);
+// Render places one proxy in front of the service. Trusting a hop count keeps
+// the client IP useful for HWID abuse detection without enabling arbitrary
+// forwarded headers to bypass rate limiting.
+app.set('trust proxy', config.security.trustProxy ? 1 : false);
 app.use(helmet({
   contentSecurityPolicy: false,
   crossOriginEmbedderPolicy: false
