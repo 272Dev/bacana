@@ -3,6 +3,7 @@ import {
   AuditLogEvent,
   ChannelType,
   Client,
+  EmbedBuilder,
   Events,
   GatewayIntentBits,
   PermissionFlagsBits,
@@ -19,6 +20,15 @@ import {
 import { config, missingEnv } from './config.js';
 import { decryptSecret, encryptSecret } from './crypto.js';
 import { db, nowIso } from './db.js';
+import {
+  detectorCatalogResponse,
+  detectorConfig,
+  detectorDefinition,
+  evaluateMessageDetectors,
+  evaluateProfileDetectors,
+  makeMessageRecord,
+  normalizeDetectorSettings
+} from './discordProtectionEngine.js';
 
 const clients = new Map();
 const voiceTimers = new Map();
@@ -27,6 +37,9 @@ const protectionWindows = new Map();
 const protectionCooldowns = new Map();
 const processedAuditEntries = new Map();
 const recentAuditTargets = new Map();
+const messageHistories = new Map();
+const resourceSnapshots = new Map();
+const inviteSnapshots = new Map();
 
 function makeHttpError(message, status = 500) {
   const error = new Error(message);
@@ -98,6 +111,20 @@ function clampNumber(value, fallback, min, max) {
 }
 
 function normalizeProtectionSettings(settings = {}, enabled = true) {
+  const detectors = normalizeDetectorSettings(settings.detectors);
+  if (!settings.detectors) {
+    detectors.spam.threshold = clampNumber(settings.messageLimit, 6, 2, 50);
+    detectors.spam.windowSeconds = clampNumber(settings.messageWindowSeconds, 12, 3, 120);
+    detectors.fast_message_spam.threshold = Math.max(3, Math.min(detectors.spam.threshold, 6));
+    detectors.duplicate_message.threshold = clampNumber(settings.duplicateMessageLimit, 4, 2, 20);
+    detectors.mention_spam.threshold = clampNumber(settings.mentionLimit, 4, 2, 50);
+    detectors.discord_invite.enabled = settings.blockInviteSpam !== false;
+    detectors.mention_spam.enabled = settings.blockMentionSpam !== false;
+    detectors.mass_join.threshold = clampNumber(settings.joinLimit, 8, 1, 100);
+    detectors.mass_join.windowSeconds = clampNumber(settings.joinWindowSeconds, 20, 5, 300);
+    detectors.young_account.threshold = clampNumber(settings.minAccountAgeDays, 7, 1, 365);
+    detectors.webhook_spam.threshold = clampNumber(settings.webhookLimitPerMinute, 2, 1, 30);
+  }
   return {
     enabled: Boolean(enabled),
     limitPerMinute: clampNumber(settings.limitPerMinute, 5, 1, 60),
@@ -125,7 +152,12 @@ function normalizeProtectionSettings(settings = {}, enabled = true) {
     blockMentionSpam: settings.blockMentionSpam !== false,
     backupChannels: Boolean(settings.backupChannels),
     backupRoles: Boolean(settings.backupRoles),
-    notifyOwner: settings.notifyOwner !== false
+    notifyOwner: settings.notifyOwner !== false,
+    ignoredChannels: cleanText(settings.ignoredChannels),
+    notifyRoleIds: cleanText(settings.notifyRoleIds),
+    autoRestore: settings.autoRestore !== false,
+    warnMessage: cleanText(settings.warnMessage) || 'Sua mensagem violou as regras automaticas deste servidor.',
+    detectors
   };
 }
 
@@ -162,17 +194,112 @@ async function sendProtectionLog(guild, settings, message) {
   }
 }
 
+function formatProtectionTimestamp(date = new Date()) {
+  return date.toISOString();
+}
+
+async function recordProtectionDetection({
+  guildId,
+  detectorId,
+  userId = null,
+  channelId = null,
+  messageId = null,
+  actionTaken = 'logged',
+  punishment = 'none',
+  reason,
+  auditExecutorId = null,
+  metadata = {},
+  actionApplied = false
+}) {
+  const createdAt = nowIso();
+  try {
+    await db.prepare(`
+      INSERT INTO discord_protection_events (
+        id, guild_id, detector_id, user_id, channel_id, message_id,
+        action_taken, punishment, reason, audit_executor_id, metadata_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(), guildId, detectorId, userId, channelId, messageId,
+      actionTaken, punishment, String(reason || '').slice(0, 1000), auditExecutorId,
+      JSON.stringify(metadata || {}).slice(0, 8000), createdAt
+    );
+    await db.prepare(`
+      INSERT INTO discord_protection_stats (guild_id, detector_id, detections, actions, last_detected_at)
+      VALUES (?, ?, 1, ?, ?)
+      ON CONFLICT(guild_id, detector_id) DO UPDATE SET
+        detections = discord_protection_stats.detections + 1,
+        actions = discord_protection_stats.actions + excluded.actions,
+        last_detected_at = excluded.last_detected_at
+    `).run(guildId, detectorId, actionApplied ? 1 : 0, createdAt);
+  } catch (error) {
+    console.warn(`Falha ao persistir deteccao ${detectorId}: ${error.message}`);
+  }
+}
+
+async function sendDetailedProtectionLog({
+  guild,
+  settings,
+  detection,
+  actorId,
+  channelId = null,
+  message = null,
+  outcome = null,
+  auditEntry = null,
+  deleted = false
+}) {
+  const logChannelId = cleanText(settings.logChannelId);
+  if (!logChannelId) return;
+  const channel = await guild.channels.fetch(logChannelId).catch(() => null);
+  if (!channel?.isTextBased?.()) return;
+  const punishment = detectorConfig(settings, detection.detectorId).punishment;
+  const actionTaken = [deleted ? 'Mensagem apagada' : '', outcome?.applied ? outcome.action || punishment : 'Somente log']
+    .filter(Boolean)
+    .join(' + ');
+  const embed = new EmbedBuilder()
+    .setColor(detection.severity === 'critical' ? 0xff3b30 : detection.severity === 'medium' ? 0xffb020 : 0xff5c5c)
+    .setTitle(`Nexus Detection - ${detection.detectorName}`)
+    .setDescription(String(detection.reason || 'Violacao detectada.').slice(0, 4000))
+    .addFields(
+      { name: 'Detector', value: `\`${detection.detectorId}\``, inline: true },
+      { name: 'Usuario', value: actorId ? `<@${actorId}> (\`${actorId}\`)` : 'Nao identificado', inline: true },
+      { name: 'Servidor', value: `${guild.name} (\`${guild.id}\`)`, inline: false },
+      { name: 'Canal', value: channelId ? `<#${channelId}> (\`${channelId}\`)` : 'Nao aplicavel', inline: true },
+      { name: 'Acao', value: actionTaken || 'Registrado', inline: true },
+      { name: 'Punicao', value: `\`${punishment}\``, inline: true },
+      { name: 'Audit executor', value: auditEntry?.executorId || auditEntry?.executor?.id ? `<@${auditEntry.executorId || auditEntry.executor.id}>` : 'Nao disponivel', inline: true },
+      { name: 'Resultado', value: String(outcome?.detail || 'Deteccao registrada.').slice(0, 1000), inline: false }
+    )
+    .setTimestamp(new Date());
+  const content = String(message?.content || '').trim();
+  if (content) embed.addFields({ name: 'Conteudo', value: `\`\`\`\n${content.slice(0, 850)}\n\`\`\`` });
+  if (detection.evidence && detection.evidence !== content) embed.addFields({ name: 'Evidencia', value: String(detection.evidence).slice(0, 900) });
+  const notifyRoles = parseLineList(settings.notifyRoleIds).filter((id) => /^\d{5,32}$/.test(id)).slice(0, 10);
+  await channel.send({
+    content: notifyRoles.length ? notifyRoles.map((id) => `<@&${id}>`).join(' ') : undefined,
+    embeds: [embed],
+    allowedMentions: { roles: notifyRoles, parse: [] }
+  }).catch(() => {});
+}
+
 async function protectionDiagnostics(guild, settings) {
   const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
   const warnings = [];
+  const configuredPunishments = new Set([
+    settings.punishment,
+    ...Object.values(settings.detectors || {}).filter((item) => item.enabled).map((item) => item.punishment)
+  ]);
   if (!me) warnings.push('Nao foi possivel localizar o bot como membro do servidor.');
   const has = (permission) => Boolean(me?.permissions?.has(permission));
   if (!has(PermissionFlagsBits.ViewAuditLog)) warnings.push('Falta View Audit Log para identificar quem alterou cargos e canais.');
-  if (['remove_roles', 'quarantine'].includes(settings.punishment) && !has(PermissionFlagsBits.ManageRoles)) warnings.push('Falta Manage Roles para retirar cargos.');
-  if (settings.timeoutMinutes > 0 && !has(PermissionFlagsBits.ModerateMembers)) warnings.push('Falta Moderate Members para aplicar timeout.');
-  if (settings.punishment === 'kick' && !has(PermissionFlagsBits.KickMembers)) warnings.push('Falta Kick Members.');
-  if (settings.punishment === 'ban' && !has(PermissionFlagsBits.BanMembers)) warnings.push('Falta Ban Members.');
+  if (['remove_roles', 'quarantine'].some((item) => configuredPunishments.has(item)) && !has(PermissionFlagsBits.ManageRoles)) warnings.push('Falta Manage Roles para retirar/restaurar cargos.');
+  if (configuredPunishments.has('timeout') && !has(PermissionFlagsBits.ModerateMembers)) warnings.push('Falta Moderate Members para aplicar timeout.');
+  if (configuredPunishments.has('kick') && !has(PermissionFlagsBits.KickMembers)) warnings.push('Falta Kick Members.');
+  if (configuredPunishments.has('ban') && !has(PermissionFlagsBits.BanMembers)) warnings.push('Falta Ban Members.');
   if (!has(PermissionFlagsBits.ManageMessages)) warnings.push('Falta Manage Messages para apagar o spam detectado.');
+  if (settings.autoRestore && settings.backupChannels && !has(PermissionFlagsBits.ManageChannels)) warnings.push('Falta Manage Channels para restaurar/reverter canais.');
+  if (settings.autoRestore && settings.backupRoles && !has(PermissionFlagsBits.ManageRoles)) warnings.push('Falta Manage Roles para restaurar/reverter cargos.');
+  if (settings.autoRestore && !has(PermissionFlagsBits.ManageWebhooks)) warnings.push('Falta Manage Webhooks para remover webhooks nao autorizados.');
+  if (detectorConfig(settings, 'invite_raid').enabled && !has(PermissionFlagsBits.ManageGuild)) warnings.push('Falta Manage Server para identificar o convite usado em uma raid.');
   if (!config.discordBot.messageContentIntent && (settings.blockInviteSpam || settings.duplicateMessageLimit > 0)) {
     warnings.push('Message Content Intent esta desligado; taxa e mencoes funcionam, mas convites e mensagens repetidas ficam limitados.');
   }
@@ -209,6 +336,7 @@ async function punishProtectionActor(guild, actorId, settings, reason) {
 
   const punishment = cleanText(settings.punishment) || 'remove_roles';
   if (punishment === 'none') return { applied: false, detail: 'Configurado apenas para alertar.' };
+  if (punishment === 'warn') return { applied: true, action: 'warn', detail: 'Usuario avisado no canal.' };
 
   const removableRoles = member.roles.cache
     .filter((role) => role.id !== guild.id && !role.managed && role.editable)
@@ -316,30 +444,316 @@ async function containProtectionActor(runtimeEntry, guild, actorId, settings, re
   return outcome;
 }
 
+const severityRank = Object.freeze({ low: 1, medium: 2, high: 3, critical: 4 });
+
+async function executeProtectionDetections({
+  runtimeEntry,
+  guild,
+  actorId,
+  settings,
+  detections,
+  message = null,
+  channelId = null,
+  auditEntry = null,
+  source = 'detector'
+}) {
+  if (!detections?.length) return null;
+  const ordered = [...detections].sort((left, right) => (severityRank[right.severity] || 0) - (severityRank[left.severity] || 0));
+  const primary = ordered[0];
+  const primaryConfig = detectorConfig(settings, primary.detectorId);
+  let deleted = false;
+  if (message && ordered.some((item) => detectorConfig(settings, item.detectorId).deleteMessage)) {
+    deleted = await message.delete().then(() => true).catch(() => false);
+  }
+
+  const cooldownKey = protectionWindowKey(runtimeEntry.token, guild.id, actorId || 'unknown', 'punishment');
+  const now = Date.now();
+  pruneTimedMap(protectionCooldowns, now);
+  let outcome = { applied: false, skipped: true, detail: 'Castigo em cooldown; deteccao e log mantidos.' };
+  if ((protectionCooldowns.get(cooldownKey) || 0) <= now) {
+    protectionCooldowns.set(cooldownKey, now + 45_000);
+    const reason = `${primary.detectorName}: ${primary.reason}`;
+    outcome = await punishProtectionActor(
+      guild,
+      actorId,
+      { ...settings, punishment: primaryConfig.punishment },
+      `Nexus ${source}: ${reason}`.slice(0, 500)
+    ).catch((error) => ({ applied: false, detail: error.message }));
+    if (primaryConfig.punishment === 'warn') {
+      let delivered = false;
+      if (message?.channel?.isTextBased?.()) {
+        delivered = Boolean(await message.channel.send({
+          content: `<@${actorId}> ${settings.warnMessage}`.slice(0, 1900),
+          allowedMentions: { users: [actorId], parse: [] }
+        }).catch(() => null));
+      } else {
+        const warnedMember = actorId ? await guild.members.fetch(actorId).catch(() => null) : null;
+        delivered = Boolean(await warnedMember?.send({
+          content: `${settings.warnMessage}\nServidor: ${guild.name}`.slice(0, 1900),
+          allowedMentions: { parse: [] }
+        }).catch(() => null));
+      }
+      outcome = {
+        ...outcome,
+        applied: delivered,
+        action: 'warn',
+        detail: delivered ? 'Aviso enviado ao usuario.' : 'Nao foi possivel entregar o aviso ao usuario.'
+      };
+    }
+  }
+
+  for (const detection of ordered) {
+    const cfg = detectorConfig(settings, detection.detectorId);
+    const actionTaken = [deleted ? 'delete_message' : '', outcome?.applied ? outcome.action || cfg.punishment : 'log'].filter(Boolean).join('+');
+    await recordProtectionDetection({
+      guildId: guild.id,
+      detectorId: detection.detectorId,
+      userId: actorId,
+      channelId: channelId || message?.channelId || null,
+      messageId: message?.id || null,
+      actionTaken,
+      punishment: cfg.punishment,
+      reason: detection.reason,
+      auditExecutorId: auditEntry?.executorId || auditEntry?.executor?.id || null,
+      metadata: {
+        source,
+        detectorName: detection.detectorName,
+        severity: detection.severity,
+        evidence: detection.evidence,
+        timestamp: formatProtectionTimestamp()
+      },
+      actionApplied: Boolean(outcome?.applied || deleted)
+    });
+    await sendDetailedProtectionLog({
+      guild,
+      settings,
+      detection,
+      actorId,
+      channelId: channelId || message?.channelId || null,
+      message,
+      outcome,
+      auditEntry,
+      deleted
+    });
+  }
+  if (settings.notifyOwner && ordered.some((item) => item.severity === 'critical')) {
+    const ownerNoticeKey = protectionWindowKey(runtimeEntry.token, guild.id, guild.ownerId, `owner-notice:${primary.detectorId}`);
+    pruneTimedMap(protectionCooldowns, now);
+    if ((protectionCooldowns.get(ownerNoticeKey) || 0) <= now) {
+      protectionCooldowns.set(ownerNoticeKey, now + 60_000);
+      const owner = await guild.fetchOwner().catch(() => null);
+      await owner?.send({
+        content: `Nexus detectou **${primary.detectorName}** em **${guild.name}**. Usuario: ${actorId || 'nao identificado'}. Acao: ${outcome?.detail || 'registrada nos logs'}.`.slice(0, 1900),
+        allowedMentions: { parse: [] }
+      }).catch(() => {});
+    }
+  }
+  return outcome;
+}
+
 const protectionAuditActions = new Map([
-  [AuditLogEvent.ChannelCreate, { label: 'criacao de canais' }],
-  [AuditLogEvent.ChannelDelete, { label: 'exclusao de canais' }],
-  [AuditLogEvent.ChannelUpdate, { label: 'alteracao de canais' }],
-  [AuditLogEvent.RoleCreate, { label: 'criacao de cargos' }],
-  [AuditLogEvent.RoleDelete, { label: 'exclusao de cargos' }],
-  [AuditLogEvent.RoleUpdate, { label: 'alteracao de cargos' }],
-  [AuditLogEvent.MemberBanAdd, { label: 'banimentos' }],
-  [AuditLogEvent.MemberKick, { label: 'expulsoes' }],
-  [AuditLogEvent.MemberRoleUpdate, { label: 'alteracao de cargos de membros' }],
-  [AuditLogEvent.MemberPrune, { label: 'limpeza de membros', limit: 1 }],
-  [AuditLogEvent.BotAdd, { label: 'adicao de bots', limit: 1 }],
-  [AuditLogEvent.WebhookCreate, { label: 'criacao de webhooks', webhook: true }],
-  [AuditLogEvent.WebhookDelete, { label: 'exclusao de webhooks', webhook: true }],
-  [AuditLogEvent.WebhookUpdate, { label: 'alteracao de webhooks', webhook: true }],
-  [AuditLogEvent.GuildUpdate, { label: 'alteracao do servidor', limit: 2 }],
-  [AuditLogEvent.EmojiDelete, { label: 'exclusao de emojis' }],
-  [AuditLogEvent.StickerDelete, { label: 'exclusao de stickers' }],
-  [AuditLogEvent.IntegrationCreate, { label: 'criacao de integracoes' }],
-  [AuditLogEvent.IntegrationDelete, { label: 'exclusao de integracoes' }]
+  [AuditLogEvent.ChannelCreate, { label: 'criacao de canais', detectors: ['channel_create_spam', 'mass_channel_create'] }],
+  [AuditLogEvent.ChannelDelete, { label: 'exclusao de canais', detectors: ['channel_delete_spam', 'mass_channel_delete'] }],
+  [AuditLogEvent.ChannelUpdate, { label: 'alteracao de canais', detectors: ['channel_update_spam'] }],
+  [AuditLogEvent.ChannelOverwriteCreate, { label: 'criacao de permissoes de canal', detectors: ['mass_permission_changes', 'dangerous_permission'] }],
+  [AuditLogEvent.ChannelOverwriteUpdate, { label: 'alteracao de permissoes de canal', detectors: ['mass_permission_changes', 'dangerous_permission'] }],
+  [AuditLogEvent.ChannelOverwriteDelete, { label: 'exclusao de permissoes de canal', detectors: ['mass_permission_changes'] }],
+  [AuditLogEvent.RoleCreate, { label: 'criacao de cargos', detectors: ['role_create_spam', 'mass_role_create'] }],
+  [AuditLogEvent.RoleDelete, { label: 'exclusao de cargos', detectors: ['role_delete_spam', 'mass_role_delete'] }],
+  [AuditLogEvent.RoleUpdate, { label: 'alteracao de cargos', detectors: ['role_update_spam', 'mass_permission_changes'] }],
+  [AuditLogEvent.MemberBanAdd, { label: 'banimentos', detectors: ['mass_ban'] }],
+  [AuditLogEvent.MemberBanRemove, { label: 'desbanimentos', detectors: ['mass_unban'] }],
+  [AuditLogEvent.MemberKick, { label: 'expulsoes', detectors: ['mass_kick'] }],
+  [AuditLogEvent.MemberUpdate, { label: 'alteracao de membros', detectors: ['mass_timeout', 'member_mass_nickname'] }],
+  [AuditLogEvent.MemberRoleUpdate, { label: 'alteracao de cargos de membros', detectors: ['mass_role_assignment', 'permission_escalation'] }],
+  [AuditLogEvent.MemberMove, { label: 'movimentacao de voz', detectors: ['voice_move_spam'] }],
+  [AuditLogEvent.MemberPrune, { label: 'limpeza de membros', detectors: ['mass_kick'] }],
+  [AuditLogEvent.BotAdd, { label: 'adicao de bots', detectors: ['mass_bot_additions'] }],
+  [AuditLogEvent.WebhookCreate, { label: 'criacao de webhooks', detectors: ['webhook_creation', 'webhook_spam', 'unauthorized_webhook', 'mass_webhook_create'] }],
+  [AuditLogEvent.WebhookDelete, { label: 'exclusao de webhooks', detectors: ['webhook_deletion', 'webhook_spam', 'mass_webhook_delete'] }],
+  [AuditLogEvent.WebhookUpdate, { label: 'alteracao de webhooks', detectors: ['webhook_spam', 'unauthorized_webhook'] }],
+  [AuditLogEvent.GuildUpdate, { label: 'alteracao do servidor', detectors: ['mass_server_updates'] }],
+  [AuditLogEvent.AutoModerationRuleCreate, { label: 'criacao de AutoMod', detectors: ['automod_change'] }],
+  [AuditLogEvent.AutoModerationRuleUpdate, { label: 'alteracao de AutoMod', detectors: ['automod_change'] }],
+  [AuditLogEvent.AutoModerationRuleDelete, { label: 'exclusao de AutoMod', detectors: ['automod_change'] }],
+  [AuditLogEvent.EmojiCreate, { label: 'criacao de emojis', detectors: ['emoji_create_spam'] }],
+  [AuditLogEvent.EmojiUpdate, { label: 'alteracao de emojis', detectors: ['emoji_update_spam'] }],
+  [AuditLogEvent.EmojiDelete, { label: 'exclusao de emojis', detectors: ['emoji_delete_spam', 'mass_emoji_delete'] }],
+  [AuditLogEvent.StickerCreate, { label: 'criacao de stickers', detectors: ['sticker_create_spam'] }],
+  [AuditLogEvent.StickerUpdate, { label: 'alteracao de stickers', detectors: ['sticker_update_spam'] }],
+  [AuditLogEvent.StickerDelete, { label: 'exclusao de stickers', detectors: ['sticker_delete_spam', 'mass_sticker_delete'] }],
+  [AuditLogEvent.IntegrationCreate, { label: 'criacao de integracoes', detectors: ['integration_change', 'mass_integration_changes'] }],
+  [AuditLogEvent.IntegrationUpdate, { label: 'alteracao de integracoes', detectors: ['integration_change', 'mass_integration_changes'] }],
+  [AuditLogEvent.IntegrationDelete, { label: 'exclusao de integracoes', detectors: ['integration_change', 'mass_integration_changes'] }],
+  [AuditLogEvent.ThreadCreate, { label: 'criacao de threads', detectors: ['thread_create_spam'] }],
+  [AuditLogEvent.ThreadUpdate, { label: 'alteracao de threads', detectors: ['thread_update_spam'] }],
+  [AuditLogEvent.ThreadDelete, { label: 'exclusao de threads', detectors: ['thread_delete_spam'] }],
+  [AuditLogEvent.SoundboardSoundCreate, { label: 'criacao de som', detectors: ['soundboard_spam'] }],
+  [AuditLogEvent.SoundboardSoundUpdate, { label: 'alteracao de som', detectors: ['soundboard_spam'] }],
+  [AuditLogEvent.SoundboardSoundDelete, { label: 'exclusao de som', detectors: ['soundboard_spam'] }],
+  [AuditLogEvent.StageInstanceCreate, { label: 'criacao de palco', detectors: ['stage_abuse'] }],
+  [AuditLogEvent.StageInstanceUpdate, { label: 'alteracao de palco', detectors: ['stage_abuse'] }],
+  [AuditLogEvent.StageInstanceDelete, { label: 'exclusao de palco', detectors: ['stage_abuse'] }]
 ].filter(([action]) => Number.isInteger(action)));
+
+function auditChangeKeys(auditEntry) {
+  return new Set((auditEntry?.changes || []).map((change) => String(change.key || '').toLowerCase()));
+}
+
+function auditDetectorIds(auditEntry, definition) {
+  const ids = new Set(definition.detectors || []);
+  const action = Number(auditEntry?.action);
+  const target = auditEntry?.target;
+  if ([AuditLogEvent.ChannelCreate, AuditLogEvent.ChannelDelete, AuditLogEvent.ChannelUpdate].includes(action) && Number(target?.type) === ChannelType.GuildCategory) {
+    ids.delete('channel_create_spam');
+    ids.delete('channel_delete_spam');
+    ids.delete('channel_update_spam');
+    if (action === AuditLogEvent.ChannelCreate) ids.add('category_create_spam');
+    if (action === AuditLogEvent.ChannelDelete) ids.add('category_delete_spam');
+    if (action === AuditLogEvent.ChannelUpdate) ids.add('category_update_spam');
+  }
+  if (action === AuditLogEvent.ChannelCreate && [ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(Number(target?.type))) {
+    ids.add('voice_channel_spam');
+  }
+  const changes = auditChangeKeys(auditEntry);
+  if (action === AuditLogEvent.RoleUpdate || action === AuditLogEvent.RoleCreate) {
+    let permissionBits = 0n;
+    try {
+      const permissionChange = (auditEntry?.changes || []).find((change) => String(change.key).toLowerCase() === 'permissions');
+      permissionBits = BigInt(permissionChange?.new || target?.permissions?.bitfield || 0);
+    } catch {
+      permissionBits = 0n;
+    }
+    const dangerousMask = PermissionFlagsBits.Administrator
+      | PermissionFlagsBits.ManageGuild
+      | PermissionFlagsBits.ManageRoles
+      | PermissionFlagsBits.ManageChannels
+      | PermissionFlagsBits.ManageWebhooks
+      | PermissionFlagsBits.BanMembers
+      | PermissionFlagsBits.KickMembers;
+    if ((permissionBits & PermissionFlagsBits.Administrator) !== 0n) ids.add('administrator_permission');
+    if ((permissionBits & dangerousMask) !== 0n) ids.add('dangerous_permission');
+    if (changes.has('permissions')) ids.add('permission_escalation');
+  }
+  if (action === AuditLogEvent.MemberUpdate) {
+    if (!changes.has('communication_disabled_until')) ids.delete('mass_timeout');
+    if (!changes.has('nick')) {
+      ids.delete('member_mass_nickname');
+      ids.delete('mass_nickname_change');
+    } else {
+      ids.add('mass_nickname_change');
+    }
+  }
+  if (action === AuditLogEvent.GuildUpdate) {
+    if (changes.has('name')) ids.add('server_name_change');
+    if (changes.has('icon_hash') || changes.has('icon')) ids.add('server_icon_change');
+    if (changes.has('banner_hash') || changes.has('banner')) ids.add('server_banner_change');
+    if (changes.has('vanity_url_code')) ids.add('vanity_url_change');
+    if (changes.has('verification_level')) ids.add('verification_level_change');
+    if (changes.has('features') || changes.has('rules_channel_id') || changes.has('public_updates_channel_id')) ids.add('community_setting_change');
+  }
+  return [...ids];
+}
 
 function auditTargetKey(runtimeEntry, guildId, action, targetId) {
   return `${protectionKey(runtimeEntry.token, guildId)}:${action}:${targetId || 'any'}`;
+}
+
+function resourceSnapshotKey(runtimeEntry, guildId, targetId) {
+  return `${protectionKey(runtimeEntry.token, guildId)}:${targetId}`;
+}
+
+function rememberResourceSnapshot(runtimeEntry, guild, target, snapshot) {
+  if (!guild?.id || !target?.id) return;
+  resourceSnapshots.set(resourceSnapshotKey(runtimeEntry, guild.id, target.id), {
+    ...snapshot,
+    target,
+    expiresAt: Date.now() + 60_000
+  });
+}
+
+async function restoreProtectedResource(runtimeEntry, guild, auditEntry, settings) {
+  if (!settings.autoRestore) return null;
+  for (const [key, value] of resourceSnapshots) {
+    if (Number(value?.expiresAt || 0) <= Date.now()) resourceSnapshots.delete(key);
+  }
+  const targetId = auditEntry.targetId || auditEntry.target?.id || null;
+  if (!targetId) return null;
+  const action = Number(auditEntry.action);
+  const reason = `Nexus: reversao automatica da acao ${auditEntry.id}`;
+  try {
+    if (action === AuditLogEvent.ChannelCreate) {
+      const channel = await guild.channels.fetch(targetId).catch(() => null);
+      if (channel?.deletable) {
+        await channel.delete(reason);
+        return `Canal criado sem autorizacao foi removido (${targetId}).`;
+      }
+    }
+    if (action === AuditLogEvent.RoleCreate) {
+      const role = await guild.roles.fetch(targetId).catch(() => null);
+      if (role?.editable) {
+        await role.delete(reason);
+        return `Cargo criado sem autorizacao foi removido (${targetId}).`;
+      }
+    }
+    if (action === AuditLogEvent.WebhookCreate) {
+      const webhooks = await guild.fetchWebhooks().catch(() => null);
+      const webhook = webhooks?.get(targetId);
+      if (webhook) {
+        await webhook.delete(reason);
+        return `Webhook nao autorizado removido (${targetId}).`;
+      }
+    }
+    if (action === AuditLogEvent.BotAdd) {
+      const botMember = await guild.members.fetch(targetId).catch(() => null);
+      if (botMember?.user?.bot && botMember.kickable) {
+        await botMember.kick(reason);
+        return `Bot adicionado durante ataque foi removido (${targetId}).`;
+      }
+    }
+  } catch (error) {
+    return `Falha ao reverter recurso criado: ${error.message}`;
+  }
+  const key = resourceSnapshotKey(runtimeEntry, guild.id, targetId);
+  const snapshot = resourceSnapshots.get(key);
+  if (!snapshot) return null;
+  resourceSnapshots.delete(key);
+  try {
+    if (snapshot.kind === 'channel-delete' && settings.backupChannels && typeof snapshot.target.clone === 'function') {
+      const restored = await snapshot.target.clone({ reason });
+      if (Number.isInteger(snapshot.position)) await restored.setPosition(snapshot.position, { reason }).catch(() => {});
+      return `Canal restaurado como #${restored.name} (${restored.id}).`;
+    }
+    if (snapshot.kind === 'role-delete' && settings.backupRoles) {
+      const restored = await guild.roles.create({
+        name: snapshot.target.name,
+        color: snapshot.target.color,
+        hoist: snapshot.target.hoist,
+        permissions: snapshot.target.permissions.bitfield,
+        mentionable: snapshot.target.mentionable,
+        icon: snapshot.target.iconURL?.() || undefined,
+        unicodeEmoji: snapshot.target.unicodeEmoji || undefined,
+        reason
+      });
+      if (Number.isInteger(snapshot.position)) await restored.setPosition(snapshot.position, { reason }).catch(() => {});
+      return `Cargo restaurado como ${restored.name} (${restored.id}).`;
+    }
+    if (snapshot.kind === 'channel-update' && settings.backupChannels && typeof snapshot.target?.edit === 'function') {
+      await snapshot.target.edit({ ...snapshot.options, reason });
+      return `Alteracao do canal ${snapshot.target.id} revertida.`;
+    }
+    if (snapshot.kind === 'role-update' && settings.backupRoles && snapshot.target?.editable && typeof snapshot.target?.edit === 'function') {
+      await snapshot.target.edit({ ...snapshot.options, reason });
+      return `Alteracao do cargo ${snapshot.target.id} revertida.`;
+    }
+    if (snapshot.kind === 'guild-update' && typeof snapshot.target?.edit === 'function') {
+      await snapshot.target.edit({ ...snapshot.options, reason });
+      return `Alteracoes criticas do servidor ${snapshot.target.id} foram revertidas.`;
+    }
+  } catch (error) {
+    return `Falha ao restaurar recurso: ${error.message}`;
+  }
+  return null;
 }
 
 async function handleProtectionAuditEntry(runtimeEntry, guild, auditEntry) {
@@ -361,17 +775,60 @@ async function handleProtectionAuditEntry(runtimeEntry, guild, auditEntry) {
   recentAuditTargets.set(auditTargetKey(runtimeEntry, guild.id, auditEntry.action, targetId), Date.now() + 15_000);
 
   const now = Date.now();
-  const windowMs = Math.max(10, Number(settings.limitWindowSeconds || 60)) * 1000;
-  const key = protectionWindowKey(runtimeEntry.token, guild.id, actorId, 'audit');
-  const eventCount = recordProtectionEvent(key, windowMs, now);
-  const limit = definition.limit || (definition.webhook
-    ? Math.max(1, Number(settings.webhookLimitPerMinute || 2))
-    : Math.max(1, Number(settings.limitPerMinute || 5)));
-  if (eventCount < limit) return;
-
-  const reason = `${eventCount} acao(oes) em ${Math.round(windowMs / 1000)}s: ${definition.label}${targetId ? ` (alvo ${targetId})` : ''}`;
-  await containProtectionActor(runtimeEntry, guild, actorId, settings, reason, 'audit-log');
-  protectionWindows.delete(key);
+  const detections = [];
+  const resolvedDetectorIds = new Set(auditDetectorIds(auditEntry, definition));
+  if (Number(auditEntry.action) === AuditLogEvent.MemberRoleUpdate && resolvedDetectorIds.has('permission_escalation')) {
+    const addedRoleIds = (auditEntry.changes || [])
+      .filter((change) => String(change.key).toLowerCase() === '$add')
+      .flatMap((change) => Array.isArray(change.new) ? change.new : [])
+      .map((role) => role.id)
+      .filter(Boolean);
+    const dangerousMask = PermissionFlagsBits.Administrator
+      | PermissionFlagsBits.ManageGuild
+      | PermissionFlagsBits.ManageRoles
+      | PermissionFlagsBits.ManageChannels
+      | PermissionFlagsBits.ManageWebhooks
+      | PermissionFlagsBits.BanMembers
+      | PermissionFlagsBits.KickMembers;
+    const dangerousAssigned = addedRoleIds.some((roleId) => {
+      const role = guild.roles.cache.get(roleId);
+      return role && (role.permissions.bitfield & dangerousMask) !== 0n;
+    });
+    if (!dangerousAssigned) resolvedDetectorIds.delete('permission_escalation');
+  }
+  for (const detectorId of resolvedDetectorIds) {
+    const cfg = detectorConfig(settings, detectorId);
+    if (!cfg.enabled) continue;
+    const key = protectionWindowKey(runtimeEntry.token, guild.id, actorId, `audit:${detectorId}`);
+    const eventCount = recordProtectionEvent(key, cfg.windowSeconds * 1000, now);
+    if (eventCount < cfg.threshold) continue;
+    const detector = detectorDefinition(detectorId);
+    detections.push({
+      detectorId,
+      detectorName: detector?.label || detectorId,
+      category: detector?.category || 'audit',
+      severity: detector?.severity || 'high',
+      reason: `${eventCount} acao(oes) em ${cfg.windowSeconds}s: ${definition.label}${targetId ? ` (alvo ${targetId})` : ''}`,
+      evidence: (auditEntry.changes || []).map((change) => change.key).filter(Boolean).join(', ')
+    });
+    protectionWindows.delete(key);
+  }
+  if (!detections.length) return;
+  const outcome = await executeProtectionDetections({
+    runtimeEntry,
+    guild,
+    actorId,
+    settings,
+    detections,
+    channelId: auditEntry.target?.channelId || auditEntry.target?.parentId || null,
+    auditEntry,
+    source: 'audit-log'
+  });
+  const restoration = await restoreProtectedResource(runtimeEntry, guild, auditEntry, settings);
+  if (restoration) {
+    await sendProtectionLog(guild, settings, `Nexus recovery: ${restoration}`);
+    if (outcome) outcome.detail = `${outcome.detail || ''} ${restoration}`.trim();
+  }
 }
 
 async function findMatchingAuditEntry(guild, auditTypes, targetId) {
@@ -405,75 +862,157 @@ async function handleProtectionMessage(runtimeEntry, message) {
   const settings = protectionSettings.get(protectionKey(runtimeEntry.token, guild.id));
   if (!settings?.enabled || isTrustedActorId(guild, settings, message.author.id)) return;
   if (message.member && hasIgnoredRole(message.member, settings)) return;
+  const ignoredChannels = new Set(parseLineList(settings.ignoredChannels));
+  if (ignoredChannels.has(message.channelId) || (message.channel?.parentId && ignoredChannels.has(message.channel.parentId))) return;
 
   const now = Date.now();
   const actorId = message.author.id;
-  const messageWindowMs = Number(settings.messageWindowSeconds || 12) * 1000;
-  const messageCount = recordProtectionEvent(
-    protectionWindowKey(runtimeEntry.token, guild.id, actorId, 'messages'),
-    messageWindowMs,
-    now
-  );
-  const content = cleanText(message.content).toLowerCase();
-  const rawMentionCount = content
-    ? (content.match(/<@!?\d+>|<@&\d+>|@everyone|@here/g) || []).length
-    : 0;
-  const collectionMentionCount = Number(message.mentions?.users?.size || 0)
-    + Number(message.mentions?.roles?.size || 0)
-    + (message.mentions?.everyone ? Number(settings.mentionLimit || 4) : 0);
-  const mentionCount = Math.max(rawMentionCount, collectionMentionCount);
-
-  let trigger = '';
-  if (settings.blockMentionSpam && mentionCount >= Number(settings.mentionLimit || 4)) {
-    trigger = `${mentionCount} mencoes em uma mensagem`;
-  }
-  if (!trigger && messageCount >= Number(settings.messageLimit || 6)) {
-    trigger = `${messageCount} mensagens em ${settings.messageWindowSeconds}s`;
-  }
-  if (!trigger && content) {
-    const duplicateKey = protectionWindowKey(
-      runtimeEntry.token,
-      guild.id,
-      actorId,
-      `duplicate:${crypto.createHash('sha1').update(content.slice(0, 500)).digest('hex')}`
-    );
-    const duplicates = recordProtectionEvent(duplicateKey, Math.max(messageWindowMs, 20_000), now);
-    if (duplicates >= Number(settings.duplicateMessageLimit || 4)) trigger = `${duplicates} mensagens repetidas`;
-  }
-  if (!trigger && settings.blockInviteSpam && /(?:discord\.gg|discord(?:app)?\.com\/invite)\/[a-z0-9-]+/i.test(content)) {
-    const inviteCount = recordProtectionEvent(
-      protectionWindowKey(runtimeEntry.token, guild.id, actorId, 'invites'),
-      60_000,
-      now
-    );
-    if (inviteCount >= Number(settings.inviteLimitPerMinute || 2)) trigger = `${inviteCount} convites em um minuto`;
-  }
-  if (!trigger) return;
-
-  await message.delete().catch(() => {});
-  const reason = `Spam detectado: ${trigger}`;
-  await containProtectionActor(runtimeEntry, guild, actorId, settings, reason, 'anti-spam');
-  protectionWindows.delete(protectionWindowKey(runtimeEntry.token, guild.id, actorId, 'messages'));
+  const historyKey = protectionWindowKey(runtimeEntry.token, guild.id, actorId, 'message-history');
+  const records = (messageHistories.get(historyKey) || []).filter((record) => record.timestamp >= now - 5 * 60_000);
+  records.push(makeMessageRecord(message, now));
+  while (records.length > 100) records.shift();
+  messageHistories.set(historyKey, records);
+  const detections = evaluateMessageDetectors({ message, records, settings, now });
+  if (!detections.length) return;
+  await executeProtectionDetections({
+    runtimeEntry,
+    guild,
+    actorId,
+    settings,
+    detections,
+    message,
+    channelId: message.channelId,
+    source: 'message'
+  });
 }
 
 async function handleProtectionJoin(runtimeEntry, member) {
-  if (!member?.guild || member.user?.bot) return;
+  if (!member?.guild) return;
   const guild = member.guild;
   const settings = protectionSettings.get(protectionKey(runtimeEntry.token, guild.id));
   if (!settings?.enabled || isTrustedActorId(guild, settings, member.id)) return;
-  const windowMs = Number(settings.joinWindowSeconds || 20) * 1000;
-  const joins = recordProtectionEvent(
-    protectionWindowKey(runtimeEntry.token, guild.id, 'all', 'joins'),
-    windowMs
-  );
+  const detections = evaluateProfileDetectors({
+    member,
+    settings,
+    guildName: guild.name,
+    botName: guild.client.user?.username || ''
+  });
   const accountAgeDays = (Date.now() - member.user.createdTimestamp) / 86_400_000;
-  const tooNew = accountAgeDays < Number(settings.minAccountAgeDays || 0);
-  const raid = joins >= Number(settings.joinLimit || 8);
-  if (!raid && !(tooNew && settings.verificationMode === 'high')) return;
-  const reason = raid
-    ? `Anti-raid: ${joins} entradas em ${settings.joinWindowSeconds}s`
-    : `Conta criada ha ${Math.floor(accountAgeDays)} dia(s); minimo ${settings.minAccountAgeDays}`;
-  await containProtectionActor(runtimeEntry, guild, member.id, settings, reason, 'anti-raid');
+  const now = Date.now();
+  for (const detectorId of ['mass_join', 'join_rate', 'bot_raid', 'new_account_raid']) {
+    const cfg = detectorConfig(settings, detectorId);
+    if (!cfg.enabled) continue;
+    if (detectorId === 'bot_raid' && !member.user.bot) continue;
+    if (detectorId === 'new_account_raid' && accountAgeDays >= Number(settings.minAccountAgeDays || 7)) continue;
+    const count = recordProtectionEvent(
+      protectionWindowKey(runtimeEntry.token, guild.id, 'all', `join:${detectorId}`),
+      cfg.windowSeconds * 1000,
+      now
+    );
+    if (count < cfg.threshold) continue;
+    const definition = detectorDefinition(detectorId);
+    detections.push({
+      detectorId,
+      detectorName: definition?.label || detectorId,
+      category: definition?.category || 'raids',
+      severity: definition?.severity || 'high',
+      reason: `${count} entrada(s) em ${cfg.windowSeconds}s`,
+      evidence: `conta=${member.id}; idade=${accountAgeDays.toFixed(1)}d; bot=${member.user.bot}`
+    });
+  }
+  if (!detections.length) return;
+  await executeProtectionDetections({
+    runtimeEntry,
+    guild,
+    actorId: member.id,
+    settings,
+    detections,
+    source: 'member-join'
+  });
+}
+
+async function handleProtectionProfileUpdate(runtimeEntry, before, after) {
+  if (!after?.guild || after.user?.bot) return;
+  const settings = protectionSettings.get(protectionKey(runtimeEntry.token, after.guild.id));
+  if (!settings?.enabled || isTrustedActorId(after.guild, settings, after.id) || hasIgnoredRole(after, settings)) return;
+  const identityChanged = before.nickname !== after.nickname
+    || before.user?.username !== after.user?.username
+    || before.user?.globalName !== after.user?.globalName;
+  if (!identityChanged) return;
+  const detections = evaluateProfileDetectors({
+    member: after,
+    settings,
+    guildName: after.guild.name,
+    botName: after.client.user?.username || ''
+  }).filter((item) => !['new_account', 'young_account', 'default_avatar', 'alt_account'].includes(item.detectorId));
+  if (!detections.length) return;
+  await executeProtectionDetections({
+    runtimeEntry,
+    guild: after.guild,
+    actorId: after.id,
+    settings,
+    detections,
+    source: 'profile-update'
+  });
+}
+
+async function handleProtectionRateDetector(runtimeEntry, guild, actorId, detectorId, evidence = '', channelId = null, counterScope = actorId) {
+  if (!guild?.id || !actorId) return;
+  const settings = protectionSettings.get(protectionKey(runtimeEntry.token, guild.id));
+  if (!settings?.enabled || isTrustedActorId(guild, settings, actorId)) return;
+  const member = guild.members.cache.get(actorId);
+  if (member && hasIgnoredRole(member, settings)) return;
+  const cfg = detectorConfig(settings, detectorId);
+  if (!cfg.enabled) return;
+  const count = recordProtectionEvent(
+    protectionWindowKey(runtimeEntry.token, guild.id, counterScope, `rate:${detectorId}`),
+    cfg.windowSeconds * 1000
+  );
+  if (count < cfg.threshold) return;
+  protectionWindows.delete(protectionWindowKey(runtimeEntry.token, guild.id, counterScope, `rate:${detectorId}`));
+  const definition = detectorDefinition(detectorId);
+  await executeProtectionDetections({
+    runtimeEntry,
+    guild,
+    actorId,
+    settings,
+    channelId,
+    source: detectorId,
+    detections: [{
+      detectorId,
+      detectorName: definition?.label || detectorId,
+      category: definition?.category || 'unknown',
+      severity: definition?.severity || 'high',
+      reason: `${count} evento(s) em ${cfg.windowSeconds}s`,
+      evidence
+    }]
+  });
+}
+
+async function refreshInviteSnapshot(runtimeEntry, guild) {
+  const invites = await guild.invites.fetch().catch(() => null);
+  if (!invites) return null;
+  const key = protectionKey(runtimeEntry.token, guild.id);
+  const current = new Map(invites.map((invite) => [invite.code, Number(invite.uses || 0)]));
+  const previous = inviteSnapshots.get(key) || new Map();
+  inviteSnapshots.set(key, current);
+  return { previous, current };
+}
+
+async function handleInviteRaid(runtimeEntry, member) {
+  const compared = await refreshInviteSnapshot(runtimeEntry, member.guild);
+  if (!compared || !compared.previous.size) return;
+  const usedCode = [...compared.current].find(([code, uses]) => uses > Number(compared.previous.get(code) || 0))?.[0];
+  if (!usedCode) return;
+  await handleProtectionRateDetector(
+    runtimeEntry,
+    member.guild,
+    member.id,
+    'invite_raid',
+    `convite=${usedCode}; membro=${member.id}`,
+    null,
+    `invite:${usedCode}`
+  );
 }
 
 function attachProtectionHandlers(entry) {
@@ -494,24 +1033,128 @@ function attachProtectionHandlers(entry) {
   };
 
   fallback(Events.ChannelCreate, [AuditLogEvent.ChannelCreate]);
-  fallback(Events.ChannelDelete, [AuditLogEvent.ChannelDelete]);
-  fallback(Events.ChannelUpdate, [AuditLogEvent.ChannelUpdate], (target) => target?.guild);
+  client.on(Events.ChannelDelete, (channel) => {
+    rememberResourceSnapshot(entry, channel.guild, channel, { kind: 'channel-delete', position: channel.rawPosition });
+    void handleAuditFallback(entry, channel.guild, [AuditLogEvent.ChannelDelete], channel.id);
+  });
+  client.on(Events.ChannelUpdate, (before, after) => {
+    rememberResourceSnapshot(entry, after.guild, after, {
+      kind: 'channel-update',
+      options: {
+        name: before.name,
+        parent: before.parentId,
+        position: before.rawPosition,
+        topic: before.topic,
+        nsfw: before.nsfw,
+        rateLimitPerUser: before.rateLimitPerUser,
+        permissionOverwrites: before.permissionOverwrites?.cache?.map((overwrite) => ({
+          id: overwrite.id,
+          type: overwrite.type,
+          allow: overwrite.allow.bitfield,
+          deny: overwrite.deny.bitfield
+        }))
+      }
+    });
+    void handleAuditFallback(entry, after.guild, [AuditLogEvent.ChannelUpdate], after.id);
+  });
   fallback(Events.GuildRoleCreate, [AuditLogEvent.RoleCreate]);
-  fallback(Events.GuildRoleDelete, [AuditLogEvent.RoleDelete]);
-  fallback(Events.GuildRoleUpdate, [AuditLogEvent.RoleUpdate]);
+  client.on(Events.GuildRoleDelete, (role) => {
+    rememberResourceSnapshot(entry, role.guild, role, { kind: 'role-delete', position: role.rawPosition });
+    void handleAuditFallback(entry, role.guild, [AuditLogEvent.RoleDelete], role.id);
+  });
+  client.on(Events.GuildRoleUpdate, (before, after) => {
+    rememberResourceSnapshot(entry, after.guild, after, {
+      kind: 'role-update',
+      options: {
+        name: before.name,
+        color: before.color,
+        hoist: before.hoist,
+        permissions: before.permissions.bitfield,
+        mentionable: before.mentionable
+      }
+    });
+    void handleAuditFallback(entry, after.guild, [AuditLogEvent.RoleUpdate], after.id);
+  });
   fallback(Events.GuildBanAdd, [AuditLogEvent.MemberBanAdd]);
+  fallback(Events.GuildBanRemove, [AuditLogEvent.MemberBanRemove]);
   fallback(Events.WebhooksUpdate, [AuditLogEvent.WebhookCreate, AuditLogEvent.WebhookDelete, AuditLogEvent.WebhookUpdate], (channel) => channel?.guild, () => null);
-  client.on(Events.GuildUpdate, (_before, after) => {
+  fallback(Events.ThreadCreate, [AuditLogEvent.ThreadCreate]);
+  fallback(Events.ThreadDelete, [AuditLogEvent.ThreadDelete]);
+  fallback(Events.ThreadUpdate, [AuditLogEvent.ThreadUpdate]);
+  fallback(Events.GuildEmojiCreate, [AuditLogEvent.EmojiCreate], (emoji) => emoji.guild);
+  fallback(Events.GuildEmojiDelete, [AuditLogEvent.EmojiDelete], (emoji) => emoji.guild);
+  fallback(Events.GuildEmojiUpdate, [AuditLogEvent.EmojiUpdate], (emoji) => emoji.guild);
+  fallback(Events.GuildStickerCreate, [AuditLogEvent.StickerCreate], (sticker) => sticker.guild);
+  fallback(Events.GuildStickerDelete, [AuditLogEvent.StickerDelete], (sticker) => sticker.guild);
+  fallback(Events.GuildStickerUpdate, [AuditLogEvent.StickerUpdate], (sticker) => sticker.guild);
+  fallback(Events.AutoModerationRuleCreate, [AuditLogEvent.AutoModerationRuleCreate], (rule) => rule.guild);
+  fallback(Events.AutoModerationRuleDelete, [AuditLogEvent.AutoModerationRuleDelete], (rule) => rule.guild);
+  fallback(Events.AutoModerationRuleUpdate, [AuditLogEvent.AutoModerationRuleUpdate], (rule) => rule.guild);
+  fallback(Events.GuildSoundboardSoundCreate, [AuditLogEvent.SoundboardSoundCreate], (sound) => sound.guild);
+  fallback(Events.GuildSoundboardSoundDelete, [AuditLogEvent.SoundboardSoundDelete], (sound) => sound.guild);
+  fallback(Events.GuildSoundboardSoundUpdate, [AuditLogEvent.SoundboardSoundUpdate], (sound) => sound.guild);
+  fallback(Events.StageInstanceCreate, [AuditLogEvent.StageInstanceCreate], (stage) => stage.guild);
+  fallback(Events.StageInstanceDelete, [AuditLogEvent.StageInstanceDelete], (stage) => stage.guild);
+  fallback(Events.StageInstanceUpdate, [AuditLogEvent.StageInstanceUpdate], (stage) => stage.guild);
+  client.on(Events.GuildIntegrationsUpdate, (guild) => {
+    void handleAuditFallback(entry, guild, [AuditLogEvent.IntegrationCreate, AuditLogEvent.IntegrationUpdate, AuditLogEvent.IntegrationDelete], null);
+  });
+  client.on(Events.GuildUpdate, (before, after) => {
+    rememberResourceSnapshot(entry, after, after, {
+      kind: 'guild-update',
+      options: {
+        name: before.name,
+        icon: before.iconURL?.({ extension: 'png', size: 1024 }) || null,
+        banner: before.bannerURL?.({ extension: 'png', size: 1024 }) || null,
+        verificationLevel: before.verificationLevel,
+        explicitContentFilter: before.explicitContentFilter,
+        defaultMessageNotifications: before.defaultMessageNotifications,
+        afkChannel: before.afkChannelId,
+        afkTimeout: before.afkTimeout,
+        systemChannel: before.systemChannelId,
+        systemChannelFlags: before.systemChannelFlags?.bitfield,
+        rulesChannel: before.rulesChannelId,
+        publicUpdatesChannel: before.publicUpdatesChannelId,
+        preferredLocale: before.preferredLocale,
+        description: before.description
+      }
+    });
     void handleAuditFallback(entry, after, [AuditLogEvent.GuildUpdate], after.id);
   });
   client.on(Events.GuildMemberUpdate, (before, after) => {
     const beforeRoles = [...before.roles.cache.keys()].sort().join(',');
     const afterRoles = [...after.roles.cache.keys()].sort().join(',');
     if (beforeRoles !== afterRoles) void handleAuditFallback(entry, after.guild, [AuditLogEvent.MemberRoleUpdate], after.id);
+    if (before.nickname !== after.nickname) void handleAuditFallback(entry, after.guild, [AuditLogEvent.MemberUpdate], after.id);
+    void handleProtectionProfileUpdate(entry, before, after);
   });
   client.on(Events.GuildMemberAdd, (member) => {
     void handleProtectionJoin(entry, member);
+    void handleInviteRaid(entry, member);
     if (member.user.bot) void handleAuditFallback(entry, member.guild, [AuditLogEvent.BotAdd], member.id);
+  });
+  client.on(Events.InviteCreate, (invite) => {
+    if (invite.guild) void refreshInviteSnapshot(entry, invite.guild);
+  });
+  client.on(Events.InviteDelete, (invite) => {
+    if (invite.guild) void refreshInviteSnapshot(entry, invite.guild);
+  });
+  client.on(Events.VoiceStateUpdate, (before, after) => {
+    const member = after.member || before.member;
+    if (!member || member.user.bot) return;
+    if (!before.channelId && after.channelId) {
+      void handleProtectionRateDetector(entry, member.guild, member.id, 'voice_join_spam', `canal=${after.channelId}`, after.channelId);
+    } else if (before.channelId && !after.channelId) {
+      void handleProtectionRateDetector(entry, member.guild, member.id, 'voice_leave_spam', `canal=${before.channelId}`, before.channelId);
+    } else if (before.channelId && after.channelId && before.channelId !== after.channelId) {
+      void handleProtectionRateDetector(entry, member.guild, member.id, 'voice_move_spam', `${before.channelId} -> ${after.channelId}`, after.channelId);
+    }
+    if (before.suppress !== after.suppress || before.requestToSpeakTimestamp !== after.requestToSpeakTimestamp) {
+      void handleProtectionRateDetector(entry, member.guild, member.id, 'stage_abuse', 'Mudancas repetidas no estado de palco.', after.channelId || before.channelId);
+    }
+  });
+  client.on(Events.VoiceChannelEffectSend, (effect) => {
+    void handleProtectionRateDetector(entry, effect.guild, effect.userId, 'soundboard_spam', `som=${effect.soundId || 'efeito'}`, effect.channelId);
   });
   client.on(Events.MessageCreate, (message) => {
     void handleProtectionMessage(entry, message);
@@ -730,6 +1373,7 @@ export async function configureDiscordProtection({ botToken, guildId, enabled = 
   protectionSettings.set(protectionKey(token, guild), nextSettings);
   attachProtectionHandlers(entry);
   const discordGuild = await entry.client.guilds.fetch(guild);
+  await refreshInviteSnapshot(entry, discordGuild).catch(() => null);
   const diagnostics = await protectionDiagnostics(discordGuild, nextSettings);
   if (persist) await persistDiscordProtection(token, guild, entry.client.user?.id, nextSettings);
   await sendProtectionLog(
@@ -738,6 +1382,47 @@ export async function configureDiscordProtection({ botToken, guildId, enabled = 
     `Protecao Nexus ${nextSettings.enabled ? 'ativada' : 'desativada'} para este servidor.${diagnostics.warnings.length ? ` Avisos: ${diagnostics.warnings.join(' | ')}` : ' Permissoes principais verificadas.'}`
   );
   return { ok: true, guildId: guild, protection: nextSettings, diagnostics };
+}
+
+export function getDiscordProtectionCatalog() {
+  return detectorCatalogResponse();
+}
+
+export async function getDiscordProtectionStats({ guildId, limit = 50 } = {}) {
+  const guild = assertSnowflake(guildId, 'Servidor ID');
+  const safeLimit = Math.max(1, Math.min(100, Number(limit) || 50));
+  const stats = await db.prepare(`
+    SELECT guild_id, detector_id, detections, actions, last_detected_at
+    FROM discord_protection_stats
+    WHERE guild_id = ?
+    ORDER BY detections DESC, detector_id ASC
+  `).all(guild);
+  const events = await db.prepare(`
+    SELECT id, guild_id, detector_id, user_id, channel_id, message_id,
+           action_taken, punishment, reason, audit_executor_id, metadata_json, created_at
+    FROM discord_protection_events
+    WHERE guild_id = ?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(guild, safeLimit);
+  return {
+    guildId: guild,
+    totals: {
+      detections: stats.reduce((total, row) => total + Number(row.detections || 0), 0),
+      actions: stats.reduce((total, row) => total + Number(row.actions || 0), 0)
+    },
+    stats,
+    events: events.map((event) => {
+      let metadata = {};
+      try {
+        metadata = JSON.parse(event.metadata_json || '{}');
+      } catch {
+        metadata = {};
+      }
+      const { metadata_json: _metadataJson, ...rest } = event;
+      return { ...rest, metadata };
+    })
+  };
 }
 
 export async function restoreDiscordProtections() {

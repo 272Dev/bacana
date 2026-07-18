@@ -242,6 +242,30 @@ const schemaSql = `
     updated_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS discord_protection_events (
+    id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    detector_id TEXT NOT NULL,
+    user_id TEXT,
+    channel_id TEXT,
+    message_id TEXT,
+    action_taken TEXT,
+    punishment TEXT,
+    reason TEXT NOT NULL,
+    audit_executor_id TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS discord_protection_stats (
+    guild_id TEXT NOT NULL,
+    detector_id TEXT NOT NULL,
+    detections INTEGER NOT NULL DEFAULT 0,
+    actions INTEGER NOT NULL DEFAULT 0,
+    last_detected_at TEXT,
+    PRIMARY KEY (guild_id, detector_id)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_discord_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform);
   CREATE INDEX IF NOT EXISTS idx_shares_user ON account_shares(shared_with_discord_id);
@@ -264,6 +288,8 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_loader_releases_active ON loader_releases(active);
   CREATE INDEX IF NOT EXISTS idx_discord_protection_guild ON discord_protection_configs(guild_id);
   CREATE INDEX IF NOT EXISTS idx_discord_protection_enabled ON discord_protection_configs(enabled);
+  CREATE INDEX IF NOT EXISTS idx_discord_protection_events_guild ON discord_protection_events(guild_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_discord_protection_events_detector ON discord_protection_events(detector_id, created_at);
 `;
 
 function toPostgresSql(sql) {
