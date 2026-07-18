@@ -76,6 +76,21 @@ const emptyForm = {
 const platformOptions = ['Roblox', 'Discord', 'Steam', 'Epic Games', 'Google', 'Microsoft', 'Outro'];
 const authenticatorPeriodOptions = [10, 15, 20, 30, 45, 60, 90, 120];
 const ROBLOX_GENERATOR_PAGE_SIZE = 24;
+const emptyNameTagForm = {
+  licenseUserId: '',
+  robloxUserId: '',
+  robloxUsername: '',
+  robloxDisplayName: '',
+  displayNameOverride: '',
+  title: 'Nexus Member',
+  icon: 'initial',
+  badge: 'none',
+  morphDistance: 52,
+  maxDistance: 160,
+  enabled: true,
+  hwidBound: false,
+  hwidPreview: ''
+};
 
 const historyLabels = {
   created: 'Conta criada',
@@ -855,6 +870,39 @@ function HistoryPage({ history }) {
   );
 }
 
+function NameTagGlyph({ icon, name }) {
+  if (icon === 'initial') return <span>{String(name || 'N').trim().charAt(0).toUpperCase() || 'N'}</span>;
+  if (icon === 'shield') return <Shield size={15} strokeWidth={2.2} />;
+  if (icon === 'star') return <Sparkles size={15} strokeWidth={2.2} />;
+  if (icon === 'diamond') return <BadgeCheck size={15} strokeWidth={2.2} />;
+  return <span className="name-tag-dot" />;
+}
+
+function NameTagBadge({ badge }) {
+  if (badge === 'verified') return <BadgeCheck size={13} />;
+  if (badge === 'admin') return <ShieldCheck size={13} />;
+  if (badge === 'premium') return <Crown size={13} />;
+  return null;
+}
+
+function NameTagPreview({ tag, compact = false }) {
+  const name = tag.displayNameOverride || tag.robloxDisplayName || tag.robloxUsername || 'Player';
+  return (
+    <div className={`name-tag-preview ${compact ? 'compact' : ''}`}>
+      <div className="name-tag-preview-pill">
+        <span className="name-tag-preview-icon"><NameTagGlyph icon={tag.icon} name={name} /></span>
+        <span className="name-tag-preview-copy"><strong>{name}</strong><small>{tag.title || 'Nexus Member'}</small></span>
+        {tag.badge !== 'none' && <span className="name-tag-preview-badge"><NameTagBadge badge={tag.badge} /></span>}
+      </div>
+      {!compact && (
+        <div className="name-tag-preview-far" title="Visual distante">
+          <NameTagGlyph icon={tag.icon} name={name} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function UsersPage({ users, reloadUsers }) {
   const [section, setSection] = useState('licenses');
   const [licenseUsers, setLicenseUsers] = useState([]);
@@ -873,6 +921,11 @@ function UsersPage({ users, reloadUsers }) {
   const [planForm, setPlanForm] = useState({ id: '', name: '', durationDays: '', defaultHwidResetLimit: 1 });
   const [releaseVersion, setReleaseVersion] = useState('');
   const [releaseLoading, setReleaseLoading] = useState(false);
+  const [nameTags, setNameTags] = useState([]);
+  const [tagSearch, setTagSearch] = useState('');
+  const [tagForm, setTagForm] = useState(emptyNameTagForm);
+  const [tagEditorOpen, setTagEditorOpen] = useState(false);
+  const [tagLoading, setTagLoading] = useState(false);
 
   const loadPlans = useCallback(async () => {
     const payload = await api('/licenses/plans');
@@ -900,6 +953,18 @@ function UsersPage({ users, reloadUsers }) {
     setLoaderInfo(payload);
   }, []);
 
+  const loadNameTags = useCallback(async () => {
+    setTagLoading(true);
+    try {
+      const query = new URLSearchParams();
+      if (tagSearch) query.set('search', tagSearch);
+      const payload = await api(`/name-tags?${query}`);
+      setNameTags(payload.tags || []);
+    } finally {
+      setTagLoading(false);
+    }
+  }, [tagSearch]);
+
   useEffect(() => {
     loadPlans().catch((requestError) => setError(requestError.message));
     loadReleases().catch((requestError) => setError(requestError.message));
@@ -911,6 +976,14 @@ function UsersPage({ users, reloadUsers }) {
     }, 180);
     return () => window.clearTimeout(timer);
   }, [loadLicenseUsers]);
+
+  useEffect(() => {
+    if (section !== 'tags') return undefined;
+    const timer = window.setTimeout(() => {
+      loadNameTags().catch((requestError) => setError(requestError.message));
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [section, loadNameTags]);
 
   function requestBodyFromForm(form) {
     const body = {
@@ -1074,6 +1147,63 @@ function UsersPage({ users, reloadUsers }) {
     }
   }
 
+  function openNewNameTag(licenseUser = null) {
+    setTagForm({
+      ...emptyNameTagForm,
+      licenseUserId: licenseUser?.id || '',
+      title: licenseUser?.plan?.name ? `Nexus ${licenseUser.plan.name}` : 'Nexus Member'
+    });
+    setTagEditorOpen(true);
+  }
+
+  function editNameTag(tag) {
+    setTagForm({ ...emptyNameTagForm, ...tag, hwidPreview: tag.hwidPreview || '' });
+    setTagEditorOpen(true);
+  }
+
+  async function saveNameTag(event) {
+    event.preventDefault();
+    if (!tagForm.licenseUserId) {
+      setError('Selecione o usuario licenciado que possui o HWID.');
+      return;
+    }
+    setTagLoading(true);
+    setError('');
+    try {
+      const payload = await api(`/name-tags/license/${tagForm.licenseUserId}`, {
+        method: 'PUT',
+        body: {
+          displayNameOverride: tagForm.displayNameOverride,
+          title: tagForm.title,
+          icon: tagForm.icon,
+          badge: tagForm.badge,
+          morphDistance: Number(tagForm.morphDistance),
+          maxDistance: Number(tagForm.maxDistance),
+          enabled: Boolean(tagForm.enabled)
+        }
+      });
+      setTagForm((current) => ({ ...current, ...payload.tag }));
+      setMessage('Tag do HWID salva. O jogo recebe a alteracao automaticamente.');
+      await loadNameTags();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setTagLoading(false);
+    }
+  }
+
+  async function disableNameTag() {
+    if (!tagForm.licenseUserId || !window.confirm('Desativar esta tag para este HWID?')) return;
+    try {
+      await api(`/name-tags/license/${tagForm.licenseUserId}`, { method: 'DELETE' });
+      setTagEditorOpen(false);
+      setMessage('Tag desativada.');
+      await loadNameTags();
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
   async function submitAccess(event) {
     event.preventDefault();
     await api('/authorized-users', { method: 'POST', body: accessForm });
@@ -1102,12 +1232,12 @@ function UsersPage({ users, reloadUsers }) {
       <PageHeader
         eyebrow="Nexus Access"
         title="Painel de usuarios"
-        actions={section === 'licenses' && (
+        actions={section === 'licenses' ? (
           <>
             <button className="ghost-button" onClick={() => setShowPlans(true)}><Crown size={17} /> Planos</button>
             <button className="primary-button" onClick={() => setShowCreate(true)}><Plus size={17} /> Novo usuario</button>
           </>
-        )}
+        ) : section === 'tags' ? <button className="primary-button" onClick={() => openNewNameTag()}><Plus size={17} /> Configurar tag</button> : null}
       />
       {(message || error) && (
         <button className={`notice ${error ? 'danger' : 'success'}`} onClick={() => { setMessage(''); setError(''); }}>
@@ -1117,6 +1247,7 @@ function UsersPage({ users, reloadUsers }) {
 
       <div className="license-section-tabs">
         <button className={section === 'licenses' ? 'active' : ''} onClick={() => setSection('licenses')}><KeyRound size={17} /> Licencas</button>
+        <button className={section === 'tags' ? 'active' : ''} onClick={() => setSection('tags')}><Gamepad2 size={17} /> Tags por HWID</button>
         <button className={section === 'loader' ? 'active' : ''} onClick={() => setSection('loader')}><ShieldCheck size={17} /> Loader protegido</button>
         <button className={section === 'access' ? 'active' : ''} onClick={() => setSection('access')}><Shield size={17} /> Acesso ao painel</button>
       </div>
@@ -1169,6 +1300,35 @@ function UsersPage({ users, reloadUsers }) {
                 </button>
               ))}
             </div>
+          </section>
+        </>
+      )}
+
+      {section === 'tags' && (
+        <>
+          <section className="panel name-tag-intro">
+            <div><p className="eyebrow">Overhead UI</p><h3>Tags vinculadas ao HWID</h3><p className="muted">O loader associa o HWID validado ao jogador Roblox. Nenhum HWID e enviado ao jogo ou exposto na API publica.</p></div>
+            <div className="name-tag-intro-demo"><NameTagPreview tag={nameTags[0] || emptyNameTagForm} /></div>
+          </section>
+          <section className="panel name-tag-toolbar">
+            <label className="search-box"><Search size={18} /><input value={tagSearch} onChange={(event) => setTagSearch(event.target.value)} placeholder="Discord, HWID, Roblox ou titulo" /></label>
+            <IconButton label="Atualizar tags" onClick={() => loadNameTags()}><RefreshCw size={18} /></IconButton>
+          </section>
+          <section className="name-tag-admin-grid">
+            {tagLoading && nameTags.length === 0 && <div className="panel license-empty"><RefreshCw className="spin" size={21} /> Carregando tags</div>}
+            {!tagLoading && nameTags.length === 0 && <div className="panel license-empty"><Gamepad2 size={21} /> Nenhuma tag configurada</div>}
+            {nameTags.map((tag) => (
+              <button className="name-tag-admin-card" key={tag.id} onClick={() => editNameTag(tag)}>
+                <NameTagPreview tag={tag} compact />
+                <span className="name-tag-admin-identity">
+                  <strong>{tag.discordGlobalName || tag.discordUsername || tag.discordId}</strong>
+                  <small>{tag.hwidPreview ? `HWID ${tag.hwidPreview}` : 'HWID aguardando primeiro uso'}</small>
+                  <small>{tag.robloxUsername ? `@${tag.robloxUsername} - ${tag.robloxUserId}` : 'Roblox sera associado pelo loader'}</small>
+                </span>
+                <span className={`license-status ${tag.enabled ? 'active' : 'revoked'}`}>{tag.enabled ? 'Ativa' : 'Desativada'}</span>
+                <ChevronRight size={18} />
+              </button>
+            ))}
           </section>
         </>
       )}
@@ -1280,6 +1440,39 @@ function UsersPage({ users, reloadUsers }) {
         </div>
       )}
 
+      {tagEditorOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setTagEditorOpen(false)}>
+          <form className="modal name-tag-editor-modal" onSubmit={saveNameTag} onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-header"><div><p className="eyebrow">Roblox overhead</p><h3>Tag do HWID</h3></div><IconButton label="Fechar" onClick={() => setTagEditorOpen(false)}><X size={18} /></IconButton></div>
+            <NameTagPreview tag={tagForm} />
+            <label>Usuario licenciado
+              <select value={tagForm.licenseUserId} onChange={(event) => setTagForm((current) => ({ ...current, licenseUserId: event.target.value }))} disabled={Boolean(tagForm.id)} required>
+                <option value="">Selecione a licenca</option>
+                {licenseUsers.map((licenseUser) => <option key={licenseUser.id} value={licenseUser.id}>{licenseUser.discordGlobalName || licenseUser.discordUsername || licenseUser.discordId} - {licenseUser.plan.name}</option>)}
+              </select>
+            </label>
+            <div className="name-tag-binding-state">
+              <span><Hash size={16} /><strong>{tagForm.hwidPreview ? `HWID ${tagForm.hwidPreview}` : 'HWID ainda nao vinculado'}</strong></span>
+              <small>{tagForm.robloxUsername ? `Roblox @${tagForm.robloxUsername} (${tagForm.robloxUserId})` : 'O Roblox sera reconhecido na proxima validacao do loader.'}</small>
+            </div>
+            <div className="form-grid">
+              <label className="span-2">Nome exibido (opcional)<input maxLength="32" value={tagForm.displayNameOverride || ''} onChange={(event) => setTagForm((current) => ({ ...current, displayNameOverride: event.target.value }))} placeholder="Vazio usa o DisplayName do Roblox" /></label>
+              <label className="span-2">Cargo ou titulo<input maxLength="32" value={tagForm.title} onChange={(event) => setTagForm((current) => ({ ...current, title: event.target.value }))} required /></label>
+              <label>Indicador<select value={tagForm.icon} onChange={(event) => setTagForm((current) => ({ ...current, icon: event.target.value }))}><option value="initial">Inicial</option><option value="diamond">Diamante</option><option value="shield">Escudo</option><option value="star">Estrela</option><option value="dot">Ponto</option></select></label>
+              <label>Selo<select value={tagForm.badge} onChange={(event) => setTagForm((current) => ({ ...current, badge: event.target.value }))}><option value="none">Nenhum</option><option value="verified">Verificado</option><option value="admin">Admin</option><option value="premium">Premium</option></select></label>
+              <label>Abrir abaixo de (studs)<input type="number" min="15" max="120" value={tagForm.morphDistance} onChange={(event) => setTagForm((current) => ({ ...current, morphDistance: event.target.value }))} /></label>
+              <label>Distancia maxima<input type="number" min="40" max="300" value={tagForm.maxDistance} onChange={(event) => setTagForm((current) => ({ ...current, maxDistance: event.target.value }))} /></label>
+            </div>
+            <label className="name-tag-enabled"><input type="checkbox" checked={tagForm.enabled} onChange={(event) => setTagForm((current) => ({ ...current, enabled: event.target.checked }))} /><span><strong>Tag ativa</strong><small>Desligada, ela some para todos os jogadores.</small></span></label>
+            <div className="modal-actions">
+              {tagForm.id && <button type="button" className="danger-button" onClick={disableNameTag}><Ban size={16} /> Desativar</button>}
+              <button type="button" className="ghost-button" onClick={() => setTagEditorOpen(false)}>Cancelar</button>
+              <button className="primary-button" disabled={tagLoading}><Save size={16} /> {tagLoading ? 'Salvando...' : 'Salvar tag'}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {selectedUser && (
         <div className="license-drawer-backdrop" onMouseDown={() => setSelectedUser(null)}>
           <aside className="license-drawer" onMouseDown={(event) => event.stopPropagation()}>
@@ -1311,6 +1504,10 @@ function UsersPage({ users, reloadUsers }) {
                   <label>Limite de resets<input type="number" min="0" max="100" value={selectedUser.hwidResetLimit} onChange={(event) => setSelectedUser((current) => ({ ...current, hwidResetLimit: event.target.value }))} onBlur={() => updateSelected({ hwidResetLimit: Number(selectedUser.hwidResetLimit) }, 'Limite atualizado.')} /></label>
                   <label>Expiracao<input type="datetime-local" value={selectedUser.expiresAt ? new Date(selectedUser.expiresAt).toISOString().slice(0, 16) : ''} onChange={(event) => updateSelected({ expiresAt: event.target.value ? new Date(event.target.value).toISOString() : null }, 'Expiracao atualizada.')} /></label>
                 </div>
+              </section>
+              <section className="license-edit-card license-tag-shortcut">
+                <div><p className="eyebrow">Tag overhead</p><h3>Vincular pelo HWID</h3><p className="muted">A aparencia sera aplicada ao Roblox usado por esta licenca.</p></div>
+                <button className="ghost-button" onClick={() => { openNewNameTag(selectedUser); setSelectedUser(null); setSection('tags'); }}><Gamepad2 size={17} /> Configurar tag</button>
               </section>
               <section className="license-actions-grid">
                 <button className="ghost-button" onClick={resetHwid} disabled={selectedUser.hwidResetCount >= selectedUser.hwidResetLimit}><RefreshCw size={17} /> Resetar HWID</button>

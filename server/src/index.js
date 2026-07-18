@@ -73,6 +73,7 @@ import {
 } from './robloxGenerator.js';
 import { registerLicensingRoutes, seedLicensePlans } from './licensing.js';
 import { registerLoaderRoutes } from './loader.js';
+import { registerNameTagRoutes } from './nameTags.js';
 import {
   checkLoginBlocked,
   clearOAuthStateCookie,
@@ -187,6 +188,7 @@ app.use((req, res, next) => {
 // normalizado acima. A validacao publica da key continua sem autenticacao.
 registerLicensingRoutes(app, { requireAuth, requireAdmin });
 registerLoaderRoutes(app, { requireAuth, requireAdmin });
+registerNameTagRoutes(app, { requireAuth, requireAdmin });
 
 function clientRedirect(pathname, params = {}) {
   const url = new URL(pathname, config.clientUrl);
