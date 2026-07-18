@@ -116,6 +116,29 @@ As keys ficam cifradas com `APP_MASTER_KEY`, possuem hash separado para validaca
 e aparecem completas somente para administradores autenticados. Em producao use
 Postgres persistente (`DATABASE_URL`) e configure `TRUST_PROXY=true` no Render.
 
+### Loader protegido no proprio site
+
+Em **Usuarios > Loader protegido**, o owner/admin pode selecionar qualquer arquivo
+`.lua` do script. O backend:
+
+- cifra o source com AES-256-GCM antes de gravar no banco;
+- publica um link fixo que retorna somente um bootstrap pequeno, nunca o source;
+- valida key, HWID, expiracao e status antes de criar uma sessao;
+- entrega o payload por um ticket aleatorio de uso unico, valido por 45 segundos;
+- permite ativar outra versao e invalida tickets antigos automaticamente.
+
+O endereco estavel e:
+
+```text
+https://nexus-zks.onrender.com/loader/nexus.lua
+```
+
+O loadstring aparece no proprio painel depois do primeiro upload. Esta protecao
+nao usa API do Luarmor. Como qualquer script que precisa executar no executor,
+o codigo precisa chegar ao cliente em algum momento e pode ser extraido por um
+executor comprometido; o objetivo aqui e impedir que o site ou o link publico
+exponham a source sem uma key/HWID validos.
+
 ## Roblox
 
 Quando a plataforma for Roblox, informe o Username e use a busca. O backend consulta as APIs publicas oficiais do Roblox para preencher:

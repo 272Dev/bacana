@@ -859,6 +859,8 @@ function UsersPage({ users, reloadUsers }) {
   const [section, setSection] = useState('licenses');
   const [licenseUsers, setLicenseUsers] = useState([]);
   const [plans, setPlans] = useState([]);
+  const [releases, setReleases] = useState([]);
+  const [loaderInfo, setLoaderInfo] = useState(null);
   const [filters, setFilters] = useState({ search: '', status: '', planId: '' });
   const [selectedUser, setSelectedUser] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -869,6 +871,8 @@ function UsersPage({ users, reloadUsers }) {
   const [licenseForm, setLicenseForm] = useState({ discordId: '', planId: '', expiresAt: '', hwidResetLimit: '', status: 'active' });
   const [accessForm, setAccessForm] = useState({ discordId: '', role: 'member', label: '' });
   const [planForm, setPlanForm] = useState({ id: '', name: '', durationDays: '', defaultHwidResetLimit: 1 });
+  const [releaseVersion, setReleaseVersion] = useState('');
+  const [releaseLoading, setReleaseLoading] = useState(false);
 
   const loadPlans = useCallback(async () => {
     const payload = await api('/licenses/plans');
@@ -890,9 +894,16 @@ function UsersPage({ users, reloadUsers }) {
     }
   }, [filters]);
 
+  const loadReleases = useCallback(async () => {
+    const payload = await api('/loader/releases');
+    setReleases(payload.releases || []);
+    setLoaderInfo(payload);
+  }, []);
+
   useEffect(() => {
     loadPlans().catch((requestError) => setError(requestError.message));
-  }, [loadPlans]);
+    loadReleases().catch((requestError) => setError(requestError.message));
+  }, [loadPlans, loadReleases]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1015,6 +1026,54 @@ function UsersPage({ users, reloadUsers }) {
     }
   }
 
+  async function uploadRelease(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.lua')) {
+      setError('Selecione um arquivo .lua.');
+      return;
+    }
+    setReleaseLoading(true);
+    setError('');
+    try {
+      const source = await file.text();
+      const version = releaseVersion.trim() || `v${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
+      const payload = await api('/loader/releases', {
+        method: 'POST',
+        body: { version, source, protectedMode: true }
+      });
+      setReleaseVersion('');
+      setMessage(`Versao ${payload.release.version} publicada. O link fixo ja aponta para ela.`);
+      await loadReleases();
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setReleaseLoading(false);
+    }
+  }
+
+  async function activateRelease(releaseId) {
+    try {
+      await api(`/loader/releases/${releaseId}/activate`, { method: 'POST' });
+      setMessage('Versao ativa atualizada. Tickets antigos foram invalidados.');
+      await loadReleases();
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  async function deleteRelease(releaseId) {
+    if (!window.confirm('Excluir esta versao do loader?')) return;
+    try {
+      await api(`/loader/releases/${releaseId}`, { method: 'DELETE' });
+      setMessage('Versao removida.');
+      await loadReleases();
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
   async function submitAccess(event) {
     event.preventDefault();
     await api('/authorized-users', { method: 'POST', body: accessForm });
@@ -1058,6 +1117,7 @@ function UsersPage({ users, reloadUsers }) {
 
       <div className="license-section-tabs">
         <button className={section === 'licenses' ? 'active' : ''} onClick={() => setSection('licenses')}><KeyRound size={17} /> Licencas</button>
+        <button className={section === 'loader' ? 'active' : ''} onClick={() => setSection('loader')}><ShieldCheck size={17} /> Loader protegido</button>
         <button className={section === 'access' ? 'active' : ''} onClick={() => setSection('access')}><Shield size={17} /> Acesso ao painel</button>
       </div>
 
@@ -1137,6 +1197,47 @@ function UsersPage({ users, reloadUsers }) {
               </article>
             ))}
           </div>
+        </>
+      )}
+
+      {section === 'loader' && (
+        <>
+          <section className="panel loader-publish-card">
+            <div className="panel-title">
+              <div><p className="eyebrow">Source protegido</p><h3>Publicar nova versao</h3><p className="muted">O arquivo fica cifrado no servidor. O link publico nunca mostra o source original.</p></div>
+              <ShieldCheck size={23} />
+            </div>
+            <div className="loader-publish-form">
+              <label>Versao<input value={releaseVersion} onChange={(event) => setReleaseVersion(event.target.value)} placeholder="v3.2.0" /></label>
+              <label className="upload-button loader-file-button">
+                <Upload size={17} /> {releaseLoading ? 'Publicando...' : 'Selecionar script .lua'}
+                <input type="file" accept=".lua,text/x-lua" onChange={uploadRelease} disabled={releaseLoading} />
+              </label>
+            </div>
+            <p className="loader-security-note"><FileIcon size={15} /> Upload maximo de 8 MB - AES-256-GCM em repouso - entrega por ticket unico de 45 segundos</p>
+          </section>
+
+          <section className="panel loader-link-card">
+            <div className="panel-title"><div><p className="eyebrow">Link fixo</p><h3>Loader do Nexus</h3><p className="muted">Esse endereco permanece igual quando voce publica outra versao.</p></div><Code2 size={21} /></div>
+            <div className="loader-link-row"><code>{loaderInfo?.bootstrapUrl || `${window.location.origin}/loader/nexus.lua`}</code><IconButton label="Copiar URL do loader" onClick={() => copyText(loaderInfo?.bootstrapUrl || `${window.location.origin}/loader/nexus.lua`)}><Copy size={17} /></IconButton></div>
+            <div className="loader-link-row"><code>{loaderInfo?.loadstring || `loadstring(game:HttpGet("${window.location.origin}/loader/nexus.lua"))()`}</code><IconButton label="Copiar loadstring" onClick={() => copyText(loaderInfo?.loadstring || `loadstring(game:HttpGet("${window.location.origin}/loader/nexus.lua"))()`)}><Copy size={17} /></IconButton></div>
+          </section>
+
+          <section className="panel loader-releases-panel">
+            <div className="panel-title"><div><h3>Versoes publicadas</h3><p className="muted">Somente uma versao fica ativa por vez.</p></div><RefreshCw size={18} /></div>
+            <div className="loader-release-list">
+              {releases.length === 0 && <div className="license-empty"><Upload size={22} /> Nenhum script publicado ainda</div>}
+              {releases.map((release) => (
+                <article className={`loader-release-card ${release.active ? 'active' : ''}`} key={release.id}>
+                  <span className="loader-release-icon"><Code2 size={19} /></span>
+                  <span className="loader-release-meta"><strong>{release.version}</strong><small>{release.bytes.toLocaleString('pt-BR')} bytes - SHA-256 {release.sha256.slice(0, 16)}... - {formatDate(release.createdAt)}</small></span>
+                  <span className={`license-status ${release.active ? 'active' : 'expired'}`}>{release.active ? 'Ativa' : 'Inativa'}</span>
+                  {!release.active && <button className="ghost-button compact-button" onClick={() => activateRelease(release.id)}>Ativar</button>}
+                  {!release.active && <IconButton label="Excluir versao" onClick={() => deleteRelease(release.id)}><Trash2 size={16} /></IconButton>}
+                </article>
+              ))}
+            </div>
+          </section>
         </>
       )}
 

@@ -87,9 +87,11 @@ function cleanIp(value) {
   return raw.slice(0, 80);
 }
 
-function requestIp(req) {
+export function requestLicenseIp(req) {
   return cleanIp(req.headers['cf-connecting-ip'] || req.headers['x-forwarded-for'] || req.ip);
 }
+
+const requestIp = requestLicenseIp;
 
 function normalizeExpiresAt(value) {
   if (value == null || value === '') return null;
@@ -249,6 +251,117 @@ async function suspendForSuspiciousUse(row, reason, score, context) {
     WHERE id = ?
   `).run(nextScore, reason, nowIso(), row.id);
   await recordLicenseEvent(row.id, 'auto_suspended', { ...context, metadata: { reason, score: nextScore } });
+}
+
+export async function validateLicenseAccess(input, ipApprox = 'desconhecido') {
+  const payload = validateSchema.parse(input);
+  const row = await db.prepare(`
+    SELECT lu.*, lp.name AS plan_name, lp.duration_days AS plan_duration_days
+    FROM license_users lu
+    JOIN license_plans lp ON lp.id = lu.plan_id
+    WHERE lu.license_key_hash = ?
+  `).get(hashKey(payload.key));
+  if (!row) throw httpError('Key invalida.', 401, 'INVALID_KEY');
+
+  if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) {
+    await db.prepare(`UPDATE license_users SET status = 'expired', updated_at = ? WHERE id = ?`).run(nowIso(), row.id);
+    await recordLicenseEvent(row.id, 'expired_rejected', { hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion });
+    throw httpError('Licenca expirada.', 403, 'LICENSE_EXPIRED');
+  }
+  if (row.status !== 'active') {
+    await recordLicenseEvent(row.id, 'status_rejected', {
+      hwid: payload.hwid,
+      ipApprox,
+      loaderVersion: payload.loaderVersion,
+      metadata: { status: row.status }
+    });
+    throw httpError('Licenca indisponivel.', 403, `LICENSE_${row.status.toUpperCase()}`);
+  }
+
+  if (row.hwid && row.hwid !== payload.hwid) {
+    await recordLicenseEvent(row.id, 'hwid_mismatch', { hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion });
+    const since = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    const mismatches = await db.prepare(`
+      SELECT COUNT(DISTINCT hwid) AS total
+      FROM license_events
+      WHERE license_user_id = ? AND event_type = 'hwid_mismatch' AND created_at >= ?
+    `).get(row.id, since);
+    if (Number(mismatches?.total || 0) >= 3) {
+      await suspendForSuspiciousUse(row, 'Multiplos HWIDs detectados em 30 minutos.', 100, {
+        hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion
+      });
+      throw httpError('Key suspensa por uso suspeito.', 403, 'SUSPICIOUS_SHARING');
+    }
+    await db.prepare(`
+      UPDATE license_users SET suspicious_score = ?, suspicious_reason = ?, updated_at = ? WHERE id = ?
+    `).run(Math.min(99, Number(row.suspicious_score || 0) + 25), 'Tentativa com HWID diferente.', nowIso(), row.id);
+    throw httpError('HWID diferente do vinculado.', 403, 'HWID_MISMATCH');
+  }
+
+  const now = nowIso();
+  if (!row.hwid) {
+    const binding = await db.prepare(`
+      UPDATE license_users SET hwid = ?, hwid_bound_at = ?, updated_at = ?
+      WHERE id = ? AND hwid IS NULL
+    `).run(payload.hwid, now, now, row.id);
+    if (Number(binding.changes || 0) === 0) {
+      const concurrentlyBound = await getLicenseRow(row.id);
+      if (concurrentlyBound?.hwid !== payload.hwid) {
+        await recordLicenseEvent(row.id, 'hwid_mismatch', {
+          hwid: payload.hwid,
+          ipApprox,
+          loaderVersion: payload.loaderVersion,
+          metadata: { reason: 'concurrent_first_bind' }
+        });
+        throw httpError('HWID diferente do vinculado.', 403, 'HWID_MISMATCH');
+      }
+    } else {
+      await recordLicenseEvent(row.id, 'hwid_bound', { hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion });
+    }
+  }
+
+  await recordLicenseEvent(row.id, 'validated', { hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion });
+  const ipSince = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const distinctIps = await db.prepare(`
+    SELECT COUNT(DISTINCT ip_approx) AS total
+    FROM license_events
+    WHERE license_user_id = ? AND event_type = 'validated' AND created_at >= ?
+  `).get(row.id, ipSince);
+  if (Number(distinctIps?.total || 0) >= 6) {
+    await suspendForSuspiciousUse(row, 'Muitos enderecos de rede em uma hora.', 100, {
+      hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion
+    });
+    throw httpError('Key suspensa por uso suspeito.', 403, 'SUSPICIOUS_NETWORK');
+  }
+
+  await db.prepare(`
+    UPDATE license_users SET
+      last_used_at = ?, last_ip_approx = ?, last_loader_version = ?,
+      suspicious_score = CASE WHEN suspicious_score > 0 THEN suspicious_score - 1 ELSE 0 END,
+      updated_at = ?
+    WHERE id = ?
+  `).run(now, ipApprox, payload.loaderVersion, now, row.id);
+  const fresh = await getLicenseRow(row.id);
+  return {
+    ok: true,
+    code: 'LICENSE_VALID',
+    licenseUserId: fresh.id,
+    user: {
+      discordId: fresh.discord_id,
+      username: fresh.discord_username,
+      globalName: fresh.discord_global_name,
+      avatarUrl: fresh.discord_avatar_url
+    },
+    license: {
+      plan: fresh.plan_name,
+      status: fresh.status,
+      expiresAt: fresh.expires_at,
+      daysRemaining: daysRemaining(fresh.expires_at),
+      hwidBound: Boolean(fresh.hwid),
+      loaderVersion: payload.loaderVersion
+    },
+    serverTime: now
+  };
 }
 
 export async function seedLicensePlans() {
@@ -458,111 +571,15 @@ export function registerLicensingRoutes(app, { requireAuth, requireAdmin }) {
   });
 
   app.post('/api/licenses/validate', async (req, res) => {
-    const payload = validateSchema.parse(req.body);
-    const ipApprox = requestIp(req);
-    const row = await db.prepare(`
-      SELECT lu.*, lp.name AS plan_name, lp.duration_days AS plan_duration_days
-      FROM license_users lu
-      JOIN license_plans lp ON lp.id = lu.plan_id
-      WHERE lu.license_key_hash = ?
-    `).get(hashKey(payload.key));
-    if (!row) return res.status(401).json({ ok: false, code: 'INVALID_KEY', error: 'Key invalida.' });
-
-    if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) {
-      await db.prepare(`UPDATE license_users SET status = 'expired', updated_at = ? WHERE id = ?`).run(nowIso(), row.id);
-      await recordLicenseEvent(row.id, 'expired_rejected', { hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion });
-      return res.status(403).json({ ok: false, code: 'LICENSE_EXPIRED', error: 'Licenca expirada.' });
-    }
-    if (row.status !== 'active') {
-      await recordLicenseEvent(row.id, 'status_rejected', { hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion, metadata: { status: row.status } });
-      return res.status(403).json({ ok: false, code: `LICENSE_${row.status.toUpperCase()}`, error: 'Licenca indisponivel.' });
-    }
-
-    if (row.hwid && row.hwid !== payload.hwid) {
-      await recordLicenseEvent(row.id, 'hwid_mismatch', { hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion });
-      const since = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-      const mismatches = await db.prepare(`
-        SELECT COUNT(DISTINCT hwid) AS total
-        FROM license_events
-        WHERE license_user_id = ? AND event_type = 'hwid_mismatch' AND created_at >= ?
-      `).get(row.id, since);
-      const mismatchCount = Number(mismatches?.total || 0);
-      if (mismatchCount >= 3) {
-        await suspendForSuspiciousUse(row, 'Multiplos HWIDs detectados em 30 minutos.', 100, {
-          hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion
-        });
-        return res.status(403).json({ ok: false, code: 'SUSPICIOUS_SHARING', error: 'Key suspensa por uso suspeito.' });
+    try {
+      const result = await validateLicenseAccess(req.body, requestIp(req));
+      const { licenseUserId: _licenseUserId, ...publicResult } = result;
+      res.json(publicResult);
+    } catch (error) {
+      if (error.code && error.status) {
+        return res.status(error.status).json({ ok: false, code: error.code, error: error.message });
       }
-      await db.prepare(`
-        UPDATE license_users SET suspicious_score = ?, suspicious_reason = ?, updated_at = ? WHERE id = ?
-      `).run(Math.min(99, Number(row.suspicious_score || 0) + 25), 'Tentativa com HWID diferente.', nowIso(), row.id);
-      return res.status(403).json({ ok: false, code: 'HWID_MISMATCH', error: 'HWID diferente do vinculado.' });
+      throw error;
     }
-
-    const now = nowIso();
-    if (!row.hwid) {
-      const binding = await db.prepare(`
-        UPDATE license_users SET hwid = ?, hwid_bound_at = ?, updated_at = ?
-        WHERE id = ? AND hwid IS NULL
-      `).run(payload.hwid, now, now, row.id);
-      if (Number(binding.changes || 0) === 0) {
-        const concurrentlyBound = await getLicenseRow(row.id);
-        if (concurrentlyBound?.hwid !== payload.hwid) {
-          await recordLicenseEvent(row.id, 'hwid_mismatch', {
-            hwid: payload.hwid,
-            ipApprox,
-            loaderVersion: payload.loaderVersion,
-            metadata: { reason: 'concurrent_first_bind' }
-          });
-          return res.status(403).json({ ok: false, code: 'HWID_MISMATCH', error: 'HWID diferente do vinculado.' });
-        }
-      } else {
-        row.hwid = payload.hwid;
-        row.hwid_bound_at = now;
-        await recordLicenseEvent(row.id, 'hwid_bound', { hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion });
-      }
-    }
-
-    await recordLicenseEvent(row.id, 'validated', { hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion });
-    const ipSince = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const distinctIps = await db.prepare(`
-      SELECT COUNT(DISTINCT ip_approx) AS total
-      FROM license_events
-      WHERE license_user_id = ? AND event_type = 'validated' AND created_at >= ?
-    `).get(row.id, ipSince);
-    if (Number(distinctIps?.total || 0) >= 6) {
-      await suspendForSuspiciousUse(row, 'Muitos enderecos de rede em uma hora.', 100, {
-        hwid: payload.hwid, ipApprox, loaderVersion: payload.loaderVersion
-      });
-      return res.status(403).json({ ok: false, code: 'SUSPICIOUS_NETWORK', error: 'Key suspensa por uso suspeito.' });
-    }
-
-    await db.prepare(`
-      UPDATE license_users SET
-        last_used_at = ?, last_ip_approx = ?, last_loader_version = ?,
-        suspicious_score = CASE WHEN suspicious_score > 0 THEN suspicious_score - 1 ELSE 0 END,
-        updated_at = ?
-      WHERE id = ?
-    `).run(now, ipApprox, payload.loaderVersion, now, row.id);
-    const fresh = await getLicenseRow(row.id);
-    res.json({
-      ok: true,
-      code: 'LICENSE_VALID',
-      user: {
-        discordId: fresh.discord_id,
-        username: fresh.discord_username,
-        globalName: fresh.discord_global_name,
-        avatarUrl: fresh.discord_avatar_url
-      },
-      license: {
-        plan: fresh.plan_name,
-        status: fresh.status,
-        expiresAt: fresh.expires_at,
-        daysRemaining: daysRemaining(fresh.expires_at),
-        hwidBound: Boolean(fresh.hwid),
-        loaderVersion: payload.loaderVersion
-      },
-      serverTime: now
-    });
   });
 }

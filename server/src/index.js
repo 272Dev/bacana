@@ -69,6 +69,7 @@ import {
   selectRobloxGeneratorAccount
 } from './robloxGenerator.js';
 import { registerLicensingRoutes, seedLicensePlans } from './licensing.js';
+import { registerLoaderRoutes } from './loader.js';
 import {
   checkLoginBlocked,
   clearOAuthStateCookie,
@@ -179,6 +180,7 @@ app.use((req, res, next) => {
 // As rotas administrativas de licenca dependem do cookie Discord ja
 // normalizado acima. A validacao publica da key continua sem autenticacao.
 registerLicensingRoutes(app, { requireAuth, requireAdmin });
+registerLoaderRoutes(app, { requireAuth, requireAdmin });
 
 function clientRedirect(pathname, params = {}) {
   const url = new URL(pathname, config.clientUrl);
@@ -1856,6 +1858,7 @@ app.get('/api/backup', requireAuth, requireOwner, async (req, res) => {
     licensePlans: await db.prepare('SELECT * FROM license_plans').all(),
     licenseUsers: await db.prepare('SELECT * FROM license_users').all(),
     licenseEvents: await db.prepare('SELECT * FROM license_events').all(),
+    loaderReleases: await db.prepare('SELECT id, version, payload_sha256, payload_bytes, protected_mode, active, created_by, created_at FROM loader_releases').all(),
     audit: await db.prepare('SELECT * FROM audit_logs').all()
   };
   const payload = encryptSecret(JSON.stringify(data));
