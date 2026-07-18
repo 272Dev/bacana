@@ -68,6 +68,7 @@ import {
   selectRandomRobloxGeneratorAccount,
   selectRobloxGeneratorAccount
 } from './robloxGenerator.js';
+import { registerLicensingRoutes, seedLicensePlans } from './licensing.js';
 import {
   checkLoginBlocked,
   clearOAuthStateCookie,
@@ -90,6 +91,7 @@ import {
 requireRuntimeConfig();
 await initDatabase();
 await seedAuthorizedUsers();
+await seedLicensePlans();
 await importRobloxGeneratorFile().catch((error) => {
   if (config.nodeEnv !== 'production') {
     console.warn('[nexus] Importacao automatica Roblox falhou:', error.message);
@@ -173,6 +175,10 @@ app.use((req, res, next) => {
   res.clearCookie = (name, options = {}) => setCookie(res, name, '', { ...options, maxAge: 0 });
   next();
 });
+
+// As rotas administrativas de licenca dependem do cookie Discord ja
+// normalizado acima. A validacao publica da key continua sem autenticacao.
+registerLicensingRoutes(app, { requireAuth, requireAdmin });
 
 function clientRedirect(pathname, params = {}) {
   const url = new URL(pathname, config.clientUrl);
@@ -1847,6 +1853,9 @@ app.get('/api/backup', requireAuth, requireOwner, async (req, res) => {
     tempEmailInboxes: await db.prepare('SELECT * FROM temp_email_inboxes').all(),
     shares: await db.prepare('SELECT * FROM account_shares').all(),
     history: await db.prepare('SELECT * FROM account_history').all(),
+    licensePlans: await db.prepare('SELECT * FROM license_plans').all(),
+    licenseUsers: await db.prepare('SELECT * FROM license_users').all(),
+    licenseEvents: await db.prepare('SELECT * FROM license_events').all(),
     audit: await db.prepare('SELECT * FROM audit_logs').all()
   };
   const payload = encryptSecret(JSON.stringify(data));

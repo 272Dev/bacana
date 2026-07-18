@@ -856,64 +856,376 @@ function HistoryPage({ history }) {
 }
 
 function UsersPage({ users, reloadUsers }) {
-  const [form, setForm] = useState({ discordId: '', role: 'member', label: '' });
+  const [section, setSection] = useState('licenses');
+  const [licenseUsers, setLicenseUsers] = useState([]);
+  const [plans, setPlans] = useState([]);
+  const [filters, setFilters] = useState({ search: '', status: '', planId: '' });
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [showPlans, setShowPlans] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const [licenseForm, setLicenseForm] = useState({ discordId: '', planId: '', expiresAt: '', hwidResetLimit: '', status: 'active' });
+  const [accessForm, setAccessForm] = useState({ discordId: '', role: 'member', label: '' });
+  const [planForm, setPlanForm] = useState({ id: '', name: '', durationDays: '', defaultHwidResetLimit: 1 });
 
-  async function submit(event) {
+  const loadPlans = useCallback(async () => {
+    const payload = await api('/licenses/plans');
+    setPlans(payload.plans);
+    setLicenseForm((current) => ({ ...current, planId: current.planId || payload.plans.find((plan) => plan.active)?.id || '' }));
+  }, []);
+
+  const loadLicenseUsers = useCallback(async () => {
+    setLoading(true);
+    try {
+      const query = new URLSearchParams();
+      if (filters.search) query.set('search', filters.search);
+      if (filters.status) query.set('status', filters.status);
+      if (filters.planId) query.set('planId', filters.planId);
+      const payload = await api(`/licenses/users?${query}`);
+      setLicenseUsers(payload.users);
+    } finally {
+      setLoading(false);
+    }
+  }, [filters]);
+
+  useEffect(() => {
+    loadPlans().catch((requestError) => setError(requestError.message));
+  }, [loadPlans]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      loadLicenseUsers().catch((requestError) => setError(requestError.message));
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [loadLicenseUsers]);
+
+  function requestBodyFromForm(form) {
+    const body = {
+      discordId: form.discordId,
+      planId: form.planId,
+      status: form.status
+    };
+    if (form.expiresAt) body.expiresAt = new Date(form.expiresAt).toISOString();
+    if (form.hwidResetLimit !== '') body.hwidResetLimit = Number(form.hwidResetLimit);
+    return body;
+  }
+
+  async function createLicense(event) {
     event.preventDefault();
-    await api('/authorized-users', { method: 'POST', body: form });
-    setForm({ discordId: '', role: 'member', label: '' });
-    setMessage('Usuario autorizado salvo.');
+    setError('');
+    try {
+      const payload = await api('/licenses/users', { method: 'POST', body: requestBodyFromForm(licenseForm) });
+      setSelectedUser(payload.user);
+      setShowCreate(false);
+      setLicenseForm((current) => ({ ...current, discordId: '', expiresAt: '', hwidResetLimit: '', status: 'active' }));
+      setMessage('Usuario e key criados com sucesso.');
+      await loadLicenseUsers();
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  async function openUser(userId) {
+    setError('');
+    try {
+      const payload = await api(`/licenses/users/${userId}`);
+      setSelectedUser(payload.user);
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  async function updateSelected(patch, successMessage) {
+    if (!selectedUser) return;
+    try {
+      const payload = await api(`/licenses/users/${selectedUser.id}`, { method: 'PATCH', body: patch });
+      setSelectedUser((current) => ({ ...current, ...payload.user, events: current.events || [] }));
+      setMessage(successMessage);
+      setError('');
+      await loadLicenseUsers();
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  async function resetHwid() {
+    try {
+      const payload = await api(`/licenses/users/${selectedUser.id}/reset-hwid`, { method: 'POST' });
+      setSelectedUser((current) => ({ ...current, ...payload.user, events: current.events || [] }));
+      setMessage('HWID resetado. O proximo dispositivo sera vinculado automaticamente.');
+      setError('');
+      await loadLicenseUsers();
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  async function regenerateKey() {
+    if (!window.confirm('Gerar uma nova key invalida a key atual. Continuar?')) return;
+    try {
+      const payload = await api(`/licenses/users/${selectedUser.id}/regenerate-key`, { method: 'POST' });
+      setSelectedUser((current) => ({ ...current, ...payload.user, events: current.events || [] }));
+      setMessage('Nova key gerada.');
+      setError('');
+      await loadLicenseUsers();
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  async function deleteLicense() {
+    if (!window.confirm('Excluir permanentemente este usuario e seu historico de licenca?')) return;
+    try {
+      await api(`/licenses/users/${selectedUser.id}`, { method: 'DELETE' });
+      setSelectedUser(null);
+      setMessage('Usuario licenciado excluido.');
+      await loadLicenseUsers();
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  async function savePlan(event) {
+    event.preventDefault();
+    const body = {
+      name: planForm.name,
+      durationDays: planForm.durationDays === '' ? null : Number(planForm.durationDays),
+      defaultHwidResetLimit: Number(planForm.defaultHwidResetLimit)
+    };
+    try {
+      if (planForm.id) await api(`/licenses/plans/${planForm.id}`, { method: 'PATCH', body });
+      else await api('/licenses/plans', { method: 'POST', body });
+      setPlanForm({ id: '', name: '', durationDays: '', defaultHwidResetLimit: 1 });
+      setMessage(planForm.id ? 'Plano atualizado.' : 'Plano criado.');
+      await loadPlans();
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  async function deletePlan(planId) {
+    if (!window.confirm('Excluir este plano?')) return;
+    try {
+      await api(`/licenses/plans/${planId}`, { method: 'DELETE' });
+      await loadPlans();
+    } catch (requestError) {
+      setError(requestError.message);
+    }
+  }
+
+  async function submitAccess(event) {
+    event.preventDefault();
+    await api('/authorized-users', { method: 'POST', body: accessForm });
+    setAccessForm({ discordId: '', role: 'member', label: '' });
+    setMessage('Acesso ao painel salvo.');
     await reloadUsers();
   }
 
-  async function remove(discordId) {
+  async function removeAccess(discordId) {
     await api(`/authorized-users/${discordId}`, { method: 'DELETE' });
-    setMessage('Acesso removido.');
+    setMessage('Acesso ao painel removido.');
     await reloadUsers();
   }
+
+  const stats = useMemo(() => ({
+    total: licenseUsers.length,
+    active: licenseUsers.filter((user) => user.status === 'active').length,
+    suspended: licenseUsers.filter((user) => user.status === 'suspended').length,
+    expired: licenseUsers.filter((user) => user.status === 'expired').length
+  }), [licenseUsers]);
+
+  const statusLabel = { active: 'Ativa', suspended: 'Suspensa', revoked: 'Revogada', expired: 'Expirada' };
 
   return (
-    <section className="page">
-      <PageHeader eyebrow="Whitelist" title="Usuarios autorizados" />
-      {message && <div className="notice success">{message}</div>}
-      <section className="panel">
-        <form className="user-form" onSubmit={submit}>
-          <input
-            value={form.discordId}
-            onChange={(event) => setForm((current) => ({ ...current, discordId: event.target.value }))}
-            placeholder="Discord ID"
-            required
-          />
-          <input
-            value={form.label}
-            onChange={(event) => setForm((current) => ({ ...current, label: event.target.value }))}
-            placeholder="Apelido"
-          />
-          <select value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value }))}>
-            <option value="member">Member</option>
-            <option value="admin">Admin</option>
-            <option value="owner">Owner</option>
-          </select>
-          <button className="primary-button"><Plus size={17} /> Autorizar</button>
-        </form>
-      </section>
-      <div className="user-grid">
-        {users.map((user) => (
-          <article className="user-card" key={user.discordId}>
-            <Avatar src={user.avatarUrl} name={user.globalName || user.username || user.label} />
-            <span>
-              <strong>{user.globalName || user.username || user.label}</strong>
-              <small>{user.discordId}</small>
-            </span>
-            <span className="tag"><Shield size={15} /> {user.role}</span>
-            <small>Ultimo login: {formatDate(user.lastLoginAt)}</small>
-            <IconButton label="Remover" onClick={() => remove(user.discordId)}>
-              <Trash2 size={17} />
-            </IconButton>
-          </article>
-        ))}
+    <section className="page license-admin-page">
+      <PageHeader
+        eyebrow="Nexus Access"
+        title="Painel de usuarios"
+        actions={section === 'licenses' && (
+          <>
+            <button className="ghost-button" onClick={() => setShowPlans(true)}><Crown size={17} /> Planos</button>
+            <button className="primary-button" onClick={() => setShowCreate(true)}><Plus size={17} /> Novo usuario</button>
+          </>
+        )}
+      />
+      {(message || error) && (
+        <button className={`notice ${error ? 'danger' : 'success'}`} onClick={() => { setMessage(''); setError(''); }}>
+          {error || message}
+        </button>
+      )}
+
+      <div className="license-section-tabs">
+        <button className={section === 'licenses' ? 'active' : ''} onClick={() => setSection('licenses')}><KeyRound size={17} /> Licencas</button>
+        <button className={section === 'access' ? 'active' : ''} onClick={() => setSection('access')}><Shield size={17} /> Acesso ao painel</button>
       </div>
+
+      {section === 'licenses' && (
+        <>
+          <div className="license-metrics">
+            <Metric icon={Users} label="Usuarios" value={stats.total} />
+            <Metric icon={BadgeCheck} label="Ativas" value={stats.active} />
+            <Metric icon={Ban} label="Suspensas" value={stats.suspended} />
+            <Metric icon={Clock3} label="Expiradas" value={stats.expired} />
+          </div>
+          <section className="panel license-toolbar">
+            <label className="search-box">
+              <Search size={18} />
+              <input value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Nome, Discord ID, key ou HWID" />
+            </label>
+            <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
+              <option value="">Todos os status</option>
+              <option value="active">Ativas</option>
+              <option value="suspended">Suspensas</option>
+              <option value="expired">Expiradas</option>
+              <option value="revoked">Revogadas</option>
+            </select>
+            <select value={filters.planId} onChange={(event) => setFilters((current) => ({ ...current, planId: event.target.value }))}>
+              <option value="">Todos os planos</option>
+              {plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
+            </select>
+            <IconButton label="Atualizar" onClick={() => loadLicenseUsers()}><RefreshCw size={18} /></IconButton>
+          </section>
+
+          <section className="panel license-list-panel">
+            <div className="license-list-head">
+              <span>Usuario</span><span>Licenca</span><span>HWID</span><span>Ultimo uso</span><span>Status</span><span />
+            </div>
+            <div className="license-user-list">
+              {loading && <div className="license-empty"><RefreshCw className="spin" size={22} /> Carregando usuarios</div>}
+              {!loading && licenseUsers.length === 0 && <div className="license-empty"><Users size={22} /> Nenhum usuario encontrado</div>}
+              {!loading && licenseUsers.map((user) => (
+                <button className="license-user-row" key={user.id} onClick={() => openUser(user.id)}>
+                  <span className="license-user-identity">
+                    <Avatar src={user.discordAvatarUrl} name={user.discordGlobalName || user.discordUsername || user.discordId} />
+                    <span><strong>{user.discordGlobalName || user.discordUsername || 'Discord nao consultado'}</strong><small>{user.discordId}</small></span>
+                  </span>
+                  <span><strong>{user.plan.name}</strong><small>{user.keyPreview}</small></span>
+                  <span><strong>{user.hwid ? 'Vinculado' : 'Livre'}</strong><small>{user.hwid || 'Aguardando primeiro uso'}</small></span>
+                  <span><strong>{formatDate(user.lastUsedAt)}</strong><small>{user.lastLoaderVersion || 'Sem versao'}</small></span>
+                  <span className={`license-status ${user.status}`}>{statusLabel[user.status]}</span>
+                  <ChevronRight size={18} />
+                </button>
+              ))}
+            </div>
+          </section>
+        </>
+      )}
+
+      {section === 'access' && (
+        <>
+          <section className="panel">
+            <div className="panel-title"><div><h3>Acesso administrativo</h3><p className="muted">Controla quem pode entrar neste painel pelo Discord OAuth2.</p></div><ShieldCheck size={20} /></div>
+            <form className="user-form" onSubmit={submitAccess}>
+              <input value={accessForm.discordId} onChange={(event) => setAccessForm((current) => ({ ...current, discordId: event.target.value }))} placeholder="Discord ID" required />
+              <input value={accessForm.label} onChange={(event) => setAccessForm((current) => ({ ...current, label: event.target.value }))} placeholder="Apelido" />
+              <select value={accessForm.role} onChange={(event) => setAccessForm((current) => ({ ...current, role: event.target.value }))}>
+                <option value="member">Member</option><option value="admin">Admin</option><option value="owner">Owner</option>
+              </select>
+              <button className="primary-button"><Plus size={17} /> Autorizar</button>
+            </form>
+          </section>
+          <div className="user-grid">
+            {users.map((user) => (
+              <article className="user-card" key={user.discordId}>
+                <Avatar src={user.avatarUrl} name={user.globalName || user.username || user.label} />
+                <span><strong>{user.globalName || user.username || user.label}</strong><small>{user.discordId}</small></span>
+                <span className="tag"><Shield size={15} /> {user.role}</span>
+                <small>Ultimo login: {formatDate(user.lastLoginAt)}</small>
+                <IconButton label="Remover" onClick={() => removeAccess(user.discordId)}><Trash2 size={17} /></IconButton>
+              </article>
+            ))}
+          </div>
+        </>
+      )}
+
+      {showCreate && (
+        <div className="modal-backdrop" onMouseDown={() => setShowCreate(false)}>
+          <form className="modal license-form-modal" onSubmit={createLicense} onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-header"><div><p className="eyebrow">Nova licenca</p><h3>Adicionar usuario</h3></div><IconButton label="Fechar" type="button" onClick={() => setShowCreate(false)}><X size={18} /></IconButton></div>
+            <label>Discord ID<input value={licenseForm.discordId} onChange={(event) => setLicenseForm((current) => ({ ...current, discordId: event.target.value }))} placeholder="123456789012345678" required /></label>
+            <div className="form-grid">
+              <label>Plano<select value={licenseForm.planId} onChange={(event) => setLicenseForm((current) => ({ ...current, planId: event.target.value }))} required>{plans.filter((plan) => plan.active).map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></label>
+              <label>Limite de resets<input type="number" min="0" max="100" value={licenseForm.hwidResetLimit} onChange={(event) => setLicenseForm((current) => ({ ...current, hwidResetLimit: event.target.value }))} placeholder="Padrao do plano" /></label>
+            </div>
+            <label>Expiracao personalizada<input type="datetime-local" value={licenseForm.expiresAt} onChange={(event) => setLicenseForm((current) => ({ ...current, expiresAt: event.target.value }))} /><small>Deixe vazio para usar a duracao do plano.</small></label>
+            <div className="modal-actions"><button type="button" className="ghost-button" onClick={() => setShowCreate(false)}>Cancelar</button><button className="primary-button"><KeyRound size={17} /> Gerar key</button></div>
+          </form>
+        </div>
+      )}
+
+      {showPlans && (
+        <div className="modal-backdrop" onMouseDown={() => setShowPlans(false)}>
+          <section className="modal license-plans-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-header"><div><p className="eyebrow">Licenciamento</p><h3>Planos</h3></div><IconButton label="Fechar" onClick={() => setShowPlans(false)}><X size={18} /></IconButton></div>
+            <form className="plan-form" onSubmit={savePlan}>
+              <input value={planForm.name} onChange={(event) => setPlanForm((current) => ({ ...current, name: event.target.value }))} placeholder="Nome do plano" required />
+              <input type="number" min="1" value={planForm.durationDays} onChange={(event) => setPlanForm((current) => ({ ...current, durationDays: event.target.value }))} placeholder="Dias (vazio = lifetime)" />
+              <input type="number" min="0" max="100" value={planForm.defaultHwidResetLimit} onChange={(event) => setPlanForm((current) => ({ ...current, defaultHwidResetLimit: event.target.value }))} placeholder="Resets" />
+              <button className="primary-button"><Save size={16} /> {planForm.id ? 'Salvar' : 'Criar'}</button>
+            </form>
+            <div className="plan-list">
+              {plans.map((plan) => (
+                <article className="plan-card" key={plan.id}>
+                  <span className="plan-icon"><Crown size={19} /></span>
+                  <span><strong>{plan.name}</strong><small>{plan.durationDays == null ? 'Lifetime' : `${plan.durationDays} dias`} · {plan.defaultHwidResetLimit} resets · {plan.userCount} usuarios</small></span>
+                  <IconButton label="Editar" onClick={() => setPlanForm({ id: plan.id, name: plan.name, durationDays: plan.durationDays ?? '', defaultHwidResetLimit: plan.defaultHwidResetLimit })}><SlidersHorizontal size={16} /></IconButton>
+                  <IconButton label="Excluir" onClick={() => deletePlan(plan.id)}><Trash2 size={16} /></IconButton>
+                </article>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {selectedUser && (
+        <div className="license-drawer-backdrop" onMouseDown={() => setSelectedUser(null)}>
+          <aside className="license-drawer" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="license-drawer-header">
+              <div className="license-profile-heading"><Avatar src={selectedUser.discordAvatarUrl} name={selectedUser.discordGlobalName || selectedUser.discordUsername || selectedUser.discordId} size="xl" /><span><p className="eyebrow">Perfil Discord</p><h3>{selectedUser.discordGlobalName || selectedUser.discordUsername || 'Usuario Discord'}</h3><small>@{selectedUser.discordUsername || selectedUser.discordId}</small></span></div>
+              <IconButton label="Fechar" onClick={() => setSelectedUser(null)}><X size={19} /></IconButton>
+            </div>
+            <div className="license-drawer-scroll">
+              <div className="license-profile-tags"><span className={`license-status ${selectedUser.status}`}>{statusLabel[selectedUser.status]}</span><span className="tag"><Crown size={14} /> {selectedUser.plan.name}</span><span className="tag">Discord {selectedUser.discordId}</span></div>
+              <section className="license-detail-card key-card">
+                <div><p className="eyebrow">Key unica</p><strong>{selectedUser.licenseKey || selectedUser.keyPreview}</strong></div>
+                <IconButton label="Copiar key" onClick={() => copyText(selectedUser.licenseKey)}><Copy size={18} /></IconButton>
+              </section>
+              <div className="license-detail-grid">
+                <section className="license-detail-card"><Hash size={18} /><span><small>HWID vinculado</small><strong title={selectedUser.hwid || ''}>{selectedUser.hwid || 'Aguardando primeiro uso'}</strong></span></section>
+                <section className="license-detail-card"><Clock3 size={18} /><span><small>Expiracao</small><strong>{selectedUser.expiresAt ? formatDate(selectedUser.expiresAt) : 'Lifetime'}</strong></span></section>
+                <section className="license-detail-card"><Activity size={18} /><span><small>Ultima utilizacao</small><strong>{formatDate(selectedUser.lastUsedAt)}</strong></span></section>
+                <section className="license-detail-card"><Server size={18} /><span><small>IP aproximado</small><strong>{selectedUser.lastIpApprox || 'Nunca utilizado'}</strong></span></section>
+                <section className="license-detail-card"><Code2 size={18} /><span><small>Versao do loader</small><strong>{selectedUser.lastLoaderVersion || 'Nao informada'}</strong></span></section>
+                <section className="license-detail-card"><RefreshCw size={18} /><span><small>Resets de HWID</small><strong>{selectedUser.hwidResetCount} / {selectedUser.hwidResetLimit}</strong></span></section>
+              </div>
+              {selectedUser.suspiciousScore > 0 && <div className="notice warning"><AlertTriangle size={17} /> Risco {selectedUser.suspiciousScore}% · {selectedUser.suspiciousReason}</div>}
+              <section className="license-edit-card">
+                <div className="panel-title compact"><h3>Editar licenca</h3><SlidersHorizontal size={17} /></div>
+                <div className="form-grid">
+                  <label className="span-2">Discord ID<input value={selectedUser.discordId} onChange={(event) => setSelectedUser((current) => ({ ...current, discordId: event.target.value }))} onBlur={() => updateSelected({ discordId: selectedUser.discordId }, 'Discord atualizado.')} /></label>
+                  <label>Plano<select value={selectedUser.plan.id} onChange={(event) => updateSelected({ planId: event.target.value }, 'Plano atualizado.')}>{plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></label>
+                  <label>Status<select value={selectedUser.status} onChange={(event) => updateSelected({ status: event.target.value }, 'Status atualizado.')}><option value="active">Ativa</option><option value="suspended">Suspensa</option><option value="revoked">Revogada</option><option value="expired">Expirada</option></select></label>
+                  <label>Limite de resets<input type="number" min="0" max="100" value={selectedUser.hwidResetLimit} onChange={(event) => setSelectedUser((current) => ({ ...current, hwidResetLimit: event.target.value }))} onBlur={() => updateSelected({ hwidResetLimit: Number(selectedUser.hwidResetLimit) }, 'Limite atualizado.')} /></label>
+                  <label>Expiracao<input type="datetime-local" value={selectedUser.expiresAt ? new Date(selectedUser.expiresAt).toISOString().slice(0, 16) : ''} onChange={(event) => updateSelected({ expiresAt: event.target.value ? new Date(event.target.value).toISOString() : null }, 'Expiracao atualizada.')} /></label>
+                </div>
+              </section>
+              <section className="license-actions-grid">
+                <button className="ghost-button" onClick={resetHwid} disabled={selectedUser.hwidResetCount >= selectedUser.hwidResetLimit}><RefreshCw size={17} /> Resetar HWID</button>
+                <button className="ghost-button" onClick={regenerateKey}><KeyRound size={17} /> Gerar nova key</button>
+                <button className="ghost-button" onClick={() => updateSelected({ status: selectedUser.status === 'suspended' ? 'active' : 'suspended' }, selectedUser.status === 'suspended' ? 'Licenca reativada.' : 'Licenca suspensa.')}><Ban size={17} /> {selectedUser.status === 'suspended' ? 'Reativar' : 'Suspender'}</button>
+                <button className="danger-button" onClick={deleteLicense}><Trash2 size={17} /> Excluir usuario</button>
+              </section>
+              <section className="license-activity">
+                <div className="panel-title compact"><h3>Atividade recente</h3><Activity size={17} /></div>
+                {(selectedUser.events || []).length === 0 && <p className="muted">Nenhum evento registrado.</p>}
+                {(selectedUser.events || []).map((event) => <div className="license-event" key={event.id}><span className={`event-dot ${event.type.includes('mismatch') || event.type.includes('suspended') ? 'danger' : ''}`} /><span><strong>{event.type.replaceAll('_', ' ')}</strong><small>{formatDate(event.createdAt)} · {event.ipApprox || 'IP desconhecido'} · {event.loaderVersion || 'sem versao'}</small></span></div>)}
+              </section>
+            </div>
+          </aside>
+        </div>
+      )}
     </section>
   );
 }
