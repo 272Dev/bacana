@@ -544,6 +544,12 @@ export function registerLicensingRoutes(app, { requireAuth, requireAdmin }) {
         last_hwid_reset_at = ?, suspicious_score = 0, suspicious_reason = NULL, updated_at = ?
       WHERE id = ?
     `).run(now, now, row.id);
+    await db.prepare(`
+      UPDATE roblox_name_tags
+      SET hwid_hash = NULL, roblox_user_id = NULL, roblox_username = NULL,
+        roblox_display_name = NULL, updated_at = ?
+      WHERE license_user_id = ?
+    `).run(now, row.id);
     await recordLicenseEvent(row.id, 'hwid_reset', { ipApprox: requestIp(req), metadata: { actorDiscordId: req.user.discordId } });
     await logAudit({ actorDiscordId: req.user.discordId, action: 'license_user.hwid_reset', targetType: 'license_user', targetId: row.id, ip: requestIp(req) });
     res.json({ user: mapLicenseUser(await getLicenseRow(row.id), { includeKey: true }) });

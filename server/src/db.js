@@ -219,6 +219,26 @@ const schemaSql = `
     FOREIGN KEY (license_user_id) REFERENCES license_users(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS roblox_name_tags (
+    id TEXT PRIMARY KEY,
+    license_user_id TEXT UNIQUE,
+    hwid_hash TEXT UNIQUE,
+    roblox_user_id TEXT UNIQUE,
+    roblox_username TEXT,
+    roblox_display_name TEXT,
+    display_name_override TEXT,
+    title TEXT NOT NULL DEFAULT 'Nexus Member',
+    icon TEXT NOT NULL DEFAULT 'initial' CHECK (icon IN ('initial', 'diamond', 'shield', 'star', 'dot')),
+    badge TEXT NOT NULL DEFAULT 'none' CHECK (badge IN ('none', 'verified', 'admin', 'premium')),
+    morph_distance INTEGER NOT NULL DEFAULT 52,
+    max_distance INTEGER NOT NULL DEFAULT 160,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (license_user_id) REFERENCES license_users(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS loader_releases (
     id TEXT PRIMARY KEY,
     version TEXT NOT NULL,
@@ -284,6 +304,10 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_license_users_status ON license_users(status);
   CREATE INDEX IF NOT EXISTS idx_license_events_user_created ON license_events(license_user_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_license_events_type ON license_events(event_type);
+  CREATE INDEX IF NOT EXISTS idx_roblox_name_tags_license ON roblox_name_tags(license_user_id);
+  CREATE INDEX IF NOT EXISTS idx_roblox_name_tags_hwid ON roblox_name_tags(hwid_hash);
+  CREATE INDEX IF NOT EXISTS idx_roblox_name_tags_user ON roblox_name_tags(roblox_user_id);
+  CREATE INDEX IF NOT EXISTS idx_roblox_name_tags_enabled ON roblox_name_tags(enabled);
   CREATE INDEX IF NOT EXISTS idx_loader_releases_created ON loader_releases(created_at);
   CREATE INDEX IF NOT EXISTS idx_loader_releases_active ON loader_releases(active);
   CREATE INDEX IF NOT EXISTS idx_discord_protection_guild ON discord_protection_configs(guild_id);

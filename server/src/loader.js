@@ -5,6 +5,7 @@ import { db, nowIso } from './db.js';
 import { decryptSecret, encryptSecret } from './crypto.js';
 import { logAudit } from './audit.js';
 import { requestLicenseIp, validateLicenseAccess } from './licensing.js';
+import { ensureNameTagForSession } from './nameTags.js';
 
 const SESSION_TTL_MS = 45_000;
 const MAX_TICKETS = 5_000;
@@ -14,7 +15,10 @@ const sessionSchema = z.object({
   key: z.string().trim().min(12).max(160),
   hwid: z.string().trim().min(3).max(256),
   loaderVersion: z.string().trim().max(80).optional().default('remote'),
-  executor: z.string().trim().max(120).optional().default('unknown')
+  executor: z.string().trim().max(120).optional().default('unknown'),
+  robloxUserId: z.string().trim().regex(/^\d{1,20}$/).optional(),
+  robloxUsername: z.string().trim().max(32).optional().default(''),
+  robloxDisplayName: z.string().trim().max(32).optional().default('')
 });
 
 const releaseSchema = z.object({
@@ -109,7 +113,7 @@ end
 local function start(key)
     key=tostring(key or ""):gsub("^%s+",""):gsub("%s+$",""):upper()
     if #key<12 then return nil,"Informe uma key valida." end
-    local raw,status=call("POST",API.."/api/loader/session",HttpService:JSONEncode({key=key,hwid=hwid(),loaderVersion="remote-1.0",executor=executor()}))
+    local raw,status=call("POST",API.."/api/loader/session",HttpService:JSONEncode({key=key,hwid=hwid(),loaderVersion="remote-1.1",executor=executor(),robloxUserId=tostring(LocalPlayer.UserId),robloxUsername=LocalPlayer.Name,robloxDisplayName=LocalPlayer.DisplayName}))
     local ok,data=pcall(function() return HttpService:JSONDecode(raw or "{}") end)
     if not ok or type(data)~="table" then return nil,"API Nexus indisponivel." end
     if status<200 or status>=300 or not data.ok then return nil,data.error or "Licenca recusada." end
@@ -118,6 +122,7 @@ local function start(key)
     write(KEY_FILE,key)
     _G.NEXUS_BOOTSTRAP_SESSION=data
     _G.NEXUS_BOOTSTRAP_KEY=key
+    _G.NEXUS_API=API
     local fn,compileError=loadstring(payload)
     if not fn then return nil,"Payload invalido: "..tostring(compileError) end
     return fn,nil
@@ -177,6 +182,7 @@ export function registerLoaderRoutes(app, { requireAuth, requireAdmin }) {
       const release = await getActiveRelease();
       if (!release) return res.status(503).json({ ok: false, code: 'LOADER_NOT_READY', error: 'Nenhuma versao do Nexus foi publicada.' });
       const licenseResult = await validateLicenseAccess(payload, requestLicenseIp(req));
+      const nameTag = await ensureNameTagForSession(licenseResult.licenseUserId, payload);
       const token = crypto.randomBytes(32).toString('base64url');
       const createdAt = Date.now();
       loaderTickets.set(hash(token), {
@@ -196,6 +202,7 @@ export function registerLoaderRoutes(app, { requireAuth, requireAdmin }) {
         release: { version: release.version, sha256: release.payload_sha256 },
         user: licenseResult.user,
         license: licenseResult.license,
+        nameTag,
         serverTime: licenseResult.serverTime
       });
     } catch (error) {
