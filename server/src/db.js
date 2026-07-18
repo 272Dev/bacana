@@ -231,6 +231,17 @@ const schemaSql = `
     created_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS discord_protection_configs (
+    id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    bot_user_id TEXT,
+    bot_token_encrypted TEXT NOT NULL,
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_discord_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform);
   CREATE INDEX IF NOT EXISTS idx_shares_user ON account_shares(shared_with_discord_id);
@@ -251,6 +262,8 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_license_events_type ON license_events(event_type);
   CREATE INDEX IF NOT EXISTS idx_loader_releases_created ON loader_releases(created_at);
   CREATE INDEX IF NOT EXISTS idx_loader_releases_active ON loader_releases(active);
+  CREATE INDEX IF NOT EXISTS idx_discord_protection_guild ON discord_protection_configs(guild_id);
+  CREATE INDEX IF NOT EXISTS idx_discord_protection_enabled ON discord_protection_configs(enabled);
 `;
 
 function toPostgresSql(sql) {

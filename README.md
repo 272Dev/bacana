@@ -139,6 +139,32 @@ o codigo precisa chegar ao cliente em algum momento e pode ser extraido por um
 executor comprometido; o objetivo aqui e impedir que o site ou o link publico
 exponham a source sem uma key/HWID validos.
 
+## Anti-nuke do bot Discord
+
+O anti-nuke monitora o Audit Log em tempo real e possui busca de seguranca para
+canais, cargos, bans, webhooks, bots adicionados e alteracoes de cargos. Tambem
+detecta rajadas de mensagens e spam de mencoes. A configuracao fica criptografada
+no banco e volta automaticamente depois de reinicios ou deploys do Render.
+
+Para o castigo funcionar, o cargo do bot precisa ficar acima dos cargos que ele
+deve remover. O bot precisa de `View Audit Log`, `Manage Roles`, `Moderate Members`
+e `Manage Messages`; habilite tambem `Kick Members` ou `Ban Members` se escolher
+essas punicoes. O dono do servidor nunca pode ser punido por um bot do Discord.
+
+O anti-spam por velocidade e mencoes funciona com `Guild Messages`. Para ler o
+texto e detectar convites/repeticoes com precisao, habilite **Message Content
+Intent** no Discord Developer Portal e configure:
+
+```env
+DISCORD_MESSAGE_CONTENT_INTENT=true
+```
+
+Para o anti-raid de entradas, habilite **Server Members Intent** e configure:
+
+```env
+DISCORD_GUILD_MEMBERS_INTENT=true
+```
+
 ## Roblox
 
 Quando a plataforma for Roblox, informe o Username e use a busca. O backend consulta as APIs publicas oficiais do Roblox para preencher:

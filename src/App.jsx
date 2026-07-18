@@ -2394,6 +2394,7 @@ const defaultAntiNukeSettings = {
   limitPerMinute: 5,
   limitWindowSeconds: 60,
   punishment: 'remove_roles',
+  timeoutMinutes: 1440,
   whitelist: '',
   ignoredRoles: '',
   logChannelId: '',
@@ -2401,7 +2402,11 @@ const defaultAntiNukeSettings = {
   joinLimit: 8,
   joinWindowSeconds: 20,
   minAccountAgeDays: 7,
-  duplicateMessageLimit: 5,
+  messageLimit: 6,
+  messageWindowSeconds: 12,
+  duplicateMessageLimit: 4,
+  mentionLimit: 4,
+  inviteLimitPerMinute: 2,
   webhookLimitPerMinute: 2,
   verificationMode: 'medium',
   autoLockdown: true,
@@ -3347,13 +3352,16 @@ function DiscordToolsPage() {
   async function saveAntiNuke() {
     if (!botConfig.guildId) return showNotice('Informe ou carregue o servidor antes de ativar a protecao.');
     await runAction('anti-nuke-save', async () => {
-      await api('/discord-tools/protection/configure', {
+      const payload = await api('/discord-tools/protection/configure', {
         method: 'POST',
         body: { ...botConfig, ...antiNuke }
       });
       updateSettings({ ...settings, antiNuke, logChannelId: antiNuke.logChannelId });
       pushLog('anti-nuke', `Protecao ${antiNuke.enabled ? 'ativa' : 'desativada'} no Gateway`, selectedManagedBot.name);
-      showNotice(antiNuke.enabled ? 'Anti-nuke ativado no bot.' : 'Anti-nuke desativado no bot.');
+      const warnings = payload.diagnostics?.warnings || [];
+      showNotice(warnings.length
+        ? `Protecao salva com ${warnings.length} aviso(s): ${warnings[0]}`
+        : (antiNuke.enabled ? 'Anti-nuke ativado e permissoes verificadas.' : 'Anti-nuke desativado no bot.'));
     });
   }
 
@@ -4325,10 +4333,15 @@ function DiscordToolsPage() {
               <select value={antiNuke.punishment} onChange={(event) => setAntiNuke((current) => ({ ...current, punishment: event.target.value }))}>
                 <option value="remove_roles">Remover cargos perigosos</option>
                 <option value="quarantine">Mover para quarentena</option>
+                <option value="timeout">Aplicar timeout</option>
                 <option value="ban">Banir usuario</option>
                 <option value="kick">Expulsar usuario</option>
                 <option value="none">Apenas alertar</option>
               </select>
+            </label>
+            <label>
+              Duracao do timeout
+              <input type="number" min="1" max="40320" value={antiNuke.timeoutMinutes} onChange={(event) => setAntiNuke((current) => ({ ...current, timeoutMinutes: Number(event.target.value) }))} />
             </label>
             <label>
               Cargo quarentena
@@ -4352,7 +4365,27 @@ function DiscordToolsPage() {
             </label>
             <label>
               Webhooks por minuto
-              <input type="number" min="0" max="30" value={antiNuke.webhookLimitPerMinute} onChange={(event) => setAntiNuke((current) => ({ ...current, webhookLimitPerMinute: Number(event.target.value) }))} />
+              <input type="number" min="1" max="30" value={antiNuke.webhookLimitPerMinute} onChange={(event) => setAntiNuke((current) => ({ ...current, webhookLimitPerMinute: Number(event.target.value) }))} />
+            </label>
+            <label>
+              Mensagens na janela
+              <input type="number" min="2" max="50" value={antiNuke.messageLimit} onChange={(event) => setAntiNuke((current) => ({ ...current, messageLimit: Number(event.target.value) }))} />
+            </label>
+            <label>
+              Janela anti-spam
+              <input type="number" min="3" max="120" value={antiNuke.messageWindowSeconds} onChange={(event) => setAntiNuke((current) => ({ ...current, messageWindowSeconds: Number(event.target.value) }))} />
+            </label>
+            <label>
+              Repeticoes permitidas
+              <input type="number" min="2" max="20" value={antiNuke.duplicateMessageLimit} onChange={(event) => setAntiNuke((current) => ({ ...current, duplicateMessageLimit: Number(event.target.value) }))} />
+            </label>
+            <label>
+              Mencoes por mensagem
+              <input type="number" min="2" max="50" value={antiNuke.mentionLimit} onChange={(event) => setAntiNuke((current) => ({ ...current, mentionLimit: Number(event.target.value) }))} />
+            </label>
+            <label>
+              Convites por minuto
+              <input type="number" min="1" max="20" value={antiNuke.inviteLimitPerMinute} onChange={(event) => setAntiNuke((current) => ({ ...current, inviteLimitPerMinute: Number(event.target.value) }))} />
             </label>
             <label>
               Modo verificacao

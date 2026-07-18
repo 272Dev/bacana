@@ -84,7 +84,9 @@ export const config = {
   },
   discordBot: {
     token: env('DISCORD_BOT_TOKEN'),
-    defaultGuildId: env('DISCORD_DEFAULT_GUILD_ID')
+    defaultGuildId: env('DISCORD_DEFAULT_GUILD_ID'),
+    messageContentIntent: boolEnv('DISCORD_MESSAGE_CONTENT_INTENT', false),
+    guildMembersIntent: boolEnv('DISCORD_GUILD_MEMBERS_INTENT', false)
   },
   security: {
     masterKey: env('APP_MASTER_KEY'),
