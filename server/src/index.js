@@ -54,6 +54,8 @@ import {
 import {
   applyDiscordBotProfile,
   configureDiscordProtection,
+  getDiscordProtectionCatalog,
+  getDiscordProtectionStats,
   getDiscordRuntimeState,
   restoreDiscordProtections,
   runDiscordBotLifecycle,
@@ -458,10 +460,13 @@ const discordProtectionSchema = discordBotRequestSchema.extend({
   enabled: z.boolean().optional().default(true),
   limitPerMinute: z.coerce.number().int().min(1).max(60).optional().default(5),
   limitWindowSeconds: z.coerce.number().int().min(10).max(300).optional().default(60),
-  punishment: z.enum(['remove_roles', 'quarantine', 'timeout', 'kick', 'ban', 'none']).optional().default('remove_roles'),
+  punishment: z.enum(['warn', 'remove_roles', 'quarantine', 'timeout', 'kick', 'ban', 'none']).optional().default('remove_roles'),
   timeoutMinutes: z.coerce.number().int().min(1).max(40320).optional().default(1440),
   whitelist: z.string().trim().max(2000).optional().or(z.literal('')),
   ignoredRoles: z.string().trim().max(2000).optional().or(z.literal('')),
+  ignoredChannels: z.string().trim().max(4000).optional().or(z.literal('')),
+  notifyRoleIds: z.string().trim().max(2000).optional().or(z.literal('')),
+  warnMessage: z.string().trim().max(1800).optional().or(z.literal('')),
   quarantineRoleId: z.string().trim().max(32).optional().or(z.literal('')),
   logChannelId: z.string().trim().max(32).optional().or(z.literal('')),
   joinLimit: z.coerce.number().int().min(1).max(100).optional().default(8),
@@ -479,7 +484,15 @@ const discordProtectionSchema = discordBotRequestSchema.extend({
   blockMentionSpam: z.boolean().optional().default(true),
   backupChannels: z.boolean().optional().default(false),
   backupRoles: z.boolean().optional().default(false),
-  notifyOwner: z.boolean().optional().default(true)
+  autoRestore: z.boolean().optional().default(true),
+  notifyOwner: z.boolean().optional().default(true),
+  detectors: z.record(z.object({
+    enabled: z.boolean().optional(),
+    threshold: z.coerce.number().int().min(1).max(10000).optional(),
+    windowSeconds: z.coerce.number().int().min(1).max(3600).optional(),
+    punishment: z.enum(['warn', 'timeout', 'remove_roles', 'quarantine', 'kick', 'ban', 'none']).optional(),
+    deleteMessage: z.boolean().optional()
+  })).optional()
 });
 
 const discordUserLookupSchema = z.object({
@@ -1387,6 +1400,18 @@ app.post('/api/discord-tools/protection/configure', requireAuth, async (req, res
     ip: req.ip
   });
   res.json(result);
+});
+
+app.get('/api/discord-tools/protection/catalog', requireAuth, (_req, res) => {
+  res.json(getDiscordProtectionCatalog());
+});
+
+app.get('/api/discord-tools/protection/stats', requireAuth, async (req, res) => {
+  const query = z.object({
+    guildId: z.string().trim().min(5).max(32),
+    limit: z.coerce.number().int().min(1).max(100).optional().default(50)
+  }).parse(req.query);
+  res.json(await getDiscordProtectionStats(query));
 });
 
 app.post('/api/discord-tools/channels', requireAuth, async (req, res) => {

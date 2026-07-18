@@ -2397,6 +2397,9 @@ const defaultAntiNukeSettings = {
   timeoutMinutes: 1440,
   whitelist: '',
   ignoredRoles: '',
+  ignoredChannels: '',
+  notifyRoleIds: '',
+  warnMessage: 'Sua mensagem violou as regras automaticas deste servidor.',
   logChannelId: '',
   quarantineRoleId: '',
   joinLimit: 8,
@@ -2414,6 +2417,8 @@ const defaultAntiNukeSettings = {
   blockMentionSpam: true,
   backupChannels: true,
   backupRoles: true,
+  autoRestore: true,
+  detectors: {},
   notifyOwner: true
 };
 
@@ -2688,6 +2693,8 @@ function DiscordToolsPage() {
     ...(savedSettings?.antiNuke || {}),
     logChannelId: savedSettings?.antiNuke?.logChannelId || savedSettings?.logChannelId || ''
   });
+  const [protectionCatalog, setProtectionCatalog] = useState({ categories: {}, detectors: [], defaults: {}, limitations: {} });
+  const [protectionStats, setProtectionStats] = useState({ totals: { detections: 0, actions: 0 }, stats: [], events: [] });
   const [newBotForm, setNewBotForm] = useState({ token: '', guildId: '', name: '' });
   const [showAddBotModal, setShowAddBotModal] = useState(false);
   const [moderation, setModeration] = useState({ userId: '', channelId: '', reason: '', durationMinutes: 10, amount: 10, message: '' });
@@ -2746,6 +2753,28 @@ function DiscordToolsPage() {
   useEffect(() => () => {
     repeatStopRef.current = true;
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    api('/discord-tools/protection/catalog')
+      .then((catalog) => {
+        if (!active) return;
+        setProtectionCatalog(catalog);
+        setAntiNuke((current) => ({
+          ...current,
+          detectors: { ...(catalog.defaults || {}), ...(current.detectors || {}) }
+        }));
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (section !== 'anti-nuke' || !botConfig.guildId) return;
+    api(`/discord-tools/protection/stats?guildId=${encodeURIComponent(botConfig.guildId)}&limit=30`)
+      .then(setProtectionStats)
+      .catch(() => {});
+  }, [section, botConfig.guildId]);
 
   useEffect(() => {
     setBotConfig((current) => {
@@ -3356,7 +3385,10 @@ function DiscordToolsPage() {
         method: 'POST',
         body: { ...botConfig, ...antiNuke }
       });
-      updateSettings({ ...settings, antiNuke, logChannelId: antiNuke.logChannelId });
+      const savedProtection = payload.protection || antiNuke;
+      setAntiNuke(savedProtection);
+      updateSettings({ ...settings, antiNuke: savedProtection, logChannelId: savedProtection.logChannelId });
+      api(`/discord-tools/protection/stats?guildId=${encodeURIComponent(botConfig.guildId)}&limit=30`).then(setProtectionStats).catch(() => {});
       pushLog('anti-nuke', `Protecao ${antiNuke.enabled ? 'ativa' : 'desativada'} no Gateway`, selectedManagedBot.name);
       const warnings = payload.diagnostics?.warnings || [];
       showNotice(warnings.length
@@ -4293,12 +4325,25 @@ function DiscordToolsPage() {
   }
 
   function renderAntiNuke() {
+    const detectorGroups = Object.entries(protectionCatalog.categories || {}).map(([categoryId, label]) => ({
+      id: categoryId,
+      label,
+      detectors: (protectionCatalog.detectors || []).filter((detector) => detector.category === categoryId)
+    }));
+    const activeDetectors = Object.values(antiNuke.detectors || {}).filter((detector) => detector?.enabled).length;
+    const updateDetector = (detectorId, patch) => setAntiNuke((current) => ({
+      ...current,
+      detectors: {
+        ...(current.detectors || {}),
+        [detectorId]: { ...(current.detectors?.[detectorId] || protectionCatalog.defaults?.[detectorId] || {}), ...patch }
+      }
+    }));
     const protectionFeatures = [
-      { label: 'Audit Log monitor', ok: antiNuke.enabled, detail: 'Canais, cargos, bans e webhooks' },
-      { label: 'Anti-raid join', ok: antiNuke.joinLimit > 0, detail: `${antiNuke.joinLimit} entradas em ${antiNuke.joinWindowSeconds}s` },
-      { label: 'Conta nova', ok: antiNuke.minAccountAgeDays > 0, detail: `${antiNuke.minAccountAgeDays} dias minimos` },
-      { label: 'Anti-spam', ok: antiNuke.blockInviteSpam || antiNuke.blockMentionSpam, detail: 'Convites, mencoes e repeticoes' },
-      { label: 'Webhooks', ok: antiNuke.webhookLimitPerMinute > 0, detail: `${antiNuke.webhookLimitPerMinute}/minuto` },
+      { label: 'Audit Log monitor', ok: antiNuke.enabled, detail: 'Executor identificado e registrado' },
+      { label: 'Detectores modulares', ok: activeDetectors > 0, detail: `${activeDetectors}/${protectionCatalog.detectors?.length || 0} ativos` },
+      { label: 'Recuperacao', ok: antiNuke.autoRestore && (antiNuke.backupChannels || antiNuke.backupRoles), detail: 'Canal, cargo e alteracoes criticas' },
+      { label: 'Logs detalhados', ok: Boolean(antiNuke.logChannelId), detail: antiNuke.logChannelId || 'Defina um canal' },
+      { label: 'Whitelists', ok: Boolean(antiNuke.whitelist || antiNuke.ignoredRoles || antiNuke.ignoredChannels), detail: 'Usuarios, cargos e canais' },
       { label: 'Quarentena', ok: Boolean(antiNuke.quarantineRoleId), detail: antiNuke.quarantineRoleId || 'Cargo opcional' }
     ];
     return (
@@ -4331,6 +4376,7 @@ function DiscordToolsPage() {
             <label>
               Punicao automatica
               <select value={antiNuke.punishment} onChange={(event) => setAntiNuke((current) => ({ ...current, punishment: event.target.value }))}>
+                <option value="warn">Somente avisar</option>
                 <option value="remove_roles">Remover cargos perigosos</option>
                 <option value="quarantine">Mover para quarentena</option>
                 <option value="timeout">Aplicar timeout</option>
@@ -4403,6 +4449,18 @@ function DiscordToolsPage() {
               Cargos ignorados
               <textarea rows={3} value={antiNuke.ignoredRoles} onChange={(event) => setAntiNuke((current) => ({ ...current, ignoredRoles: event.target.value }))} placeholder="Um Role ID por linha" />
             </label>
+            <label className="wide">
+              Canais e categorias ignorados
+              <textarea rows={3} value={antiNuke.ignoredChannels} onChange={(event) => setAntiNuke((current) => ({ ...current, ignoredChannels: event.target.value }))} placeholder="Um Channel/Category ID por linha" />
+            </label>
+            <label className="wide">
+              Cargos para notificar
+              <textarea rows={2} value={antiNuke.notifyRoleIds} onChange={(event) => setAntiNuke((current) => ({ ...current, notifyRoleIds: event.target.value }))} placeholder="Um Role ID por linha" />
+            </label>
+            <label className="wide">
+              Mensagem de aviso
+              <input value={antiNuke.warnMessage} onChange={(event) => setAntiNuke((current) => ({ ...current, warnMessage: event.target.value }))} />
+            </label>
           </div>
           <div className="discord-toggle-grid">
             <label className="switch-line"><input type="checkbox" checked={antiNuke.autoLockdown} onChange={(event) => setAntiNuke((current) => ({ ...current, autoLockdown: event.target.checked }))} /> Lockdown automatico</label>
@@ -4410,6 +4468,46 @@ function DiscordToolsPage() {
             <label className="switch-line"><input type="checkbox" checked={antiNuke.blockMentionSpam} onChange={(event) => setAntiNuke((current) => ({ ...current, blockMentionSpam: event.target.checked }))} /> Bloquear mention spam</label>
             <label className="switch-line"><input type="checkbox" checked={antiNuke.backupChannels} onChange={(event) => setAntiNuke((current) => ({ ...current, backupChannels: event.target.checked }))} /> Backup de canais</label>
             <label className="switch-line"><input type="checkbox" checked={antiNuke.backupRoles} onChange={(event) => setAntiNuke((current) => ({ ...current, backupRoles: event.target.checked }))} /> Backup de cargos</label>
+            <label className="switch-line"><input type="checkbox" checked={antiNuke.autoRestore} onChange={(event) => setAntiNuke((current) => ({ ...current, autoRestore: event.target.checked }))} /> Restaurar e reverter automaticamente</label>
+          </div>
+          <div className="protection-detector-stack">
+            <div className="protection-detector-heading">
+              <span><strong>Detectores individuais</strong><small>Cada camada tem limite, janela e castigo proprios.</small></span>
+              <span className="protection-count">{activeDetectors} ativos</span>
+            </div>
+            {detectorGroups.map((group) => {
+              const groupActive = group.detectors.filter((detector) => antiNuke.detectors?.[detector.id]?.enabled).length;
+              return (
+                <details className="protection-detector-group" key={group.id}>
+                  <summary><span>{group.label}</span><small>{groupActive}/{group.detectors.length}</small></summary>
+                  <div className="protection-detector-list">
+                    {group.detectors.map((detector) => {
+                      const detectorSettings = antiNuke.detectors?.[detector.id] || protectionCatalog.defaults?.[detector.id] || {};
+                      const unavailable = detector.capability === 'unavailable-no-discord-ip';
+                      return (
+                        <article className={`protection-detector-row ${detectorSettings.enabled ? 'enabled' : ''}`} key={detector.id}>
+                          <div className="protection-detector-name">
+                            <label className="switch-line">
+                              <input type="checkbox" disabled={unavailable} checked={Boolean(detectorSettings.enabled)} onChange={(event) => updateDetector(detector.id, { enabled: event.target.checked })} />
+                              <span><strong>{detector.label}</strong><small>{detector.id} · {detector.capability}</small></span>
+                            </label>
+                          </div>
+                          <div className="protection-detector-controls">
+                            <label>Limite<input type="number" min="1" max="10000" value={detectorSettings.threshold || 1} onChange={(event) => updateDetector(detector.id, { threshold: Number(event.target.value) })} /></label>
+                            <label>Janela (s)<input type="number" min="1" max="3600" value={detectorSettings.windowSeconds || 60} onChange={(event) => updateDetector(detector.id, { windowSeconds: Number(event.target.value) })} /></label>
+                            <label>Castigo<select value={detectorSettings.punishment || 'none'} onChange={(event) => updateDetector(detector.id, { punishment: event.target.value })}>
+                              <option value="warn">Avisar</option><option value="timeout">Timeout</option><option value="remove_roles">Tirar cargos</option><option value="quarantine">Quarentena</option><option value="kick">Expulsar</option><option value="ban">Banir</option><option value="none">So log</option>
+                            </select></label>
+                            {detector.deleteMessage && <label className="protection-delete"><input type="checkbox" checked={Boolean(detectorSettings.deleteMessage)} onChange={(event) => updateDetector(detector.id, { deleteMessage: event.target.checked })} /> Apagar</label>}
+                          </div>
+                          {protectionCatalog.limitations?.[detector.id] && <p>{protectionCatalog.limitations[detector.id]}</p>}
+                        </article>
+                      );
+                    })}
+                  </div>
+                </details>
+              );
+            })}
           </div>
           <button className="primary-button" onClick={saveAntiNuke} disabled={loading === 'anti-nuke-save'}><Save size={17} /> {loading === 'anti-nuke-save' ? 'Ativando' : 'Salvar protecao no bot'}</button>
         </section>
@@ -4424,20 +4522,20 @@ function DiscordToolsPage() {
             ))}
           </div>
           <div className="discord-stat-grid">
-            <Metric icon={AlertTriangle} label="Acoes detectadas" value={logs.filter((log) => log.type === 'anti-nuke').length} />
-            <Metric icon={Ban} label="Usuarios punidos" value={logs.filter((log) => log.type === 'moderation').length} />
+            <Metric icon={AlertTriangle} label="Deteccoes" value={protectionStats.totals?.detections || 0} />
+            <Metric icon={Ban} label="Acoes aplicadas" value={protectionStats.totals?.actions || 0} />
           </div>
           <div className="discord-list">
-            {logs.slice(0, 8).map((log) => (
-              <article className="discord-log-row" key={log.id}>
-                <span className={`discord-log-dot ${log.type}`} />
+            {(protectionStats.events || []).slice(0, 8).map((event) => (
+              <article className="discord-log-row" key={event.id}>
+                <span className="discord-log-dot anti-nuke" />
                 <span>
-                  <strong>{log.detail}</strong>
-                  <small>{formatDate(log.createdAt)}</small>
+                  <strong>{event.metadata?.detectorName || event.detector_id}</strong>
+                  <small>{event.action_taken} · {formatDate(event.created_at)}</small>
                 </span>
               </article>
             ))}
-            {logs.length === 0 && <EmptyState icon={ScrollText} title="Nenhum log recente" />}
+            {(!protectionStats.events || protectionStats.events.length === 0) && <EmptyState icon={ScrollText} title="Nenhuma deteccao recente" />}
           </div>
         </section>
       </div>

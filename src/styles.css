@@ -2524,6 +2524,145 @@ label {
   cursor: pointer;
 }
 
+.protection-detector-stack {
+  display: grid;
+  gap: 9px;
+  margin: 18px 0;
+}
+
+.protection-detector-heading,
+.protection-detector-group > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.protection-detector-heading span:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.protection-detector-heading small,
+.protection-detector-group summary small,
+.protection-detector-name small {
+  color: var(--muted);
+}
+
+.protection-count {
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.protection-detector-group {
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.20);
+}
+
+.protection-detector-group > summary {
+  min-height: 44px;
+  padding: 10px 13px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 900;
+  list-style-position: inside;
+}
+
+.protection-detector-group[open] > summary {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.protection-detector-list {
+  display: grid;
+}
+
+.protection-detector-row {
+  display: grid;
+  grid-template-columns: minmax(185px, 0.95fr) minmax(310px, 1.45fr);
+  gap: 10px 14px;
+  padding: 11px 13px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  opacity: 0.68;
+}
+
+.protection-detector-row:last-child {
+  border-bottom: 0;
+}
+
+.protection-detector-row.enabled {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.protection-detector-name .switch-line,
+.protection-detector-name .switch-line span {
+  min-width: 0;
+}
+
+.protection-detector-name .switch-line span {
+  display: grid;
+  gap: 2px;
+}
+
+.protection-detector-name strong,
+.protection-detector-name small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.protection-detector-controls {
+  display: grid;
+  grid-template-columns: 72px 86px minmax(112px, 1fr) auto;
+  align-items: end;
+  gap: 7px;
+}
+
+.protection-detector-controls label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 800;
+}
+
+.protection-detector-controls input[type="number"],
+.protection-detector-controls select {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 8px;
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.protection-detector-controls .protection-delete {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  gap: 5px;
+  padding: 0 4px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.protection-detector-row > p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #e2b46b;
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
 .discord-field-editor {
   display: grid;
   gap: 10px;
@@ -4429,6 +4568,14 @@ label {
 
   .discord-field-row {
     grid-template-columns: 1fr;
+  }
+
+  .protection-detector-row {
+    grid-template-columns: 1fr;
+  }
+
+  .protection-detector-controls {
+    grid-template-columns: 1fr 1fr;
   }
 
   .discord-channel-topbar,
