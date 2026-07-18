@@ -748,9 +748,10 @@ export async function restoreDiscordProtections() {
   const result = { restored: 0, failed: [] };
   if (storedRows.length === 0 && config.discordBot.token) {
     const defaultEntry = await ensureClient({ status: 'online' }).catch(() => null);
-    const fallbackGuildId = defaultEntry?.client?.guilds?.cache?.size === 1
-      ? defaultEntry.client.guilds.cache.first()?.id
-      : null;
+    // Mantem o mesmo fallback usado pelo painel: quando ainda nao existe uma
+    // configuracao persistida, protege o primeiro servidor disponivel. Antes,
+    // bots presentes em mais de um servidor iniciavam com zero protecoes.
+    const fallbackGuildId = defaultEntry?.client?.guilds?.cache?.first()?.id || null;
     const initialGuildId = cleanText(config.discordBot.defaultGuildId) || fallbackGuildId;
     if (initialGuildId) {
       try {
