@@ -169,6 +169,56 @@ const schemaSql = `
     FOREIGN KEY (created_by) REFERENCES users(discord_id)
   );
 
+  CREATE TABLE IF NOT EXISTS license_plans (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    duration_days INTEGER,
+    default_hwid_reset_limit INTEGER NOT NULL DEFAULT 1,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS license_users (
+    id TEXT PRIMARY KEY,
+    discord_id TEXT NOT NULL UNIQUE,
+    discord_username TEXT,
+    discord_global_name TEXT,
+    discord_avatar_url TEXT,
+    license_key_hash TEXT NOT NULL UNIQUE,
+    license_key_encrypted TEXT NOT NULL,
+    license_key_preview TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended', 'revoked', 'expired')),
+    expires_at TEXT,
+    hwid TEXT,
+    hwid_bound_at TEXT,
+    hwid_reset_count INTEGER NOT NULL DEFAULT 0,
+    hwid_reset_limit INTEGER NOT NULL DEFAULT 1,
+    last_hwid_reset_at TEXT,
+    last_used_at TEXT,
+    last_ip_approx TEXT,
+    last_loader_version TEXT,
+    suspicious_score INTEGER NOT NULL DEFAULT 0,
+    suspicious_reason TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (plan_id) REFERENCES license_plans(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS license_events (
+    id TEXT PRIMARY KEY,
+    license_user_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    hwid TEXT,
+    ip_approx TEXT,
+    loader_version TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (license_user_id) REFERENCES license_users(id) ON DELETE CASCADE
+  );
+
   CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_discord_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform);
   CREATE INDEX IF NOT EXISTS idx_shares_user ON account_shares(shared_with_discord_id);
@@ -181,6 +231,12 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_roblox_generator_username ON roblox_generator_accounts(username);
   CREATE INDEX IF NOT EXISTS idx_authenticators_label ON authenticators(label);
   CREATE INDEX IF NOT EXISTS idx_temp_email_address ON temp_email_inboxes(address);
+  CREATE INDEX IF NOT EXISTS idx_license_users_discord ON license_users(discord_id);
+  CREATE INDEX IF NOT EXISTS idx_license_users_key_hash ON license_users(license_key_hash);
+  CREATE INDEX IF NOT EXISTS idx_license_users_hwid ON license_users(hwid);
+  CREATE INDEX IF NOT EXISTS idx_license_users_status ON license_users(status);
+  CREATE INDEX IF NOT EXISTS idx_license_events_user_created ON license_events(license_user_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_license_events_type ON license_events(event_type);
 `;
 
 function toPostgresSql(sql) {

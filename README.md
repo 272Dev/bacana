@@ -91,6 +91,31 @@ npm run build
 npm run server:start
 ```
 
+## Licencas do loader Roblox
+
+A area **Usuarios > Licencas** e restrita a owners e admins. Ela permite criar,
+editar, suspender, reativar e excluir usuarios licenciados, alem de:
+
+- gerar uma key unica por Discord ID;
+- usar os planos Lifetime, Mensal, Semanal e Teste, ou criar novos planos;
+- definir expiracao e limite individual de resets de HWID;
+- visualizar HWID, ultima utilizacao, IP aproximado e versao do loader;
+- pesquisar por nome, Discord ID, key ou HWID;
+- resetar o HWID e regenerar a key manualmente;
+- suspender automaticamente uso suspeito em varios HWIDs ou redes.
+
+O HWID e coletado no `nexus.lua`: o loader tenta `gethwid()` do executor, depois o
+`ClientId` do Roblox e, se nenhum estiver disponivel, cria um identificador local
+persistente. No primeiro uso valido ele e vinculado a key pela rota publica:
+
+```text
+POST /api/licenses/validate
+```
+
+As keys ficam cifradas com `APP_MASTER_KEY`, possuem hash separado para validacao
+e aparecem completas somente para administradores autenticados. Em producao use
+Postgres persistente (`DATABASE_URL`) e configure `TRUST_PROXY=true` no Render.
+
 ## Roblox
 
 Quando a plataforma for Roblox, informe o Username e use a busca. O backend consulta as APIs publicas oficiais do Roblox para preencher:
