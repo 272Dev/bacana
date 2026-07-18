@@ -55,6 +55,7 @@ import {
   applyDiscordBotProfile,
   configureDiscordProtection,
   getDiscordRuntimeState,
+  restoreDiscordProtections,
   runDiscordBotLifecycle,
   runDiscordVoiceAction,
   startDefaultDiscordBot
@@ -457,11 +458,28 @@ const discordProtectionSchema = discordBotRequestSchema.extend({
   enabled: z.boolean().optional().default(true),
   limitPerMinute: z.coerce.number().int().min(1).max(60).optional().default(5),
   limitWindowSeconds: z.coerce.number().int().min(10).max(300).optional().default(60),
-  punishment: z.enum(['remove_roles', 'quarantine', 'kick', 'ban', 'none']).optional().default('remove_roles'),
+  punishment: z.enum(['remove_roles', 'quarantine', 'timeout', 'kick', 'ban', 'none']).optional().default('remove_roles'),
+  timeoutMinutes: z.coerce.number().int().min(1).max(40320).optional().default(1440),
   whitelist: z.string().trim().max(2000).optional().or(z.literal('')),
   ignoredRoles: z.string().trim().max(2000).optional().or(z.literal('')),
   quarantineRoleId: z.string().trim().max(32).optional().or(z.literal('')),
-  logChannelId: z.string().trim().max(32).optional().or(z.literal(''))
+  logChannelId: z.string().trim().max(32).optional().or(z.literal('')),
+  joinLimit: z.coerce.number().int().min(1).max(100).optional().default(8),
+  joinWindowSeconds: z.coerce.number().int().min(5).max(300).optional().default(20),
+  minAccountAgeDays: z.coerce.number().int().min(0).max(365).optional().default(7),
+  messageLimit: z.coerce.number().int().min(2).max(50).optional().default(6),
+  messageWindowSeconds: z.coerce.number().int().min(3).max(120).optional().default(12),
+  duplicateMessageLimit: z.coerce.number().int().min(2).max(20).optional().default(4),
+  mentionLimit: z.coerce.number().int().min(2).max(50).optional().default(4),
+  inviteLimitPerMinute: z.coerce.number().int().min(1).max(20).optional().default(2),
+  webhookLimitPerMinute: z.coerce.number().int().min(1).max(30).optional().default(2),
+  verificationMode: z.enum(['low', 'medium', 'high']).optional().default('medium'),
+  autoLockdown: z.boolean().optional().default(false),
+  blockInviteSpam: z.boolean().optional().default(true),
+  blockMentionSpam: z.boolean().optional().default(true),
+  backupChannels: z.boolean().optional().default(false),
+  backupRoles: z.boolean().optional().default(false),
+  notifyOwner: z.boolean().optional().default(true)
 });
 
 const discordUserLookupSchema = z.object({
@@ -1888,13 +1906,15 @@ app.use((error, _req, res, _next) => {
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
   app.listen(config.port, '0.0.0.0', () => {
     console.log(`Nexus API pronta em ${config.apiPublicUrl}`);
-    startDefaultDiscordBot()
-      .then((result) => {
-        if (result) console.log('Discord bot conectado ao Gateway.');
-      })
-      .catch((error) => {
-        console.warn(`Discord bot nao conectou ao Gateway: ${error.message}`);
-      });
+    void Promise.allSettled([startDefaultDiscordBot(), restoreDiscordProtections()]).then(([botResult, protectionResult]) => {
+      if (botResult.status === 'fulfilled' && botResult.value) console.log('Discord bot conectado ao Gateway.');
+      if (botResult.status === 'rejected') console.warn(`Discord bot nao conectou ao Gateway: ${botResult.reason.message}`);
+      if (protectionResult.status === 'fulfilled') {
+        console.log(`Protecoes Discord restauradas: ${protectionResult.value.restored}; falhas: ${protectionResult.value.failed.length}.`);
+      } else {
+        console.warn(`Protecoes Discord nao foram restauradas: ${protectionResult.reason.message}`);
+      }
+    });
   });
 }
 
