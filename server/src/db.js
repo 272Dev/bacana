@@ -219,6 +219,18 @@ const schemaSql = `
     FOREIGN KEY (license_user_id) REFERENCES license_users(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS loader_releases (
+    id TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    payload_encrypted TEXT NOT NULL,
+    payload_sha256 TEXT NOT NULL,
+    payload_bytes INTEGER NOT NULL,
+    protected_mode INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 0,
+    created_by TEXT,
+    created_at TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_discord_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform);
   CREATE INDEX IF NOT EXISTS idx_shares_user ON account_shares(shared_with_discord_id);
@@ -237,6 +249,8 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_license_users_status ON license_users(status);
   CREATE INDEX IF NOT EXISTS idx_license_events_user_created ON license_events(license_user_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_license_events_type ON license_events(event_type);
+  CREATE INDEX IF NOT EXISTS idx_loader_releases_created ON loader_releases(created_at);
+  CREATE INDEX IF NOT EXISTS idx_loader_releases_active ON loader_releases(active);
 `;
 
 function toPostgresSql(sql) {
