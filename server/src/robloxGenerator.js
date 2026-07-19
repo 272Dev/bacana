@@ -529,3 +529,79 @@ export async function selectRandomRobloxGeneratorAccount() {
     presence: presences.get(String(row.user_id)) || null
   });
 }
+
+export async function reserveRandomRobloxSalesAccount({ buyerDiscordId, channel = 'discord' } = {}) {
+  const buyer = cleanText(buyerDiscordId);
+  if (!/^\d{5,32}$/.test(buyer)) {
+    const error = new Error('Discord ID do comprador invalido.');
+    error.status = 400;
+    throw error;
+  }
+
+  const rows = await hydrateMissingRobloxProfiles(await db.prepare(`
+    SELECT account.*
+    FROM roblox_generator_accounts account
+    WHERE NOT EXISTS (
+      SELECT 1 FROM sales_deliveries delivery WHERE delivery.account_id = account.id
+    )
+    ORDER BY RANDOM()
+    LIMIT 80
+  `).all());
+  if (rows.length === 0) {
+    const error = new Error('Estoque de contas esgotado.');
+    error.status = 404;
+    throw error;
+  }
+
+  const presences = await getPresencesForRows(rows);
+  const candidates = rows.filter((row) => statusFromPresence(presences.get(String(row.user_id)) || null) === 'available');
+  for (const row of candidates) {
+    const deliveryId = crypto.randomUUID();
+    try {
+      await db.prepare(`
+        INSERT INTO sales_deliveries (
+          id, account_id, buyer_discord_id, channel, status,
+          payment_provider, payment_reference, payment_status, created_at, delivered_at
+        ) VALUES (?, ?, ?, ?, 'reserved', NULL, NULL, 'manual', ?, NULL)
+      `).run(deliveryId, row.id, buyer, cleanText(channel) || 'discord', nowIso());
+      return {
+        deliveryId,
+        account: mapStoredAccount(row, {
+          includePassword: true,
+          presence: presences.get(String(row.user_id)) || null
+        })
+      };
+    } catch (error) {
+      const message = String(error?.message || '').toLowerCase();
+      if (message.includes('unique') || message.includes('duplicate')) continue;
+      throw error;
+    }
+  }
+
+  const error = new Error('Nenhuma conta offline esta disponivel para entrega.');
+  error.status = 409;
+  throw error;
+}
+
+export async function completeRobloxSalesDelivery({ deliveryId, buyerDiscordId } = {}) {
+  const timestamp = nowIso();
+  const result = await db.prepare(`
+    UPDATE sales_deliveries
+    SET status = 'delivered', delivered_at = ?
+    WHERE id = ? AND buyer_discord_id = ? AND status = 'reserved'
+  `).run(timestamp, deliveryId, buyerDiscordId);
+  if (!Number(result.changes || 0)) return false;
+  await db.prepare(`
+    UPDATE roblox_generator_accounts
+    SET selected_by_discord_id = ?, selected_at = ?, updated_at = ?
+    WHERE id = (SELECT account_id FROM sales_deliveries WHERE id = ?)
+  `).run(buyerDiscordId, timestamp, timestamp, deliveryId);
+  return true;
+}
+
+export async function releaseRobloxSalesDelivery({ deliveryId, buyerDiscordId } = {}) {
+  await db.prepare(`
+    DELETE FROM sales_deliveries
+    WHERE id = ? AND buyer_discord_id = ? AND status = 'reserved'
+  `).run(deliveryId, buyerDiscordId);
+}
