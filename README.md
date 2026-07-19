@@ -62,7 +62,13 @@ AUTHORIZED_DISCORD_IDS=seu_discord_id:owner,discord_id_do_amigo:member
 
 O app nao tem login por e-mail ou senha. Quem nao estiver nessa lista, ou na lista gerenciada depois pelo app, recebe acesso negado.
 
-As contas, pastas de imagens e imagens ficam em um cofre compartilhado para todos os Discord IDs autorizados. Qualquer usuario autorizado ve e pode editar/remover os itens criados pelos outros usuarios autorizados.
+O owner decide individualmente quem pode ver midia, gerenciar midia, usar o bot
+de vendas e gerenciar o estoque. Um usuario presente na whitelist nao recebe
+essas permissoes automaticamente.
+
+Owners possuem todas as permissoes. Admins continuam podendo criar keys,
+gerenciar licencas e editar tags por HWID, mas apenas o owner altera acessos do
+painel.
 
 ## Execucao
 
@@ -195,13 +201,32 @@ login: usuarioRoblox Senha: senhaDaConta
 usuarioRoblox:senhaDaConta
 ```
 
-Owners/admins podem importar o TXT pela interface. Tambem existe importacao automatica local opcional:
+A interface do estoque aparece somente para quem possui `sales.manage`. Tambem
+existe importacao automatica local opcional:
 
 ```env
 ROBLOX_ACCOUNTS_FILE=./data/roblox-accounts.txt
 ```
 
 Nao envie arquivos TXT com contas reais para o GitHub. As senhas importadas ficam criptografadas no banco.
+
+### Bot de vendas
+
+O bot Discord configurado em `DISCORD_BOT_TOKEN` publica o comando `/conta`.
+Somente IDs que receberam a permissao **Usar bot de vendas** no painel podem
+executa-lo. O bot:
+
+- reserva uma conta offline ainda nao entregue;
+- envia usuario e senha somente na DM do solicitante;
+- confirma publicamente apenas por resposta efemera;
+- libera a reserva se a DM estiver fechada;
+- impede entrega duplicada e registra auditoria sem salvar a senha no log;
+- aplica intervalo de 60 segundos entre solicitacoes do mesmo usuario.
+
+O banco ja guarda referencia e estado do pagamento por entrega. A cobranca
+LivePix ainda fica desativada: ela deve ser conectada depois com webhook assinado
+e confirmacao server-to-server antes de liberar a DM. Nunca confie apenas no
+retorno do navegador para aprovar um PIX.
 
 ## Autenticador de codigos
 
@@ -244,7 +269,10 @@ R2_SECRET_ACCESS_KEY=sua_secret_access_key
 R2_BUCKET=nexus-media
 ```
 
-Quando as variaveis R2 existem, todo upload feito pela tela de Midia vai para o R2. O backend serve os arquivos por `/api/images/:id/file`, entao o bucket nao precisa ficar publico.
+Quando as variaveis R2 existem, todo upload feito pela tela de Midia vai para o
+R2. O backend serve os arquivos por `/api/images/:id/file`; essa rota exige
+sessao Discord e a permissao `media.view`, entao o bucket nao precisa ficar
+publico. Upload, exclusao e organizacao exigem `media.manage`.
 
 Cloudinary ainda funciona como fallback se o R2 nao estiver configurado:
 
