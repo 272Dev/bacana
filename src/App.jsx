@@ -92,6 +92,17 @@ const emptyNameTagForm = {
   hwidPreview: ''
 };
 
+const accessPermissionOptions = [
+  { id: 'media.view', label: 'Ver midia' },
+  { id: 'media.manage', label: 'Gerenciar midia' },
+  { id: 'sales.use', label: 'Usar bot de vendas' },
+  { id: 'sales.manage', label: 'Gerenciar estoque' }
+];
+
+function userCan(user, permission) {
+  return user?.role === 'owner' || user?.permissions?.includes(permission);
+}
+
 const historyLabels = {
   created: 'Conta criada',
   updated: 'Conta alterada',
@@ -160,16 +171,17 @@ function Shell({ user, theme, resolvedTheme, onToggleTheme, onLogout, view, setV
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'accounts', label: 'Cofre', icon: KeyRound },
-    { id: 'roblox-generator', label: 'Gerador', icon: Gamepad2 },
+    { id: 'roblox-generator', label: 'Gerador', icon: Gamepad2, permission: 'sales.manage' },
     { id: 'authenticator', label: 'Codigos', icon: Lock },
     { id: 'temp-email', label: 'Temp Email', icon: Mail },
-    { id: 'images', label: 'Midia', icon: Film },
+    { id: 'images', label: 'Midia', icon: Film, permission: 'media.view' },
     { id: 'discord-tools', label: 'Discord', icon: Bot },
     { id: 'history', label: 'Historico', icon: History },
     { id: 'users', label: 'Usuarios', icon: Users, admin: true },
     { id: 'settings', label: 'Ajustes', icon: Settings },
     { id: 'profile', label: 'Perfil', icon: UserCog }
-  ].filter((item) => !item.admin || ['owner', 'admin'].includes(user.role));
+  ].filter((item) => (!item.admin || ['owner', 'admin'].includes(user.role))
+    && (!item.permission || userCan(user, item.permission)));
 
   return (
     <div className="app-shell">
@@ -903,7 +915,7 @@ function NameTagPreview({ tag, compact = false }) {
   );
 }
 
-function UsersPage({ users, reloadUsers }) {
+function UsersPage({ users, reloadUsers, currentUser }) {
   const [section, setSection] = useState('licenses');
   const [licenseUsers, setLicenseUsers] = useState([]);
   const [plans, setPlans] = useState([]);
@@ -917,7 +929,7 @@ function UsersPage({ users, reloadUsers }) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [licenseForm, setLicenseForm] = useState({ discordId: '', planId: '', expiresAt: '', hwidResetLimit: '', status: 'active' });
-  const [accessForm, setAccessForm] = useState({ discordId: '', role: 'member', label: '' });
+  const [accessForm, setAccessForm] = useState({ discordId: '', role: 'member', label: '', permissions: [] });
   const [planForm, setPlanForm] = useState({ id: '', name: '', durationDays: '', defaultHwidResetLimit: 1 });
   const [releaseVersion, setReleaseVersion] = useState('');
   const [releaseLoading, setReleaseLoading] = useState(false);
@@ -1207,7 +1219,7 @@ function UsersPage({ users, reloadUsers }) {
   async function submitAccess(event) {
     event.preventDefault();
     await api('/authorized-users', { method: 'POST', body: accessForm });
-    setAccessForm({ discordId: '', role: 'member', label: '' });
+    setAccessForm({ discordId: '', role: 'member', label: '', permissions: [] });
     setMessage('Acesso ao painel salvo.');
     await reloadUsers();
   }
@@ -1215,6 +1227,26 @@ function UsersPage({ users, reloadUsers }) {
   async function removeAccess(discordId) {
     await api(`/authorized-users/${discordId}`, { method: 'DELETE' });
     setMessage('Acesso ao painel removido.');
+    await reloadUsers();
+  }
+
+  function toggleFormPermission(permission) {
+    setAccessForm((current) => ({
+      ...current,
+      permissions: current.permissions.includes(permission)
+        ? current.permissions.filter((item) => item !== permission)
+        : [...current.permissions, permission]
+    }));
+  }
+
+  async function toggleUserPermission(user, permission) {
+    if (user.role === 'owner') return;
+    const current = user.permissions || [];
+    const permissions = current.includes(permission)
+      ? current.filter((item) => item !== permission)
+      : [...current, permission];
+    await api(`/authorized-users/${user.discordId}`, { method: 'PATCH', body: { permissions } });
+    setMessage('Permissoes atualizadas.');
     await reloadUsers();
   }
 
@@ -1249,7 +1281,7 @@ function UsersPage({ users, reloadUsers }) {
         <button className={section === 'licenses' ? 'active' : ''} onClick={() => setSection('licenses')}><KeyRound size={17} /> Licencas</button>
         <button className={section === 'tags' ? 'active' : ''} onClick={() => setSection('tags')}><Gamepad2 size={17} /> Tags por HWID</button>
         <button className={section === 'loader' ? 'active' : ''} onClick={() => setSection('loader')}><ShieldCheck size={17} /> Loader protegido</button>
-        <button className={section === 'access' ? 'active' : ''} onClick={() => setSection('access')}><Shield size={17} /> Acesso ao painel</button>
+        {currentUser?.role === 'owner' && <button className={section === 'access' ? 'active' : ''} onClick={() => setSection('access')}><Shield size={17} /> Acesso ao painel</button>}
       </div>
 
       {section === 'licenses' && (
@@ -1333,7 +1365,7 @@ function UsersPage({ users, reloadUsers }) {
         </>
       )}
 
-      {section === 'access' && (
+      {section === 'access' && currentUser?.role === 'owner' && (
         <>
           <section className="panel">
             <div className="panel-title"><div><h3>Acesso administrativo</h3><p className="muted">Controla quem pode entrar neste painel pelo Discord OAuth2.</p></div><ShieldCheck size={20} /></div>
@@ -1345,6 +1377,19 @@ function UsersPage({ users, reloadUsers }) {
               </select>
               <button className="primary-button"><Plus size={17} /> Autorizar</button>
             </form>
+            <div className="access-permission-grid">
+              {accessPermissionOptions.map((permission) => (
+                <label className="access-permission-option" key={permission.id}>
+                  <input
+                    type="checkbox"
+                    checked={accessForm.role === 'owner' || accessForm.permissions.includes(permission.id)}
+                    disabled={accessForm.role === 'owner'}
+                    onChange={() => toggleFormPermission(permission.id)}
+                  />
+                  <span>{permission.label}</span>
+                </label>
+              ))}
+            </div>
           </section>
           <div className="user-grid">
             {users.map((user) => (
@@ -1352,6 +1397,19 @@ function UsersPage({ users, reloadUsers }) {
                 <Avatar src={user.avatarUrl} name={user.globalName || user.username || user.label} />
                 <span><strong>{user.globalName || user.username || user.label}</strong><small>{user.discordId}</small></span>
                 <span className="tag"><Shield size={15} /> {user.role}</span>
+                <div className="access-permission-grid compact">
+                  {accessPermissionOptions.map((permission) => (
+                    <label className="access-permission-option" key={permission.id}>
+                      <input
+                        type="checkbox"
+                        checked={user.role === 'owner' || (user.permissions || []).includes(permission.id)}
+                        disabled={user.role === 'owner'}
+                        onChange={() => toggleUserPermission(user, permission.id)}
+                      />
+                      <span>{permission.label}</span>
+                    </label>
+                  ))}
+                </div>
                 <small>Ultimo login: {formatDate(user.lastLoginAt)}</small>
                 <IconButton label="Remover" onClick={() => removeAccess(user.discordId)}><Trash2 size={17} /></IconButton>
               </article>
@@ -2331,7 +2389,7 @@ function TempEmailPage() {
   );
 }
 
-function MediaPage() {
+function MediaPage({ user }) {
   const [folders, setFolders] = useState([]);
   const [media, setMedia] = useState([]);
   const [selectedFolderId, setSelectedFolderId] = useState('');
@@ -2339,6 +2397,7 @@ function MediaPage() {
   const [message, setMessage] = useState('');
   const [uploading, setUploading] = useState(false);
   const [selectedMedia, setSelectedMedia] = useState(null);
+  const canManage = userCan(user, 'media.manage');
 
   const loadFolders = useCallback(async () => {
     const payload = await api('/image-folders');
@@ -2425,10 +2484,10 @@ function MediaPage() {
             <h3>Pastas</h3>
             <FolderPlus size={18} />
           </div>
-          <form className="folder-form" onSubmit={createFolder}>
+          {canManage && <form className="folder-form" onSubmit={createFolder}>
             <input value={folderName} onChange={(event) => setFolderName(event.target.value)} placeholder="Nova pasta" />
             <button className="primary-button"><Plus size={17} /> Criar</button>
-          </form>
+          </form>}
           <div className="folder-list">
             <button className={!selectedFolderId ? 'active' : ''} onClick={() => setSelectedFolderId('')}>
               <ImageIcon size={17} />
@@ -2441,9 +2500,9 @@ function MediaPage() {
                   <span>{folder.name}</span>
                   <small>{folder.mediaCount ?? folder.imageCount}</small>
                 </button>
-                <IconButton label="Remover pasta" onClick={() => deleteFolder(folder.id)}>
+                {canManage && <IconButton label="Remover pasta" onClick={() => deleteFolder(folder.id)}>
                   <Trash2 size={16} />
-                </IconButton>
+                </IconButton>}
               </div>
             ))}
           </div>
@@ -2454,11 +2513,11 @@ function MediaPage() {
               <h3>{selectedFolder?.name || 'Sem pasta'}</h3>
               <small>{media.length} arquivo(s) - {imageCount} imagem(ns) - {videoCount} video(s) - {fileCount} anexo(s)</small>
             </div>
-            <label className="upload-button">
+            {canManage && <label className="upload-button">
               <Upload size={17} />
               {uploading ? 'Enviando' : 'Enviar'}
               <input type="file" multiple onChange={uploadFiles} />
-            </label>
+            </label>}
           </div>
           <div className="image-grid">
             {media.map((item) => (
@@ -2489,9 +2548,9 @@ function MediaPage() {
                   <IconButton label="Copiar URL" onClick={() => copyText(item.url)}>
                     <Copy size={16} />
                   </IconButton>
-                  <IconButton label="Remover midia" onClick={() => deleteMedia(item.id)}>
+                  {canManage && <IconButton label="Remover midia" onClick={() => deleteMedia(item.id)}>
                     <Trash2 size={16} />
-                  </IconButton>
+                  </IconButton>}
                 </div>
               </article>
             ))}
@@ -5242,7 +5301,7 @@ export default function App() {
   }, []);
 
   const loadAuthorizedUsers = useCallback(async () => {
-    if (!['owner', 'admin'].includes(session.user?.role)) return;
+    if (session.user?.role !== 'owner') return;
     const payload = await api('/authorized-users');
     setAuthorizedUsers(payload.users);
   }, [session.user?.role]);
@@ -5377,12 +5436,12 @@ export default function App() {
         />
       )}
       {view === 'history' && <HistoryPage history={history} />}
-      {view === 'roblox-generator' && <RobloxGeneratorPage user={session.user} />}
+      {view === 'roblox-generator' && userCan(session.user, 'sales.manage') && <RobloxGeneratorPage user={session.user} />}
       {view === 'authenticator' && <AuthenticatorPage />}
       {view === 'temp-email' && <TempEmailPage />}
-      {view === 'images' && <MediaPage />}
+      {view === 'images' && userCan(session.user, 'media.view') && <MediaPage user={session.user} />}
       {view === 'discord-tools' && <DiscordToolsPage />}
-      {view === 'users' && <UsersPage users={authorizedUsers} reloadUsers={loadAuthorizedUsers} />}
+      {view === 'users' && <UsersPage users={authorizedUsers} reloadUsers={loadAuthorizedUsers} currentUser={session.user} />}
       {view === 'settings' && <SettingsPage theme={theme} resolvedTheme={resolvedTheme} setTheme={setTheme} onBackup={exportBackup} />}
       {view === 'profile' && <ProfilePage user={session.user} />}
       {formMode && (
