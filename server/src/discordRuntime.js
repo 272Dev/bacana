@@ -6,6 +6,7 @@ import {
   EmbedBuilder,
   Events,
   GatewayIntentBits,
+  MessageFlags,
   PermissionFlagsBits,
   PresenceUpdateStatus
 } from 'discord.js';
@@ -19,7 +20,14 @@ import {
 } from '@discordjs/voice';
 import { config, missingEnv } from './config.js';
 import { decryptSecret, encryptSecret } from './crypto.js';
-import { db, nowIso } from './db.js';
+import { db, getAuthorizedUser, nowIso } from './db.js';
+import { logAudit } from './audit.js';
+import { hasPermission, PERMISSIONS } from './permissions.js';
+import {
+  completeRobloxSalesDelivery,
+  releaseRobloxSalesDelivery,
+  reserveRandomRobloxSalesAccount
+} from './robloxGenerator.js';
 import {
   detectorCatalogResponse,
   detectorConfig,
@@ -40,6 +48,9 @@ const recentAuditTargets = new Map();
 const messageHistories = new Map();
 const resourceSnapshots = new Map();
 const inviteSnapshots = new Map();
+const salesCooldowns = new Map();
+const SALES_COMMAND_NAME = 'conta';
+const SALES_COOLDOWN_MS = 60_000;
 
 function makeHttpError(message, status = 500) {
   const error = new Error(message);
@@ -57,6 +68,99 @@ function getRuntimeToken(inputToken = '') {
     throw makeHttpError('Configure DISCORD_BOT_TOKEN no backend ou informe um token temporario.', 400);
   }
   return token;
+}
+
+function isDefaultBotToken(token) {
+  return Boolean(config.discordBot.token)
+    && !missingEnv(config.discordBot.token)
+    && token === config.discordBot.token;
+}
+
+function safeCredential(value, max = 1000) {
+  return String(value || '').replace(/`/g, 'ˋ').slice(0, max);
+}
+
+async function registerSalesCommand(entry) {
+  if (!entry?.client?.isReady?.() || !isDefaultBotToken(entry.token)) return;
+  const definition = {
+    name: SALES_COMMAND_NAME,
+    description: 'Receber uma conta do estoque Nexus no privado',
+    dmPermission: false
+  };
+  const guildId = cleanText(config.discordBot.defaultGuildId);
+  const manager = guildId
+    ? (await entry.client.guilds.fetch(guildId)).commands
+    : entry.client.application.commands;
+  const commands = await manager.fetch();
+  if (!commands.find((command) => command.name === SALES_COMMAND_NAME)) {
+    await manager.create(definition);
+  }
+}
+
+async function handleSalesInteraction(entry, interaction) {
+  if (!interaction.isChatInputCommand?.() || interaction.commandName !== SALES_COMMAND_NAME) return;
+  if (!isDefaultBotToken(entry.token)) return;
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const authorized = await getAuthorizedUser(interaction.user.id);
+  if (!authorized || !hasPermission(authorized, PERMISSIONS.SALES_USE)) {
+    await interaction.editReply('Voce nao esta autorizado a usar o bot de vendas Nexus.');
+    return;
+  }
+
+  const lastUse = salesCooldowns.get(interaction.user.id) || 0;
+  const retryAfter = SALES_COOLDOWN_MS - (Date.now() - lastUse);
+  if (retryAfter > 0) {
+    await interaction.editReply(`Aguarde ${Math.ceil(retryAfter / 1000)} segundos antes de solicitar outra conta.`);
+    return;
+  }
+  salesCooldowns.set(interaction.user.id, Date.now());
+
+  let reservation = null;
+  let dmSent = false;
+  try {
+    reservation = await reserveRandomRobloxSalesAccount({
+      buyerDiscordId: interaction.user.id,
+      channel: 'discord-command'
+    });
+    const { account, deliveryId } = reservation;
+    const embed = new EmbedBuilder()
+      .setColor(0x0A0A0A)
+      .setTitle('Sua conta Nexus')
+      .setDescription('Entrega privada autorizada. Nao compartilhe estes dados.')
+      .addFields(
+        { name: 'Usuario', value: `\`${safeCredential(account.username)}\`` },
+        { name: 'Senha', value: `\`${safeCredential(account.password)}\`` },
+        { name: 'Perfil', value: account.profileUrl ? safeCredential(account.profileUrl) : 'Nao vinculado' },
+        { name: 'Entrega', value: `\`${deliveryId.slice(0, 8).toUpperCase()}\`` }
+      )
+      .setFooter({ text: 'Nexus • entrega manual protegida' })
+      .setTimestamp();
+
+    await interaction.user.send({ embeds: [embed], allowedMentions: { parse: [] } });
+    dmSent = true;
+    await completeRobloxSalesDelivery({ deliveryId, buyerDiscordId: interaction.user.id });
+    await logAudit({
+      actorDiscordId: interaction.user.id,
+      action: 'sales_bot.account_delivered',
+      targetType: 'roblox_generator_account',
+      targetId: account.id,
+      metadata: { deliveryId, channel: 'discord-dm' }
+    });
+    await interaction.editReply('Conta entregue no seu privado. Confira suas mensagens diretas.');
+  } catch (error) {
+    if (reservation?.deliveryId && !dmSent) {
+      await releaseRobloxSalesDelivery({
+        deliveryId: reservation.deliveryId,
+        buyerDiscordId: interaction.user.id
+      }).catch(() => {});
+    }
+    salesCooldowns.delete(interaction.user.id);
+    const message = error?.code === 50007
+      ? 'Nao consegui enviar a DM. Ative mensagens privadas deste servidor e tente novamente.'
+      : error?.message || 'Nao foi possivel entregar uma conta agora.';
+    await interaction.editReply(message.slice(0, 1900)).catch(() => {});
+  }
 }
 
 function assertSnowflake(id, label = 'ID') {
@@ -1020,6 +1124,12 @@ function attachProtectionHandlers(entry) {
   entry.protectionHandlersAttached = true;
   const client = entry.client;
 
+  client.on(Events.InteractionCreate, (interaction) => {
+    void handleSalesInteraction(entry, interaction).catch((error) => {
+      console.warn(`[nexus] Falha no comando de vendas: ${error.message}`);
+    });
+  });
+
   client.on(Events.GuildAuditLogEntryCreate, (auditEntry, guild) => {
     void handleProtectionAuditEntry(entry, guild, auditEntry);
   });
@@ -1254,6 +1364,9 @@ async function ensureClient({ botToken, status, activityType, activityMessage } 
     client.once(Events.ClientReady, () => {
       clearTimeout(timeout);
       client.user.setPresence(makePresence({ status, activityType, activityMessage }));
+      void registerSalesCommand(entry).catch((error) => {
+        console.warn(`[nexus] Comando de vendas nao registrado: ${error.message}`);
+      });
       entry.readyPromise = null;
       resolve(entry);
     });

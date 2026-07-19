@@ -4,6 +4,7 @@ import { config } from './config.js';
 import { db, getAuthorizedUser, getUser, nowIso } from './db.js';
 import { logAudit } from './audit.js';
 import { safeEqual } from './crypto.js';
+import { effectivePermissions } from './permissions.js';
 
 export const SESSION_COOKIE = 'nexus_session';
 export const OAUTH_STATE_COOKIE = 'nexus_oauth_state';
@@ -55,7 +56,8 @@ export async function requireAuth(req, res, next) {
       username: user.username,
       globalName: user.global_name,
       avatarUrl: user.avatar_url,
-      role: authorized.role
+      role: authorized.role,
+      permissions: effectivePermissions(authorized)
     };
     next();
   } catch {

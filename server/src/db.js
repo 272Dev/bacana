@@ -14,6 +14,7 @@ const schemaSql = `
     discord_id TEXT PRIMARY KEY,
     role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
     label TEXT,
+    permissions_json TEXT NOT NULL DEFAULT '[]',
     active INTEGER NOT NULL DEFAULT 1,
     created_by TEXT,
     created_at TEXT NOT NULL,
@@ -152,6 +153,20 @@ const schemaSql = `
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY (created_by) REFERENCES users(discord_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS sales_deliveries (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL UNIQUE,
+    buyer_discord_id TEXT NOT NULL,
+    channel TEXT NOT NULL DEFAULT 'discord',
+    status TEXT NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved', 'delivered')),
+    payment_provider TEXT,
+    payment_reference TEXT,
+    payment_status TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    FOREIGN KEY (account_id) REFERENCES roblox_generator_accounts(id) ON DELETE RESTRICT
   );
 
   CREATE TABLE IF NOT EXISTS temp_email_inboxes (
@@ -296,6 +311,8 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_images_folder ON images(folder_id);
   CREATE INDEX IF NOT EXISTS idx_roblox_generator_status ON roblox_generator_accounts(status);
   CREATE INDEX IF NOT EXISTS idx_roblox_generator_username ON roblox_generator_accounts(username);
+  CREATE INDEX IF NOT EXISTS idx_sales_deliveries_buyer ON sales_deliveries(buyer_discord_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_sales_deliveries_status ON sales_deliveries(status, created_at);
   CREATE INDEX IF NOT EXISTS idx_authenticators_label ON authenticators(label);
   CREATE INDEX IF NOT EXISTS idx_temp_email_address ON temp_email_inboxes(address);
   CREATE INDEX IF NOT EXISTS idx_license_users_discord ON license_users(discord_id);
@@ -387,6 +404,7 @@ export async function initDatabase() {
         : { rejectUnauthorized: false }
     });
     await db.exec(schemaSql);
+    await db.exec("ALTER TABLE authorized_users ADD COLUMN IF NOT EXISTS permissions_json TEXT NOT NULL DEFAULT '[]'");
     return;
   }
 
@@ -397,6 +415,11 @@ export async function initDatabase() {
     PRAGMA foreign_keys = ON;
     ${schemaSql}
   `);
+  try {
+    await db.exec("ALTER TABLE authorized_users ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '[]'");
+  } catch (error) {
+    if (!String(error?.message || '').toLowerCase().includes('duplicate column')) throw error;
+  }
 }
 
 export function nowIso() {

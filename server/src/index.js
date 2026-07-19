@@ -74,6 +74,7 @@ import {
 import { registerLicensingRoutes, seedLicensePlans } from './licensing.js';
 import { registerLoaderRoutes } from './loader.js';
 import { registerNameTagRoutes } from './nameTags.js';
+import { PERMISSIONS, effectivePermissions, requirePermission } from './permissions.js';
 import {
   checkLoginBlocked,
   clearOAuthStateCookie,
@@ -332,7 +333,24 @@ const shareSchema = z.object({
 const authorizedUserSchema = z.object({
   discordId: z.string().regex(/^\d{5,32}$/),
   role: z.enum(['owner', 'admin', 'member']).default('member'),
-  label: z.string().trim().max(120).optional().or(z.literal(''))
+  label: z.string().trim().max(120).optional().or(z.literal('')),
+  permissions: z.array(z.enum([
+    PERMISSIONS.MEDIA_VIEW,
+    PERMISSIONS.MEDIA_MANAGE,
+    PERMISSIONS.SALES_USE,
+    PERMISSIONS.SALES_MANAGE
+  ])).max(4).optional()
+});
+
+const authorizedUserUpdateSchema = z.object({
+  role: z.enum(['owner', 'admin', 'member']).optional(),
+  label: z.string().trim().max(120).optional().or(z.literal('')),
+  permissions: z.array(z.enum([
+    PERMISSIONS.MEDIA_VIEW,
+    PERMISSIONS.MEDIA_MANAGE,
+    PERMISSIONS.SALES_USE,
+    PERMISSIONS.SALES_MANAGE
+  ])).max(4).optional()
 });
 
 const folderSchema = z.object({
@@ -592,9 +610,6 @@ function mapFolder(row) {
 
 function mapImage(row) {
   const localUrl = `${config.apiPublicUrl}/api/images/${row.id}/file`;
-  const url = row.url && !row.url.includes(`/api/images/${row.id}/file`)
-    ? row.url
-    : localUrl;
 
   return {
     id: row.id,
@@ -603,7 +618,7 @@ function mapImage(row) {
     mimeType: row.mime_type,
     kind: getMediaKind(row.mime_type),
     sizeBytes: row.size_bytes,
-    url,
+    url: localUrl,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -630,7 +645,7 @@ function getDownloadFileName(name) {
 function setMediaResponseHeaders(res, row) {
   const inline = getMediaKind(row.mime_type) !== 'file';
   res.type(inline ? row.mime_type : 'application/octet-stream');
-  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.setHeader('Cache-Control', 'private, max-age=300');
   if (!inline) {
     const fileName = getDownloadFileName(row.original_name);
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`);
@@ -863,7 +878,7 @@ app.get('/api/auth/me', requireAuth, async (req, res) => {
   res.json({ user: req.user });
 });
 
-app.get('/api/image-folders', requireAuth, async (req, res) => {
+app.get('/api/image-folders', requireAuth, requirePermission(PERMISSIONS.MEDIA_VIEW), async (req, res) => {
   const rows = await db.prepare(`
     SELECT f.*, COUNT(i.id) AS image_count
     FROM image_folders f
@@ -874,7 +889,7 @@ app.get('/api/image-folders', requireAuth, async (req, res) => {
   res.json({ folders: rows.map(mapFolder) });
 });
 
-app.post('/api/image-folders', requireAuth, async (req, res, next) => {
+app.post('/api/image-folders', requireAuth, requirePermission(PERMISSIONS.MEDIA_MANAGE), async (req, res, next) => {
   try {
     const payload = folderSchema.parse(req.body);
     const id = crypto.randomUUID();
@@ -891,7 +906,7 @@ app.post('/api/image-folders', requireAuth, async (req, res, next) => {
   }
 });
 
-app.delete('/api/image-folders/:id', requireAuth, async (req, res) => {
+app.delete('/api/image-folders/:id', requireAuth, requirePermission(PERMISSIONS.MEDIA_MANAGE), async (req, res) => {
   const row = await db.prepare('SELECT * FROM image_folders WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: 'Pasta nao encontrada.' });
   await db.prepare('UPDATE images SET folder_id = NULL, updated_at = ? WHERE folder_id = ?').run(nowIso(), req.params.id);
@@ -900,7 +915,7 @@ app.delete('/api/image-folders/:id', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/images', requireAuth, async (req, res) => {
+app.get('/api/images', requireAuth, requirePermission(PERMISSIONS.MEDIA_VIEW), async (req, res) => {
   const folderId = String(req.query.folderId || '');
   const rows = folderId
     ? await db.prepare(`
@@ -918,7 +933,7 @@ app.get('/api/images', requireAuth, async (req, res) => {
   res.json({ images: rows.map(mapImage) });
 });
 
-app.post('/api/images', requireAuth, async (req, res, next) => {
+app.post('/api/images', requireAuth, requirePermission(PERMISSIONS.MEDIA_MANAGE), async (req, res, next) => {
   try {
     const payload = uploadImageSchema.parse(req.body);
     const folderId = payload.folderId || null;
@@ -1001,7 +1016,7 @@ app.post('/api/images', requireAuth, async (req, res, next) => {
   }
 });
 
-app.get('/api/images/:id/file', async (req, res) => {
+app.get('/api/images/:id/file', requireAuth, requirePermission(PERMISSIONS.MEDIA_VIEW), async (req, res) => {
   const row = await db.prepare('SELECT * FROM images WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).send('Midia nao encontrada.');
   if (isR2StoredName(row.stored_name)) {
@@ -1014,8 +1029,14 @@ app.get('/api/images/:id/file', async (req, res) => {
     }
   }
   if (isCloudinaryMedia(row)) {
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    return res.redirect(row.url);
+    try {
+      const response = await fetch(row.url);
+      if (!response.ok) return res.status(502).send('Armazenamento de midia indisponivel.');
+      setMediaResponseHeaders(res, row);
+      return res.send(Buffer.from(await response.arrayBuffer()));
+    } catch {
+      return res.status(502).send('Armazenamento de midia indisponivel.');
+    }
   }
   const filePath = getImageFilePath(row);
   if (!filePath || !fs.existsSync(filePath)) return res.status(404).send('Arquivo nao encontrado.');
@@ -1023,7 +1044,7 @@ app.get('/api/images/:id/file', async (req, res) => {
   res.sendFile(filePath);
 });
 
-app.delete('/api/images/:id', requireAuth, async (req, res, next) => {
+app.delete('/api/images/:id', requireAuth, requirePermission(PERMISSIONS.MEDIA_MANAGE), async (req, res, next) => {
   try {
     const row = await db.prepare('SELECT * FROM images WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Midia nao encontrada.' });
@@ -1055,7 +1076,7 @@ app.post('/api/roblox/lookup', requireAuth, async (req, res, next) => {
   }
 });
 
-app.get('/api/roblox-generator/accounts', requireAuth, async (req, res) => {
+app.get('/api/roblox-generator/accounts', requireAuth, requirePermission(PERMISSIONS.SALES_MANAGE), async (req, res) => {
   const result = await listRobloxGeneratorAccounts({
     search: req.query.search,
     status: req.query.status,
@@ -1065,7 +1086,7 @@ app.get('/api/roblox-generator/accounts', requireAuth, async (req, res) => {
   res.json(result);
 });
 
-app.post('/api/roblox-generator/import', requireAuth, requireAdmin, async (req, res, next) => {
+app.post('/api/roblox-generator/import', requireAuth, requirePermission(PERMISSIONS.SALES_MANAGE), async (req, res, next) => {
   try {
     const payload = robloxGeneratorImportSchema.parse(req.body);
     const result = await importRobloxGeneratorText({
@@ -1093,7 +1114,7 @@ app.post('/api/roblox-generator/import', requireAuth, requireAdmin, async (req, 
   }
 });
 
-app.delete('/api/roblox-generator/accounts/:id', requireAuth, requireAdmin, async (req, res, next) => {
+app.delete('/api/roblox-generator/accounts/:id', requireAuth, requirePermission(PERMISSIONS.SALES_MANAGE), async (req, res, next) => {
   try {
     const row = await db.prepare('SELECT * FROM roblox_generator_accounts WHERE id = ?').get(req.params.id);
     if (!row) return res.status(404).json({ error: 'Conta Roblox nao encontrada.' });
@@ -1112,7 +1133,7 @@ app.delete('/api/roblox-generator/accounts/:id', requireAuth, requireAdmin, asyn
   }
 });
 
-app.post('/api/roblox-generator/random', requireAuth, async (req, res, next) => {
+app.post('/api/roblox-generator/random', requireAuth, requirePermission(PERMISSIONS.SALES_MANAGE), async (req, res, next) => {
   try {
     const account = await selectRandomRobloxGeneratorAccount();
     await logAudit({
@@ -1128,13 +1149,13 @@ app.post('/api/roblox-generator/random', requireAuth, async (req, res, next) => 
   }
 });
 
-app.get('/api/roblox-generator/accounts/:id', requireAuth, async (req, res) => {
+app.get('/api/roblox-generator/accounts/:id', requireAuth, requirePermission(PERMISSIONS.SALES_MANAGE), async (req, res) => {
   const account = await getRobloxGeneratorAccount(req.params.id);
   if (!account) return res.status(404).json({ error: 'Conta Roblox nao encontrada.' });
   res.json({ account });
 });
 
-app.post('/api/roblox-generator/accounts/:id/select', requireAuth, async (req, res, next) => {
+app.post('/api/roblox-generator/accounts/:id/select', requireAuth, requirePermission(PERMISSIONS.SALES_MANAGE), async (req, res, next) => {
   try {
     const account = await selectRobloxGeneratorAccount({ id: req.params.id });
     await logAudit({
@@ -1807,7 +1828,7 @@ app.get('/api/history', requireAuth, async (req, res) => {
   });
 });
 
-app.get('/api/authorized-users', requireAuth, requireAdmin, async (_req, res) => {
+app.get('/api/authorized-users', requireAuth, requireOwner, async (_req, res) => {
   const rows = await db.prepare(`
     SELECT au.*, u.username, u.global_name, u.avatar_url, u.last_login_at
     FROM authorized_users au
@@ -1819,6 +1840,7 @@ app.get('/api/authorized-users', requireAuth, requireAdmin, async (_req, res) =>
     users: rows.map((row) => ({
       discordId: row.discord_id,
       role: row.role,
+      permissions: effectivePermissions(row),
       label: row.label,
       username: row.username,
       globalName: row.global_name,
@@ -1830,20 +1852,21 @@ app.get('/api/authorized-users', requireAuth, requireAdmin, async (_req, res) =>
   });
 });
 
-app.post('/api/authorized-users', requireAuth, requireAdmin, async (req, res, next) => {
+app.post('/api/authorized-users', requireAuth, requireOwner, async (req, res, next) => {
   try {
     const payload = authorizedUserSchema.parse(req.body);
     if (payload.role === 'owner' && req.user.role !== 'owner') return res.status(403).json({ error: 'Apenas owners podem criar owners.' });
     const now = nowIso();
     await db.prepare(`
-      INSERT INTO authorized_users (discord_id, role, label, active, created_by, created_at, updated_at)
-      VALUES (?, ?, ?, 1, ?, ?, ?)
+      INSERT INTO authorized_users (discord_id, role, label, permissions_json, active, created_by, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, ?, ?, ?)
       ON CONFLICT(discord_id) DO UPDATE SET
         role = excluded.role,
         label = excluded.label,
+        permissions_json = excluded.permissions_json,
         active = 1,
         updated_at = excluded.updated_at
-    `).run(payload.discordId, payload.role, payload.label || `Discord ${payload.discordId}`, req.user.discordId, now, now);
+    `).run(payload.discordId, payload.role, payload.label || `Discord ${payload.discordId}`, JSON.stringify(payload.permissions || []), req.user.discordId, now, now);
     await logAudit({ actorDiscordId: req.user.discordId, action: 'authorized_user.upserted', targetType: 'authorized_user', targetId: payload.discordId, metadata: payload, ip: req.ip });
     res.status(201).json({ ok: true });
   } catch (error) {
@@ -1851,17 +1874,21 @@ app.post('/api/authorized-users', requireAuth, requireAdmin, async (req, res, ne
   }
 });
 
-app.patch('/api/authorized-users/:discordId', requireAuth, requireAdmin, async (req, res, next) => {
+app.patch('/api/authorized-users/:discordId', requireAuth, requireOwner, async (req, res, next) => {
   try {
-    const payload = authorizedUserSchema.partial().parse({ ...req.body, discordId: req.params.discordId });
+    const payload = authorizedUserUpdateSchema.parse(req.body);
+    if (req.params.discordId === req.user.discordId && payload.role && payload.role !== 'owner') {
+      return res.status(400).json({ error: 'Voce nao pode remover seu proprio papel de owner.' });
+    }
     if (payload.role === 'owner' && req.user.role !== 'owner') return res.status(403).json({ error: 'Apenas owners podem promover owners.' });
     await db.prepare(`
       UPDATE authorized_users SET
         role = COALESCE(?, role),
         label = COALESCE(?, label),
+        permissions_json = COALESCE(?, permissions_json),
         updated_at = ?
       WHERE discord_id = ? AND active = 1
-    `).run(payload.role || null, payload.label || null, nowIso(), req.params.discordId);
+    `).run(payload.role || null, payload.label || null, payload.permissions ? JSON.stringify(payload.permissions) : null, nowIso(), req.params.discordId);
     await logAudit({ actorDiscordId: req.user.discordId, action: 'authorized_user.updated', targetType: 'authorized_user', targetId: req.params.discordId, metadata: payload, ip: req.ip });
     res.json({ ok: true });
   } catch (error) {
@@ -1869,7 +1896,7 @@ app.patch('/api/authorized-users/:discordId', requireAuth, requireAdmin, async (
   }
 });
 
-app.delete('/api/authorized-users/:discordId', requireAuth, requireAdmin, async (req, res) => {
+app.delete('/api/authorized-users/:discordId', requireAuth, requireOwner, async (req, res) => {
   if (req.params.discordId === req.user.discordId) return res.status(400).json({ error: 'Voce nao pode remover seu proprio acesso.' });
   await db.prepare('UPDATE authorized_users SET active = 0, updated_at = ? WHERE discord_id = ?').run(nowIso(), req.params.discordId);
   await logAudit({ actorDiscordId: req.user.discordId, action: 'authorized_user.revoked', targetType: 'authorized_user', targetId: req.params.discordId, ip: req.ip });
@@ -1899,6 +1926,7 @@ app.get('/api/backup', requireAuth, requireOwner, async (req, res) => {
     users: await db.prepare('SELECT * FROM users').all(),
     accounts: await db.prepare('SELECT * FROM accounts').all(),
     robloxGeneratorAccounts: await db.prepare('SELECT * FROM roblox_generator_accounts').all(),
+    salesDeliveries: await db.prepare('SELECT * FROM sales_deliveries').all(),
     authenticators: await db.prepare('SELECT * FROM authenticators').all(),
     tempEmailInboxes: await db.prepare('SELECT * FROM temp_email_inboxes').all(),
     shares: await db.prepare('SELECT * FROM account_shares').all(),
