@@ -10,6 +10,9 @@ import { ensureNameTagForSession } from './nameTags.js';
 const SESSION_TTL_MS = 45_000;
 const MAX_TICKETS = 5_000;
 const loaderTickets = new Map();
+const LEGACY_API_ORIGINS = [
+  'https://nexus-zks.onrender.com'
+];
 
 const sessionSchema = z.object({
   key: z.string().trim().min(12).max(160),
@@ -44,10 +47,43 @@ function mapRelease(row) {
   };
 }
 
+function normalizeReleaseSource(source) {
+  const currentOrigin = loaderBaseUrl();
+  if (!currentOrigin) return source;
+  return LEGACY_API_ORIGINS.reduce(
+    (normalized, legacyOrigin) => normalized.replaceAll(legacyOrigin, currentOrigin),
+    source
+  );
+}
+
+async function migrateReleaseOrigin(row) {
+  if (!row) return null;
+  const source = decryptSecret(row.payload_encrypted);
+  const normalizedSource = normalizeReleaseSource(source);
+  if (normalizedSource === source) return row;
+
+  const payloadEncrypted = encryptSecret(normalizedSource);
+  const payloadSha256 = hash(normalizedSource);
+  const payloadBytes = Buffer.byteLength(normalizedSource, 'utf8');
+  await db.prepare(`
+    UPDATE loader_releases
+    SET payload_encrypted = ?, payload_sha256 = ?, payload_bytes = ?
+    WHERE id = ?
+  `).run(payloadEncrypted, payloadSha256, payloadBytes, row.id);
+
+  return {
+    ...row,
+    payload_encrypted: payloadEncrypted,
+    payload_sha256: payloadSha256,
+    payload_bytes: payloadBytes
+  };
+}
+
 async function getActiveRelease() {
-  return db.prepare(`
+  const row = await db.prepare(`
     SELECT * FROM loader_releases WHERE active = 1 ORDER BY created_at DESC LIMIT 1
   `).get();
+  return migrateReleaseOrigin(row);
 }
 
 function pruneTickets() {
@@ -222,8 +258,9 @@ export function registerLoaderRoutes(app, { requireAuth, requireAdmin }) {
     loaderTickets.delete(tokenHash);
     const release = await db.prepare('SELECT * FROM loader_releases WHERE id = ? AND active = 1').get(ticket.releaseId);
     if (!release) return res.status(410).type('text/plain').send('Esta versao do loader nao esta mais ativa.');
-    const source = decryptSecret(release.payload_encrypted);
-    if (hash(source) !== release.payload_sha256) return res.status(500).type('text/plain').send('Falha de integridade do payload.');
+    const storedSource = decryptSecret(release.payload_encrypted);
+    if (hash(storedSource) !== release.payload_sha256) return res.status(500).type('text/plain').send('Falha de integridade do payload.');
+    const source = normalizeReleaseSource(storedSource);
     res.set({
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'no-store, no-cache, must-revalidate, private',
@@ -246,10 +283,11 @@ export function registerLoaderRoutes(app, { requireAuth, requireAdmin }) {
 
   app.post('/api/loader/releases', requireAuth, requireAdmin, async (req, res) => {
     const payload = releaseSchema.parse(req.body);
+    const normalizedSource = normalizeReleaseSource(payload.source);
     const id = crypto.randomUUID();
     const createdAt = nowIso();
-    const payloadSha256 = hash(payload.source);
-    const payloadBytes = Buffer.byteLength(payload.source, 'utf8');
+    const payloadSha256 = hash(normalizedSource);
+    const payloadBytes = Buffer.byteLength(normalizedSource, 'utf8');
     await db.prepare('UPDATE loader_releases SET active = 0 WHERE active = 1').run();
     await db.prepare(`
       INSERT INTO loader_releases (
@@ -259,7 +297,7 @@ export function registerLoaderRoutes(app, { requireAuth, requireAdmin }) {
     `).run(
       id,
       payload.version,
-      encryptSecret(payload.source),
+      encryptSecret(normalizedSource),
       payloadSha256,
       payloadBytes,
       payload.protectedMode ? 1 : 0,
