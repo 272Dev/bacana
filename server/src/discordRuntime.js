@@ -40,6 +40,11 @@ import {
 
 const clients = new Map();
 const voiceTimers = new Map();
+const voiceReconnectTimers = new Map();
+const activeVoicePlans = new Map();
+const voiceRecoveryAttached = new WeakSet();
+const gatewayRecoveryTimers = new Map();
+const managedGatewayTokens = new Set();
 const protectionSettings = new Map();
 const protectionWindows = new Map();
 const protectionCooldowns = new Map();
@@ -68,6 +73,53 @@ function getRuntimeToken(inputToken = '') {
     throw makeHttpError('Configure DISCORD_BOT_TOKEN no backend ou informe um token temporario.', 400);
   }
   return token;
+}
+
+function tokenFingerprint(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+function voicePlanKey(token, guildId) {
+  return `${tokenFingerprint(token)}:${guildId}`;
+}
+
+function clearGatewayRecovery(token) {
+  const timer = gatewayRecoveryTimers.get(token);
+  if (timer) clearTimeout(timer);
+  gatewayRecoveryTimers.delete(token);
+}
+
+function scheduleGatewayRecovery(token, desiredStatus = 'online', reason = 'gateway desconectado', expectedEntry = null) {
+  if (!managedGatewayTokens.has(token) || gatewayRecoveryTimers.has(token)) return;
+  const timer = setTimeout(async () => {
+    gatewayRecoveryTimers.delete(token);
+    if (!managedGatewayTokens.has(token)) return;
+    const current = clients.get(token);
+    if (expectedEntry && current !== expectedEntry) return;
+    if (current?.client?.isReady?.()) return;
+
+    try {
+      current?.client?.destroy();
+      clients.delete(token);
+      await ensureClient({ botToken: token, status: desiredStatus });
+      await recoverActiveVoicePlans(token);
+      console.log(`[nexus] Discord Gateway recuperado automaticamente (${reason}).`);
+    } catch (error) {
+      console.warn(`[nexus] Falha ao recuperar Discord Gateway (${reason}): ${error.message}`);
+      scheduleGatewayRecovery(token, desiredStatus, 'nova tentativa automatica');
+    }
+  }, 15_000);
+  timer.unref?.();
+  gatewayRecoveryTimers.set(token, timer);
+}
+
+function attachGatewayRecovery(entry) {
+  const { client, token } = entry;
+  const schedule = (reason) => scheduleGatewayRecovery(token, entry.desiredStatus || 'online', reason, entry);
+  client.on(Events.ShardDisconnect, (_event, shardId) => schedule(`shard ${shardId} desconectado`));
+  client.on(Events.ShardReconnecting, (shardId) => schedule(`shard ${shardId} reconectando`));
+  client.on(Events.ShardResume, () => clearGatewayRecovery(token));
+  client.on(Events.Invalidated, () => schedule('sessao invalidada'));
 }
 
 function isDefaultBotToken(token) {
@@ -1324,6 +1376,7 @@ function clientState(entry) {
 
 async function ensureClient({ botToken, status, activityType, activityMessage } = {}) {
   const token = getRuntimeToken(botToken);
+  managedGatewayTokens.add(token);
   const existing = clients.get(token);
   if (existing?.client?.isReady?.()) {
     if (status || activityType || activityMessage) {
@@ -1353,6 +1406,7 @@ async function ensureClient({ botToken, status, activityType, activityMessage } 
   };
   clients.set(token, entry);
   attachProtectionHandlers(entry);
+  attachGatewayRecovery(entry);
 
   entry.readyPromise = new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -1361,9 +1415,21 @@ async function ensureClient({ botToken, status, activityType, activityMessage } 
       reject(makeHttpError('Bot demorou para conectar ao Discord Gateway.', 504));
     }, 30_000);
 
+    const startupError = (error) => {
+      clearTimeout(timeout);
+      clients.delete(token);
+      reject(error);
+    };
+
     client.once(Events.ClientReady, () => {
       clearTimeout(timeout);
+      client.off('error', startupError);
+      clearGatewayRecovery(token);
       client.user.setPresence(makePresence({ status, activityType, activityMessage }));
+      client.on('error', (error) => {
+        console.warn(`[nexus] Discord client error: ${error.message}`);
+        if (!client.isReady()) scheduleGatewayRecovery(token, entry.desiredStatus, 'erro do cliente', entry);
+      });
       void registerSalesCommand(entry).catch((error) => {
         console.warn(`[nexus] Comando de vendas nao registrado: ${error.message}`);
       });
@@ -1371,11 +1437,7 @@ async function ensureClient({ botToken, status, activityType, activityMessage } 
       resolve(entry);
     });
 
-    client.once('error', (error) => {
-      clearTimeout(timeout);
-      clients.delete(token);
-      reject(error);
-    });
+    client.once('error', startupError);
   });
 
   try {
@@ -1398,6 +1460,8 @@ export async function runDiscordBotLifecycle({ botToken, action = 'start', statu
   const current = clients.get(token);
 
   if (action === 'stop') {
+    managedGatewayTokens.delete(token);
+    clearGatewayRecovery(token);
     for (const connection of current?.client?.guilds?.cache?.keys?.() || []) {
       getVoiceConnection(connection)?.destroy();
     }
@@ -1588,6 +1652,126 @@ export async function restoreDiscordProtections() {
   return result;
 }
 
+async function persistDiscordVoicePlan(plan) {
+  const timestamp = nowIso();
+  const id = voicePlanKey(plan.token, plan.guildId);
+  await db.prepare(`
+    INSERT INTO discord_voice_configs (
+      id, guild_id, voice_channel_id, bot_token_encrypted, settings_json,
+      expires_at, enabled, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      voice_channel_id = excluded.voice_channel_id,
+      bot_token_encrypted = excluded.bot_token_encrypted,
+      settings_json = excluded.settings_json,
+      expires_at = excluded.expires_at,
+      enabled = 1,
+      updated_at = excluded.updated_at
+  `).run(
+    id,
+    plan.guildId,
+    plan.voiceChannelId,
+    encryptSecret(plan.token),
+    JSON.stringify({ voiceAfkMode: plan.voiceAfkMode !== false }),
+    plan.expiresAt || null,
+    timestamp,
+    timestamp
+  );
+}
+
+async function disableDiscordVoicePlan(token, guildId) {
+  await db.prepare(`
+    UPDATE discord_voice_configs SET enabled = 0, updated_at = ? WHERE id = ?
+  `).run(nowIso(), voicePlanKey(token, guildId));
+}
+
+function clearVoiceReconnect(guildId) {
+  const timer = voiceReconnectTimers.get(guildId);
+  if (timer) windowClearTimeout(timer);
+  voiceReconnectTimers.delete(guildId);
+}
+
+function scheduleVoiceRecovery(guildId, reason = 'conexao de voz perdida') {
+  if (voiceReconnectTimers.has(guildId)) return;
+  const plan = activeVoicePlans.get(guildId);
+  if (!plan || (plan.expiresAt && Date.parse(plan.expiresAt) <= Date.now())) return;
+  const timer = windowSetTimeout(async () => {
+    voiceReconnectTimers.delete(guildId);
+    const currentPlan = activeVoicePlans.get(guildId);
+    if (!currentPlan) return;
+    try {
+      await runDiscordVoiceAction({
+        botToken: currentPlan.token,
+        guildId: currentPlan.guildId,
+        voiceChannelId: currentPlan.voiceChannelId,
+        action: 'join',
+        voiceDuration: currentPlan.expiresAt ? 'custom' : 'forever',
+        voiceAfkMode: currentPlan.voiceAfkMode
+      }, { persist: false, expiresAt: currentPlan.expiresAt });
+      console.log(`[nexus] Call recuperada automaticamente (${reason}).`);
+    } catch (error) {
+      console.warn(`[nexus] Falha ao recuperar call (${reason}): ${error.message}`);
+      scheduleVoiceRecovery(guildId, 'nova tentativa automatica');
+    }
+  }, 5_000);
+  timer.unref?.();
+  voiceReconnectTimers.set(guildId, timer);
+}
+
+function attachVoiceRecovery(connection, guildId) {
+  if (voiceRecoveryAttached.has(connection)) return;
+  voiceRecoveryAttached.add(connection);
+  connection.on('error', (error) => {
+    console.warn(`[nexus] Voice connection error (${guildId}): ${error.message}`);
+  });
+  connection.on(VoiceConnectionStatus.Ready, () => clearVoiceReconnect(guildId));
+  connection.on(VoiceConnectionStatus.Disconnected, async () => {
+    try {
+      await Promise.any([
+        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+        entersState(connection, VoiceConnectionStatus.Connecting, 5_000)
+      ]);
+    } catch {
+      connection.destroy();
+      scheduleVoiceRecovery(guildId);
+    }
+  });
+}
+
+async function recoverActiveVoicePlans(token) {
+  const plans = [...activeVoicePlans.values()].filter((plan) => plan.token === token);
+  for (const plan of plans) scheduleVoiceRecovery(plan.guildId, 'Gateway recuperado');
+}
+
+export async function restoreDiscordVoiceConnections() {
+  const rows = await db.prepare(`
+    SELECT * FROM discord_voice_configs WHERE enabled = 1 ORDER BY updated_at DESC
+  `).all();
+  const result = { restored: 0, failed: [] };
+  for (const row of rows) {
+    try {
+      if (row.expires_at && Date.parse(row.expires_at) <= Date.now()) {
+        await db.prepare('UPDATE discord_voice_configs SET enabled = 0, updated_at = ? WHERE id = ?').run(nowIso(), row.id);
+        continue;
+      }
+      const token = decryptSecret(row.bot_token_encrypted);
+      const settings = JSON.parse(row.settings_json || '{}');
+      await runDiscordVoiceAction({
+        botToken: token,
+        guildId: row.guild_id,
+        voiceChannelId: row.voice_channel_id,
+        action: 'join',
+        voiceDuration: row.expires_at ? 'custom' : 'forever',
+        voiceAfkMode: settings.voiceAfkMode !== false
+      }, { persist: false, expiresAt: row.expires_at || null });
+      result.restored += 1;
+    } catch (error) {
+      result.failed.push({ guildId: row.guild_id, error: error.message });
+    }
+  }
+  return result;
+}
+
 function durationToMs({ voiceDuration, voiceHours = 0, voiceMinutes = 0 } = {}) {
   if (voiceDuration === '30m') return 30 * 60_000;
   if (voiceDuration === '1h') return 60 * 60_000;
@@ -1619,23 +1803,28 @@ export async function runDiscordVoiceAction({
   voiceHours = 0,
   voiceMinutes = 0,
   voiceAfkMode = true
-} = {}) {
+} = {}, { persist = true, expiresAt = null } = {}) {
   const guild = assertSnowflake(guildId, 'Servidor ID');
   const entry = await ensureClient({ botToken, status: 'online' });
+  const token = entry.token;
   const client = entry.client;
 
   if (action === 'leave') {
     clearVoiceTimer(guild);
+    clearVoiceReconnect(guild);
+    activeVoicePlans.delete(guild);
     getVoiceConnection(guild)?.destroy();
+    if (persist) await disableDiscordVoicePlan(token, guild);
     return { ok: true, action, runtime: clientState(entry) };
   }
 
   const channelId = assertSnowflake(voiceChannelId, 'Canal de voz ID');
   const channel = await client.channels.fetch(channelId);
-  if (!channel || channel.guildId !== guild || channel.type !== ChannelType.GuildVoice) {
+  if (!channel || channel.guildId !== guild || ![ChannelType.GuildVoice, ChannelType.GuildStageVoice].includes(channel.type)) {
     throw makeHttpError('Selecione um canal de voz valido do servidor.', 400);
   }
 
+  getVoiceConnection(guild)?.destroy();
   const connection = joinVoiceChannel({
     channelId,
     guildId: guild,
@@ -1646,11 +1835,29 @@ export async function runDiscordVoiceAction({
 
   await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
   clearVoiceTimer(guild);
-  const durationMs = durationToMs({ voiceDuration, voiceHours, voiceMinutes });
+  clearVoiceReconnect(guild);
+  const durationMs = expiresAt
+    ? Math.max(0, Date.parse(expiresAt) - Date.now())
+    : durationToMs({ voiceDuration, voiceHours, voiceMinutes });
+  const plan = {
+    token,
+    guildId: guild,
+    voiceChannelId: channelId,
+    voiceAfkMode: Boolean(voiceAfkMode),
+    expiresAt: durationMs ? new Date(Date.now() + durationMs).toISOString() : null
+  };
+  activeVoicePlans.set(guild, plan);
+  attachVoiceRecovery(connection, guild);
+  if (persist) await persistDiscordVoicePlan(plan);
   if (durationMs) {
     voiceTimers.set(guild, windowSetTimeout(() => {
       getVoiceConnection(guild)?.destroy();
       voiceTimers.delete(guild);
+      clearVoiceReconnect(guild);
+      activeVoicePlans.delete(guild);
+      void disableDiscordVoicePlan(token, guild).catch((error) => {
+        console.warn(`[nexus] Nao foi possivel encerrar o plano de voz persistido: ${error.message}`);
+      });
     }, durationMs));
   }
 
