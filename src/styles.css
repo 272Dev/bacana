@@ -55,7 +55,6 @@ body {
 
 button,
 input,
-select,
 textarea {
   font: inherit;
 }
@@ -1014,7 +1013,6 @@ small {
 }
 
 input,
-select,
 textarea {
   width: 100%;
   color: var(--text);
@@ -1026,7 +1024,7 @@ textarea {
 }
 
 .search-box input,
-.select-box select {
+.select-box .nexus-select-trigger {
   min-height: 44px;
   padding: 0;
   border: 0;
@@ -1041,7 +1039,6 @@ textarea::placeholder {
 }
 
 input:focus,
-select:focus,
 textarea:focus {
   border-color: color-mix(in srgb, var(--accent) 55%, rgba(255, 255, 255, 0.085));
   box-shadow: 0 0 0 3px rgba(255, 64, 88, 0.10), var(--red-glow);
@@ -1053,10 +1050,230 @@ textarea:focus::placeholder {
   transform: translate3d(0, -2px, 0);
 }
 
-input,
-select {
+input {
   min-height: 44px;
   padding: 0 12px;
+}
+
+.nexus-select {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.nexus-select-trigger {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 13px;
+  color: var(--text);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.065);
+  outline: 0;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.nexus-select-trigger > span {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nexus-select-trigger > svg {
+  flex: 0 0 auto;
+  color: rgba(255, 255, 255, 0.55);
+  transform: rotate(90deg);
+  transition: color 160ms ease, transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.nexus-select-trigger:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.nexus-select-trigger:focus-visible,
+.nexus-select.open .nexus-select-trigger {
+  border-color: rgba(255, 255, 255, 0.48);
+  background: rgba(255, 255, 255, 0.095);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.075), 0 14px 34px rgba(0, 0, 0, 0.24);
+}
+
+.nexus-select.open .nexus-select-trigger > svg {
+  color: #fff;
+  transform: rotate(-90deg);
+}
+
+.nexus-select.disabled {
+  opacity: 0.48;
+}
+
+.nexus-select.disabled .nexus-select-trigger {
+  cursor: not-allowed;
+}
+
+.nexus-select-menu {
+  position: fixed;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 24px);
+  padding: 6px;
+  overflow: hidden;
+  color: #f7f7f7;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 14px;
+  background: rgba(9, 9, 10, 0.985);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(0, 0, 0, 0.72);
+  backdrop-filter: blur(24px) saturate(118%);
+  transform-origin: top center;
+  animation: nexus-select-open 150ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.nexus-select-menu.side-top {
+  transform-origin: bottom center;
+}
+
+@keyframes nexus-select-open {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.nexus-select-search {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 5px;
+  padding: 0 10px;
+  color: rgba(255, 255, 255, 0.48);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.nexus-select-search:focus-within {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.075);
+}
+
+.nexus-select-search input {
+  min-width: 0;
+  min-height: 38px;
+  padding: 0;
+  color: #fff;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.nexus-select-search input:focus {
+  border: 0;
+  box-shadow: none;
+}
+
+.nexus-select-options {
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+  scrollbar-width: thin;
+}
+
+.nexus-select-options::-webkit-scrollbar {
+  width: 5px;
+}
+
+.nexus-select-options::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.nexus-select-options > button {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 10px;
+  color: rgba(255, 255, 255, 0.72);
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+
+.nexus-select-options > button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nexus-select-options > button > svg {
+  flex: 0 0 auto;
+}
+
+.nexus-select-options > button:hover,
+.nexus-select-options > button.active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.085);
+}
+
+.nexus-select-options > button.selected {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.nexus-select-options > button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.nexus-select-empty {
+  padding: 18px 12px;
+  color: rgba(255, 255, 255, 0.45);
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.select-box .nexus-select-trigger {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nexus-select-menu {
+    animation: none;
+  }
+
+  .nexus-select-trigger,
+  .nexus-select-trigger > svg,
+  .nexus-select-options > button {
+    transition: none;
+  }
 }
 
 textarea {
@@ -1231,7 +1448,7 @@ textarea {
   font-weight: 800;
 }
 
-.authenticator-period-control select {
+.authenticator-period-control .nexus-select-trigger {
   min-height: 40px;
   padding: 0 10px;
 }
@@ -2486,7 +2703,7 @@ label {
 }
 
 .discord-control-topbar input,
-.discord-control-topbar select {
+.discord-control-topbar .nexus-select-trigger {
   min-height: 44px;
   width: 100%;
   padding: 10px 12px;
@@ -2810,7 +3027,7 @@ label {
 }
 
 .discord-form-grid input,
-.discord-form-grid select,
+.discord-form-grid .nexus-select-trigger,
 .discord-form-grid textarea,
 .discord-field-row input,
 .discord-json-preview {
@@ -2824,7 +3041,7 @@ label {
 }
 
 .discord-form-grid input,
-.discord-form-grid select,
+.discord-form-grid .nexus-select-trigger,
 .discord-form-grid textarea,
 .discord-field-row input {
   min-height: 46px;
@@ -2836,7 +3053,7 @@ label {
 }
 
 .discord-form-grid input:focus,
-.discord-form-grid select:focus,
+.discord-form-grid .nexus-select-trigger:focus-visible,
 .discord-form-grid textarea:focus,
 .discord-field-row input:focus {
   border-color: rgba(255, 64, 88, 0.58);
@@ -2960,7 +3177,7 @@ label {
 }
 
 .protection-detector-controls input[type="number"],
-.protection-detector-controls select {
+.protection-detector-controls .nexus-select-trigger {
   width: 100%;
   min-height: 34px;
   padding: 7px 8px;
@@ -4090,7 +4307,7 @@ label {
   width: 100%;
 }
 
-.license-toolbar select {
+.license-toolbar .nexus-select {
   min-width: 0;
 }
 
