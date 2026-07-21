@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Activity,
   AlertTriangle,
@@ -139,6 +140,235 @@ function IconButton({ label, children, className = '', ...props }) {
     <button className={`icon-button ${className}`} aria-label={label} title={label} {...props}>
       {children}
     </button>
+  );
+}
+
+function selectNodeText(node) {
+  if (node == null || typeof node === 'boolean') return '';
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(selectNodeText).join('');
+  if (React.isValidElement(node)) return selectNodeText(node.props.children);
+  return '';
+}
+
+function normalizeSelectOptions(children) {
+  const options = [];
+  const visit = (node) => {
+    React.Children.forEach(node, (child) => {
+      if (!React.isValidElement(child)) return;
+      if (child.type === 'option') {
+        const label = selectNodeText(child.props.children).trim();
+        options.push({
+          value: String(child.props.value ?? label),
+          label,
+          disabled: Boolean(child.props.disabled)
+        });
+        return;
+      }
+      visit(child.props.children);
+    });
+  };
+  visit(children);
+  return options;
+}
+
+function NexusSelect({
+  value,
+  onChange,
+  children,
+  disabled = false,
+  required = false,
+  name = '',
+  className = '',
+  id,
+  'aria-label': ariaLabel
+}) {
+  const generatedId = useId();
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+  const activeIndexRef = useRef(0);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0, width: 220, maxHeight: 320, side: 'bottom' });
+  const options = useMemo(() => normalizeSelectOptions(children), [children]);
+  const selectedValue = String(value ?? '');
+  const selectedOption = options.find((option) => option.value === selectedValue) || options.find((option) => !option.disabled) || null;
+  const searchable = options.length > 7;
+  const visibleOptions = useMemo(() => {
+    const normalizedQuery = query.trim().toLocaleLowerCase('pt-BR');
+    if (!normalizedQuery) return options;
+    return options.filter((option) => option.label.toLocaleLowerCase('pt-BR').includes(normalizedQuery));
+  }, [options, query]);
+  const listboxId = `${id || generatedId}-listbox`.replace(/:/g, '');
+
+  const updateMenuPosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const viewportPadding = 12;
+    const menuWidth = Math.min(window.innerWidth - viewportPadding * 2, Math.max(210, rect.width));
+    const estimatedHeight = Math.min(360, 58 + Math.max(1, options.length) * 44);
+    const spaceBelow = window.innerHeight - rect.bottom - viewportPadding;
+    const spaceAbove = rect.top - viewportPadding;
+    const side = spaceBelow < Math.min(estimatedHeight, 240) && spaceAbove > spaceBelow ? 'top' : 'bottom';
+    const maxHeight = Math.max(140, Math.min(360, side === 'bottom' ? spaceBelow : spaceAbove));
+    const left = Math.max(viewportPadding, Math.min(rect.left, window.innerWidth - menuWidth - viewportPadding));
+    const top = side === 'bottom'
+      ? rect.bottom + 7
+      : Math.max(viewportPadding, rect.top - Math.min(estimatedHeight, maxHeight) - 7);
+    setMenuPosition({ top, left, width: menuWidth, maxHeight, side });
+  }, [options.length]);
+
+  const closeMenu = useCallback((restoreFocus = false) => {
+    setOpen(false);
+    setQuery('');
+    if (restoreFocus) window.requestAnimationFrame(() => triggerRef.current?.focus());
+  }, []);
+
+  const chooseOption = useCallback((option) => {
+    if (!option || option.disabled) return;
+    onChange?.({
+      target: { value: option.value, name },
+      currentTarget: { value: option.value, name }
+    });
+    closeMenu(true);
+  }, [closeMenu, name, onChange]);
+
+  useEffect(() => {
+    activeIndexRef.current = activeIndex;
+  }, [activeIndex]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    updateMenuPosition();
+
+    const handlePointerDown = (event) => {
+      if (!triggerRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) closeMenu(false);
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenu(true);
+        return;
+      }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const direction = event.key === 'ArrowDown' ? 1 : -1;
+        setActiveIndex((current) => {
+          if (!visibleOptions.length) return 0;
+          let next = current;
+          for (let attempts = 0; attempts < visibleOptions.length; attempts += 1) {
+            next = (next + direction + visibleOptions.length) % visibleOptions.length;
+            if (!visibleOptions[next]?.disabled) return next;
+          }
+          return current;
+        });
+      } else if (event.key === 'Enter' || (event.key === ' ' && !(event.target instanceof HTMLInputElement))) {
+        event.preventDefault();
+        chooseOption(visibleOptions[activeIndexRef.current]);
+      } else if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault();
+        const indexes = visibleOptions.map((option, index) => option.disabled ? -1 : index).filter((index) => index >= 0);
+        if (indexes.length) setActiveIndex(event.key === 'Home' ? indexes[0] : indexes[indexes.length - 1]);
+      }
+    };
+    const handleViewportChange = () => updateMenuPosition();
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('resize', handleViewportChange);
+    window.addEventListener('scroll', handleViewportChange, true);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('resize', handleViewportChange);
+      window.removeEventListener('scroll', handleViewportChange, true);
+    };
+  }, [chooseOption, closeMenu, open, updateMenuPosition, visibleOptions]);
+
+  useEffect(() => {
+    if (!open) return;
+    const selectedIndex = query ? -1 : visibleOptions.findIndex((option) => option.value === selectedValue && !option.disabled);
+    const firstEnabled = visibleOptions.findIndex((option) => !option.disabled);
+    setActiveIndex(Math.max(0, selectedIndex >= 0 ? selectedIndex : firstEnabled));
+  }, [open, query, selectedValue, visibleOptions]);
+
+  const openMenu = () => {
+    if (disabled || !options.length) return;
+    updateMenuPosition();
+    setOpen(true);
+  };
+
+  return (
+    <div className={`nexus-select ${open ? 'open' : ''} ${disabled ? 'disabled' : ''} ${className}`}>
+      <button
+        ref={triggerRef}
+        id={id}
+        className="nexus-select-trigger"
+        type="button"
+        role="combobox"
+        aria-label={ariaLabel || selectedOption?.label || 'Selecionar opcao'}
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        aria-haspopup="listbox"
+        aria-required={required}
+        disabled={disabled}
+        onClick={() => open ? closeMenu(false) : openMenu()}
+        onKeyDown={(event) => {
+          if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(event.key)) {
+            event.preventDefault();
+            if (!open) openMenu();
+          }
+        }}
+      >
+        <span>{selectedOption?.label || 'Selecionar'}</span>
+        <ChevronRight size={16} />
+      </button>
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          id={listboxId}
+          className={`nexus-select-menu side-${menuPosition.side}`}
+          role="listbox"
+          aria-label={ariaLabel || 'Opcoes'}
+          style={{ top: menuPosition.top, left: menuPosition.left, width: menuPosition.width, maxHeight: menuPosition.maxHeight }}
+        >
+          {searchable && (
+            <label className="nexus-select-search">
+              <Search size={15} />
+              <input
+                autoFocus
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Buscar opcao..."
+                aria-label="Buscar nas opcoes"
+                autoComplete="off"
+              />
+            </label>
+          )}
+          <div className="nexus-select-options">
+            {visibleOptions.map((option, index) => (
+              <button
+                type="button"
+                role="option"
+                aria-selected={option.value === selectedValue}
+                id={`${listboxId}-option-${index}`}
+                className={`${option.value === selectedValue ? 'selected' : ''} ${index === activeIndex ? 'active' : ''}`}
+                disabled={option.disabled}
+                key={`${option.value}-${index}`}
+                onPointerMove={() => setActiveIndex(index)}
+                onClick={() => chooseOption(option)}
+              >
+                <span>{option.label}</span>
+                {option.value === selectedValue && <Check size={15} />}
+              </button>
+            ))}
+            {!visibleOptions.length && <div className="nexus-select-empty">Nenhuma opcao encontrada</div>}
+          </div>
+        </div>,
+        document.body
+      )}
+    </div>
   );
 }
 
@@ -503,13 +733,13 @@ function AccountsPage({ accounts, filters, setFilters, onCreate, onEdit, onOpen 
         </label>
         <label className="select-box">
           <SlidersHorizontal size={18} />
-          <select
+          <NexusSelect
             value={filters.platform}
             onChange={(event) => setFilters((current) => ({ ...current, platform: event.target.value }))}
           >
             <option value="">Todas</option>
             {platforms.map((platform) => <option key={platform} value={platform}>{platform}</option>)}
-          </select>
+          </NexusSelect>
         </label>
       </div>
       <div className="account-grid">
@@ -708,13 +938,13 @@ function AccountDetails({ account, onBack, onEdit, onRefresh, onDeleted }) {
                 placeholder="Discord ID autorizado"
                 required
               />
-              <select
+              <NexusSelect
                 value={shareForm.permission}
                 onChange={(event) => setShareForm((current) => ({ ...current, permission: event.target.value }))}
               >
                 <option value="view">Apenas visualizar</option>
                 <option value="edit">Visualizar e editar</option>
-              </select>
+              </NexusSelect>
               <button className="primary-button"><Share2 size={17} /> Compartilhar</button>
             </form>
             <div className="share-list">
@@ -855,9 +1085,9 @@ function AccountForm({ mode, initial, onClose, onSaved }) {
           </label>
           <label>
             Plataforma
-            <select value={form.platform} onChange={(event) => updateField('platform', event.target.value)}>
+            <NexusSelect value={form.platform} onChange={(event) => updateField('platform', event.target.value)}>
               {platformOptions.map((platform) => <option key={platform} value={platform}>{platform}</option>)}
-            </select>
+            </NexusSelect>
           </label>
           {isRoblox && (
             <label className="span-2">
@@ -1374,17 +1604,17 @@ function UsersPage({ users, reloadUsers, currentUser }) {
               <Search size={18} />
               <input value={filters.search} onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))} placeholder="Nome, Discord ID, key ou HWID" />
             </label>
-            <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
+            <NexusSelect value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}>
               <option value="">Todos os status</option>
               <option value="active">Ativas</option>
               <option value="suspended">Suspensas</option>
               <option value="expired">Expiradas</option>
               <option value="revoked">Revogadas</option>
-            </select>
-            <select value={filters.planId} onChange={(event) => setFilters((current) => ({ ...current, planId: event.target.value }))}>
+            </NexusSelect>
+            <NexusSelect value={filters.planId} onChange={(event) => setFilters((current) => ({ ...current, planId: event.target.value }))}>
               <option value="">Todos os planos</option>
               {plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}
-            </select>
+            </NexusSelect>
             <IconButton label="Atualizar" onClick={() => loadLicenseUsers()}><RefreshCw size={18} /></IconButton>
           </section>
 
@@ -1449,9 +1679,9 @@ function UsersPage({ users, reloadUsers, currentUser }) {
             <form className="user-form" onSubmit={submitAccess}>
               <input value={accessForm.discordId} onChange={(event) => setAccessForm((current) => ({ ...current, discordId: event.target.value }))} placeholder="Discord ID" required />
               <input value={accessForm.label} onChange={(event) => setAccessForm((current) => ({ ...current, label: event.target.value }))} placeholder="Apelido" />
-              <select value={accessForm.role} onChange={(event) => setAccessForm((current) => ({ ...current, role: event.target.value }))}>
+              <NexusSelect value={accessForm.role} onChange={(event) => setAccessForm((current) => ({ ...current, role: event.target.value }))}>
                 <option value="member">Member</option><option value="admin">Admin</option><option value="owner">Owner</option>
-              </select>
+              </NexusSelect>
               <button className="primary-button"><Plus size={17} /> Autorizar</button>
             </form>
             <div className="access-permission-grid">
@@ -1542,7 +1772,7 @@ function UsersPage({ users, reloadUsers, currentUser }) {
             <div className="modal-header"><div><p className="eyebrow">Nova licenca</p><h3>Adicionar usuario</h3></div><IconButton label="Fechar" type="button" onClick={() => setShowCreate(false)}><X size={18} /></IconButton></div>
             <label>Discord ID<input value={licenseForm.discordId} onChange={(event) => setLicenseForm((current) => ({ ...current, discordId: event.target.value }))} placeholder="123456789012345678" required /></label>
             <div className="form-grid">
-              <label>Plano<select value={licenseForm.planId} onChange={(event) => setLicenseForm((current) => ({ ...current, planId: event.target.value }))} required>{plans.filter((plan) => plan.active).map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></label>
+              <label>Plano<NexusSelect value={licenseForm.planId} onChange={(event) => setLicenseForm((current) => ({ ...current, planId: event.target.value }))} required>{plans.filter((plan) => plan.active).map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</NexusSelect></label>
               <label>Limite de resets<input type="number" min="0" max="100" value={licenseForm.hwidResetLimit} onChange={(event) => setLicenseForm((current) => ({ ...current, hwidResetLimit: event.target.value }))} placeholder="Padrao do plano" /></label>
             </div>
             <label>Expiracao personalizada<input type="datetime-local" value={licenseForm.expiresAt} onChange={(event) => setLicenseForm((current) => ({ ...current, expiresAt: event.target.value }))} /><small>Deixe vazio para usar a duracao do plano.</small></label>
@@ -1581,10 +1811,10 @@ function UsersPage({ users, reloadUsers, currentUser }) {
             <div className="modal-header"><div><p className="eyebrow">Roblox overhead</p><h3>Tag do HWID</h3></div><IconButton label="Fechar" onClick={() => setTagEditorOpen(false)}><X size={18} /></IconButton></div>
             <NameTagPreview tag={tagForm} />
             <label>Usuario licenciado
-              <select value={tagForm.licenseUserId} onChange={(event) => setTagForm((current) => ({ ...current, licenseUserId: event.target.value }))} disabled={Boolean(tagForm.id)} required>
+              <NexusSelect value={tagForm.licenseUserId} onChange={(event) => setTagForm((current) => ({ ...current, licenseUserId: event.target.value }))} disabled={Boolean(tagForm.id)} required>
                 <option value="">Selecione a licenca</option>
                 {licenseUsers.map((licenseUser) => <option key={licenseUser.id} value={licenseUser.id}>{licenseUser.discordGlobalName || licenseUser.discordUsername || licenseUser.discordId} - {licenseUser.plan.name}</option>)}
-              </select>
+              </NexusSelect>
             </label>
             <div className="name-tag-binding-state">
               <span><Hash size={16} /><strong>{tagForm.hwidPreview ? `HWID ${tagForm.hwidPreview}` : 'HWID ainda nao vinculado'}</strong></span>
@@ -1593,8 +1823,8 @@ function UsersPage({ users, reloadUsers, currentUser }) {
             <div className="form-grid">
               <label className="span-2">Nome exibido (opcional)<input maxLength="32" value={tagForm.displayNameOverride || ''} onChange={(event) => setTagForm((current) => ({ ...current, displayNameOverride: event.target.value }))} placeholder="Vazio usa o DisplayName do Roblox" /></label>
               <label className="span-2">Cargo ou titulo<input maxLength="32" value={tagForm.title} onChange={(event) => setTagForm((current) => ({ ...current, title: event.target.value }))} required /></label>
-              <label>Indicador<select value={tagForm.icon} onChange={(event) => setTagForm((current) => ({ ...current, icon: event.target.value }))}><option value="initial">Inicial</option><option value="diamond">Diamante</option><option value="shield">Escudo</option><option value="star">Estrela</option><option value="dot">Ponto</option></select></label>
-              <label>Selo<select value={tagForm.badge} onChange={(event) => setTagForm((current) => ({ ...current, badge: event.target.value }))}><option value="none">Nenhum</option><option value="verified">Verificado</option><option value="admin">Admin</option><option value="premium">Premium</option></select></label>
+              <label>Indicador<NexusSelect value={tagForm.icon} onChange={(event) => setTagForm((current) => ({ ...current, icon: event.target.value }))}><option value="initial">Inicial</option><option value="diamond">Diamante</option><option value="shield">Escudo</option><option value="star">Estrela</option><option value="dot">Ponto</option></NexusSelect></label>
+              <label>Selo<NexusSelect value={tagForm.badge} onChange={(event) => setTagForm((current) => ({ ...current, badge: event.target.value }))}><option value="none">Nenhum</option><option value="verified">Verificado</option><option value="admin">Admin</option><option value="premium">Premium</option></NexusSelect></label>
               <label>Abrir abaixo de (studs)<input type="number" min="15" max="120" value={tagForm.morphDistance} onChange={(event) => setTagForm((current) => ({ ...current, morphDistance: event.target.value }))} /></label>
               <label>Distancia maxima<input type="number" min="40" max="300" value={tagForm.maxDistance} onChange={(event) => setTagForm((current) => ({ ...current, maxDistance: event.target.value }))} /></label>
             </div>
@@ -1634,8 +1864,8 @@ function UsersPage({ users, reloadUsers, currentUser }) {
                 <div className="panel-title compact"><h3>Editar licenca</h3><SlidersHorizontal size={17} /></div>
                 <div className="form-grid">
                   <label className="span-2">Discord ID<input value={selectedUser.discordId} onChange={(event) => setSelectedUser((current) => ({ ...current, discordId: event.target.value }))} onBlur={() => updateSelected({ discordId: selectedUser.discordId }, 'Discord atualizado.')} /></label>
-                  <label>Plano<select value={selectedUser.plan.id} onChange={(event) => updateSelected({ planId: event.target.value }, 'Plano atualizado.')}>{plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></label>
-                  <label>Status<select value={selectedUser.status} onChange={(event) => updateSelected({ status: event.target.value }, 'Status atualizado.')}><option value="active">Ativa</option><option value="suspended">Suspensa</option><option value="revoked">Revogada</option><option value="expired">Expirada</option></select></label>
+                  <label>Plano<NexusSelect value={selectedUser.plan.id} onChange={(event) => updateSelected({ planId: event.target.value }, 'Plano atualizado.')}>{plans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name}</option>)}</NexusSelect></label>
+                  <label>Status<NexusSelect value={selectedUser.status} onChange={(event) => updateSelected({ status: event.target.value }, 'Status atualizado.')}><option value="active">Ativa</option><option value="suspended">Suspensa</option><option value="revoked">Revogada</option><option value="expired">Expirada</option></NexusSelect></label>
                   <label>Limite de resets<input type="number" min="0" max="100" value={selectedUser.hwidResetLimit} onChange={(event) => setSelectedUser((current) => ({ ...current, hwidResetLimit: event.target.value }))} onBlur={() => updateSelected({ hwidResetLimit: Number(selectedUser.hwidResetLimit) }, 'Limite atualizado.')} /></label>
                   <label>Expiracao<input type="datetime-local" value={selectedUser.expiresAt ? new Date(selectedUser.expiresAt).toISOString().slice(0, 16) : ''} onChange={(event) => updateSelected({ expiresAt: event.target.value ? new Date(event.target.value).toISOString() : null }, 'Expiracao atualizada.')} /></label>
                 </div>
@@ -1914,14 +2144,14 @@ function RobloxGeneratorPage({ user }) {
         </label>
         <label className="select-box">
           <SlidersHorizontal size={18} />
-          <select
+          <NexusSelect
             value={filters.status}
             onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))}
           >
             <option value="">Todas</option>
             <option value="available">Offline / disponiveis</option>
             <option value="in_use">Online / em uso</option>
-          </select>
+          </NexusSelect>
         </label>
       </div>
       <div className="status-strip">
@@ -2144,11 +2374,11 @@ function AuthenticatorPage() {
             </label>
             <label>
               Tempo para trocar codigo
-              <select value={form.period} onChange={(event) => updateForm('period', Number(event.target.value))}>
+              <NexusSelect value={form.period} onChange={(event) => updateForm('period', Number(event.target.value))}>
                 {authenticatorPeriodOptions.map((period) => (
                   <option key={period} value={period}>{period} segundos</option>
                 ))}
-              </select>
+              </NexusSelect>
             </label>
             <button className="primary-button" disabled={saving}>
               <Save size={18} />
@@ -2183,11 +2413,11 @@ function AuthenticatorPage() {
                 </div>
                 <label className="authenticator-period-control">
                   Trocar a cada
-                  <select value={item.period} onChange={(event) => updateCodePeriod(item, event.target.value)}>
+                  <NexusSelect value={item.period} onChange={(event) => updateCodePeriod(item, event.target.value)}>
                     {authenticatorPeriodOptions.map((period) => (
                       <option key={period} value={period}>{period}s</option>
                     ))}
-                  </select>
+                  </NexusSelect>
                 </label>
                 <div className="card-actions">
                   <button className="primary-button" onClick={() => copyText(item.code)}>
@@ -2351,11 +2581,11 @@ function TempEmailPage() {
             </label>
             <label>
               Dominio
-              <select value={form.domain} onChange={(event) => updateForm('domain', event.target.value)}>
+              <NexusSelect value={form.domain} onChange={(event) => updateForm('domain', event.target.value)}>
                 {domains.map((domain) => (
                   <option key={domain.id || domain.domain} value={domain.domain}>{domain.domain}</option>
                 ))}
-              </select>
+              </NexusSelect>
             </label>
             <button className="primary-button" disabled={creating || domains.length === 0}>
               <Plus size={17} />
@@ -3878,12 +4108,12 @@ function DiscordToolsPage() {
             </div>
             <label>
               Servidor
-              <select value={botConfig.guildId} onChange={(event) => updateBot('guildId', event.target.value)}>
+              <NexusSelect value={botConfig.guildId} onChange={(event) => updateBot('guildId', event.target.value)}>
                 <option value={botConfig.guildId}>{selectedGuild?.name || botConfig.guildId || 'Carregue o bot'}</option>
                 {(botStatus?.guilds || []).map((guild) => (
                   <option key={guild.id} value={guild.id}>{guild.name}</option>
                 ))}
-              </select>
+              </NexusSelect>
             </label>
             <label>
               Buscar
@@ -3997,17 +4227,17 @@ function DiscordToolsPage() {
           <div className="discord-form-grid">
             <label>
               Status desejado
-              <select value={control.desiredStatus} onChange={(event) => updateControl({ desiredStatus: event.target.value })}>
+              <NexusSelect value={control.desiredStatus} onChange={(event) => updateControl({ desiredStatus: event.target.value })}>
                 {discordStatusOptions.map((status) => <option key={status} value={status}>{status}</option>)}
-              </select>
+              </NexusSelect>
             </label>
             <label>
               Ao terminar timer
-              <select value={control.timerEndAction} onChange={(event) => updateControl({ timerEndAction: event.target.value })}>
+              <NexusSelect value={control.timerEndAction} onChange={(event) => updateControl({ timerEndAction: event.target.value })}>
                 <option value="offline">Offline</option>
                 <option value="idle">Idle</option>
                 <option value="dnd">Do Not Disturb</option>
-              </select>
+              </NexusSelect>
             </label>
           </div>
           <div className="discord-toggle-grid">
@@ -4050,20 +4280,20 @@ function DiscordToolsPage() {
           <div className="discord-form-grid">
             <label className="wide">
               Canal de voz
-              <select value={control.voiceChannelId} onChange={(event) => updateControl({ voiceChannelId: event.target.value })}>
+              <NexusSelect value={control.voiceChannelId} onChange={(event) => updateControl({ voiceChannelId: event.target.value })}>
                 <option value="">Selecione um canal</option>
                 {voiceChannels.map((channel) => <option key={channel.id} value={channel.id}>{channel.name}</option>)}
-              </select>
+              </NexusSelect>
             </label>
             <label>
               Duracao
-              <select value={control.voiceDuration} onChange={(event) => updateControl({ voiceDuration: event.target.value })}>
+              <NexusSelect value={control.voiceDuration} onChange={(event) => updateControl({ voiceDuration: event.target.value })}>
                 <option value="30m">30 minutos</option>
                 <option value="1h">1 hora</option>
                 <option value="6h">6 horas</option>
                 <option value="forever">Ate desligar</option>
                 <option value="custom">Personalizado</option>
-              </select>
+              </NexusSelect>
             </label>
             <label>Volume<input type="range" min="0" max="100" value={control.voiceVolume} onChange={(event) => updateControl({ voiceVolume: Number(event.target.value) })} /></label>
             {control.voiceDuration === 'custom' && (
@@ -4115,7 +4345,7 @@ function DiscordToolsPage() {
           <div className="discord-form-grid">
             <label>Nome no servidor<input value={control.profileDisplayName} onChange={(event) => updateControl({ profileDisplayName: event.target.value })} placeholder={botStatus?.bot?.username || 'Nexus Bot'} /></label>
             <label>Status<input value={control.profileStatusText} onChange={(event) => updateControl({ profileStatusText: event.target.value })} placeholder="Online agora" /></label>
-            <label>Activity type<select value={control.profileActivityType} onChange={(event) => updateControl({ profileActivityType: event.target.value })}><option>Watching</option><option>Playing</option><option>Listening</option><option>Competing</option></select></label>
+            <label>Activity type<NexusSelect value={control.profileActivityType} onChange={(event) => updateControl({ profileActivityType: event.target.value })}><option>Watching</option><option>Playing</option><option>Listening</option><option>Competing</option></NexusSelect></label>
             <label>Activity message<input value={control.profileActivityMessage} onChange={(event) => updateControl({ profileActivityMessage: event.target.value })} /></label>
             <label className="wide">Avatar URL<input value={control.profileAvatarUrl} onChange={(event) => updateControl({ profileAvatarUrl: event.target.value })} placeholder="https://..." /></label>
             <label className="wide">Banner URL<input value={control.profileBannerUrl} onChange={(event) => updateControl({ profileBannerUrl: event.target.value })} placeholder="https://..." /></label>
@@ -4138,11 +4368,11 @@ function DiscordToolsPage() {
           <div className="discord-form-grid">
             <label>
               Onde atualizar
-              <select value={control.counterTargetType} onChange={(event) => updateControl({ counterTargetType: event.target.value })}>
+              <NexusSelect value={control.counterTargetType} onChange={(event) => updateControl({ counterTargetType: event.target.value })}>
                 <option value="bot-nickname">Nome do bot no servidor</option>
                 <option value="channel">Nome de canal</option>
                 <option value="category">Nome de categoria</option>
-              </select>
+              </NexusSelect>
             </label>
             <label>
               Canal/Categoria ID
@@ -4188,7 +4418,7 @@ function DiscordToolsPage() {
             </label>
             <label>
               Permissoes
-              <select
+              <NexusSelect
                 value={selectedPreset}
                 onChange={(event) => {
                   const preset = discordInvitePresets.find((item) => item.id === event.target.value);
@@ -4197,7 +4427,7 @@ function DiscordToolsPage() {
               >
                 {discordInvitePresets.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
                 <option value="custom">Personalizado</option>
-              </select>
+              </NexusSelect>
             </label>
             <label>
               Valor das permissoes
@@ -4649,18 +4879,18 @@ function DiscordToolsPage() {
             </label>
             <label>
               Tipo
-              <select value={channelForm.type} onChange={(event) => setChannelForm((current) => ({ ...current, type: Number(event.target.value) }))}>
+              <NexusSelect value={channelForm.type} onChange={(event) => setChannelForm((current) => ({ ...current, type: Number(event.target.value) }))}>
                 <option value={0}>Texto</option>
                 <option value={2}>Voz</option>
                 <option value={4}>Categoria</option>
-              </select>
+              </NexusSelect>
             </label>
             <label>
               Categoria
-              <select value={channelForm.parentId} onChange={(event) => setChannelForm((current) => ({ ...current, parentId: event.target.value }))}>
+              <NexusSelect value={channelForm.parentId} onChange={(event) => setChannelForm((current) => ({ ...current, parentId: event.target.value }))}>
                 <option value="">Sem categoria</option>
                 {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
-              </select>
+              </NexusSelect>
             </label>
             <label>
               Posicao
@@ -4839,7 +5069,7 @@ function DiscordToolsPage() {
             </label>
             <label>
               Punicao automatica
-              <select value={antiNuke.punishment} onChange={(event) => setAntiNuke((current) => ({ ...current, punishment: event.target.value }))}>
+              <NexusSelect value={antiNuke.punishment} onChange={(event) => setAntiNuke((current) => ({ ...current, punishment: event.target.value }))}>
                 <option value="warn">Somente avisar</option>
                 <option value="remove_roles">Remover cargos perigosos</option>
                 <option value="quarantine">Mover para quarentena</option>
@@ -4847,7 +5077,7 @@ function DiscordToolsPage() {
                 <option value="ban">Banir usuario</option>
                 <option value="kick">Expulsar usuario</option>
                 <option value="none">Apenas alertar</option>
-              </select>
+              </NexusSelect>
             </label>
             <label>
               Duracao do timeout
@@ -4899,11 +5129,11 @@ function DiscordToolsPage() {
             </label>
             <label>
               Modo verificacao
-              <select value={antiNuke.verificationMode} onChange={(event) => setAntiNuke((current) => ({ ...current, verificationMode: event.target.value }))}>
+              <NexusSelect value={antiNuke.verificationMode} onChange={(event) => setAntiNuke((current) => ({ ...current, verificationMode: event.target.value }))}>
                 <option value="low">Leve</option>
                 <option value="medium">Medio</option>
                 <option value="high">Forte</option>
-              </select>
+              </NexusSelect>
             </label>
             <label className="wide">
               Whitelist de usuarios confiaveis
@@ -4959,9 +5189,9 @@ function DiscordToolsPage() {
                           <div className="protection-detector-controls">
                             <label>Limite<input type="number" min="1" max="10000" value={detectorSettings.threshold || 1} onChange={(event) => updateDetector(detector.id, { threshold: Number(event.target.value) })} /></label>
                             <label>Janela (s)<input type="number" min="1" max="3600" value={detectorSettings.windowSeconds || 60} onChange={(event) => updateDetector(detector.id, { windowSeconds: Number(event.target.value) })} /></label>
-                            <label>Castigo<select value={detectorSettings.punishment || 'none'} onChange={(event) => updateDetector(detector.id, { punishment: event.target.value })}>
+                            <label>Castigo<NexusSelect value={detectorSettings.punishment || 'none'} onChange={(event) => updateDetector(detector.id, { punishment: event.target.value })}>
                               <option value="warn">Avisar</option><option value="timeout">Timeout</option><option value="remove_roles">Tirar cargos</option><option value="quarantine">Quarentena</option><option value="kick">Expulsar</option><option value="ban">Banir</option><option value="none">So log</option>
-                            </select></label>
+                            </NexusSelect></label>
                             {detector.deleteMessage && <label className="protection-delete"><input type="checkbox" checked={Boolean(detectorSettings.deleteMessage)} onChange={(event) => updateDetector(detector.id, { deleteMessage: event.target.checked })} /> Apagar</label>}
                           </div>
                           {protectionCatalog.limitations?.[detector.id] && <p>{protectionCatalog.limitations[detector.id]}</p>}
@@ -5134,7 +5364,7 @@ function DiscordToolsPage() {
         <div className="discord-form-grid">
           <label>
             Tipo
-            <select value={logFilters.type} onChange={(event) => setLogFilters((current) => ({ ...current, type: event.target.value }))}>
+            <NexusSelect value={logFilters.type} onChange={(event) => setLogFilters((current) => ({ ...current, type: event.target.value }))}>
               <option value="">Todos</option>
               <option value="webhook">Webhook</option>
               <option value="bot">Bot</option>
@@ -5144,7 +5374,7 @@ function DiscordToolsPage() {
               <option value="moderation">Moderacao</option>
               <option value="lookup">Lookup</option>
               <option value="settings">Config</option>
-            </select>
+            </NexusSelect>
           </label>
           <label>
             Usuario
