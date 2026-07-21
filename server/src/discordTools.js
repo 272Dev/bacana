@@ -218,12 +218,40 @@ export async function getDiscordBotStatus({ botToken, guildId } = {}) {
   let guild = null;
   let channels = [];
   let roles = [];
+  let commands = [];
 
   if (cleanGuildId) {
     const guildResult = await discordRequest(`/guilds/${assertSnowflake(cleanGuildId, 'Servidor ID')}?with_counts=true`, { token });
     guild = guildResult.payload;
     channels = (await discordRequest(`/guilds/${cleanGuildId}/channels`, { token })).payload || [];
     roles = (await discordRequest(`/guilds/${cleanGuildId}/roles`, { token })).payload || [];
+  }
+
+  if (application?.id) {
+    const seenCommands = new Set();
+    const commandScopes = [
+      cleanGuildId ? { scope: 'guild', path: `/applications/${application.id}/guilds/${cleanGuildId}/commands` } : null,
+      { scope: 'global', path: `/applications/${application.id}/commands` }
+    ].filter(Boolean);
+    for (const item of commandScopes) {
+      try {
+        const result = await discordRequest(item.path, { token });
+        for (const command of result.payload || []) {
+          const key = `${item.scope}:${command.name}`;
+          if (seenCommands.has(key)) continue;
+          seenCommands.add(key);
+          commands.push({
+            id: command.id,
+            name: command.name,
+            description: command.description || '',
+            scope: item.scope,
+            guildId: item.scope === 'guild' ? cleanGuildId : null
+          });
+        }
+      } catch {
+        // Status do bot continua disponivel mesmo se o token nao puder listar comandos.
+      }
+    }
   }
 
   return {
@@ -255,7 +283,8 @@ export async function getDiscordBotStatus({ botToken, guildId } = {}) {
       roleCount: roles.length
     } : null,
     channels,
-    roles
+    roles,
+    commands
   };
 }
 

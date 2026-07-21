@@ -142,6 +142,83 @@ function IconButton({ label, children, className = '', ...props }) {
   );
 }
 
+function DiscordBotSelect({ bots, value, onChange, compact = false }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const selected = bots.find((bot) => bot.id === value) || bots[0];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnPointer = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnPointer);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnPointer);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
+
+  if (!selected) return null;
+
+  return (
+    <div className={`discord-bot-select ${compact ? 'compact' : ''}`} ref={rootRef}>
+      <button
+        className="discord-bot-select-trigger"
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="discord-bot-select-avatar">
+          <Avatar src={selected.avatarUrl} name={selected.name} />
+          <i className={`discord-status-dot ${selected.status || 'offline'}`} />
+        </span>
+        <span className="discord-bot-select-copy">
+          <strong>{selected.name}</strong>
+          <small>{selected.guildName || selected.guildId || 'Servidor automatico'}{selected.ping ? ` - ${selected.ping}ms` : ''}</small>
+        </span>
+        <ChevronRight className="discord-bot-select-chevron" size={17} />
+      </button>
+      {open && (
+        <div className="discord-bot-select-menu" role="listbox" aria-label="Selecionar bot">
+          <div className="discord-bot-select-heading">
+            <span>Seus bots</span>
+            <small>{bots.length} conectado(s)</small>
+          </div>
+          {bots.map((bot) => (
+            <button
+              type="button"
+              role="option"
+              aria-selected={bot.id === selected.id}
+              className={bot.id === selected.id ? 'active' : ''}
+              key={bot.id}
+              onClick={() => {
+                onChange(bot.id);
+                setOpen(false);
+              }}
+            >
+              <span className="discord-bot-select-avatar">
+                <Avatar src={bot.avatarUrl} name={bot.name} />
+                <i className={`discord-status-dot ${bot.status || 'offline'}`} />
+              </span>
+              <span className="discord-bot-select-copy">
+                <strong>{bot.name}</strong>
+                <small>{bot.guildCount || 0} servidor(es) - {bot.voiceConnected ? 'em call' : bot.status || 'offline'}</small>
+              </span>
+              {bot.id === selected.id && <Check size={16} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LoginScreen() {
   const params = new URLSearchParams(window.location.search);
   const error = params.get('error');
@@ -2977,7 +3054,17 @@ function DiscordToolsPage() {
       voiceDuration: bot.voiceDuration || 'forever'
     }));
   });
-  const [botTokens, setBotTokens] = useState({});
+  const [botTokens, setBotTokens] = useState(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem('nexus-discord-session-tokens') || '{}');
+    } catch {
+      return {};
+    }
+  });
+  const [lastBotRefresh, setLastBotRefresh] = useState('');
+  const [commandsSyncing, setCommandsSyncing] = useState(false);
+  const autoRefreshBusyRef = useRef(false);
+  const commandSyncBusyRef = useRef(false);
 
   const selectedManagedBot = useMemo(() => (
     managedBots.find((bot) => bot.id === control.selectedBotId) || managedBots[0] || defaultDiscordManagedBots[0]
@@ -3011,6 +3098,10 @@ function DiscordToolsPage() {
   }, []);
 
   useEffect(() => {
+    sessionStorage.setItem('nexus-discord-session-tokens', JSON.stringify(botTokens));
+  }, [botTokens]);
+
+  useEffect(() => {
     let active = true;
     api('/discord-tools/protection/catalog')
       .then((catalog) => {
@@ -3026,19 +3117,27 @@ function DiscordToolsPage() {
   }, []);
 
   useEffect(() => {
-    if (section !== 'anti-nuke' || !botConfig.guildId) return;
-    api(`/discord-tools/protection/stats?guildId=${encodeURIComponent(botConfig.guildId)}&limit=30`)
-      .then(setProtectionStats)
-      .catch(() => {});
+    if (section !== 'anti-nuke' || !botConfig.guildId) return undefined;
+    let active = true;
+    const refreshProtection = () => {
+      api(`/discord-tools/protection/stats?guildId=${encodeURIComponent(botConfig.guildId)}&limit=30`)
+        .then((payload) => { if (active) setProtectionStats(payload); })
+        .catch(() => {});
+    };
+    refreshProtection();
+    const timer = window.setInterval(refreshProtection, 15_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
   }, [section, botConfig.guildId]);
 
   useEffect(() => {
     setBotConfig((current) => {
-      if (current.botToken || current.guildId) return current;
-      return {
-        botToken: botTokens[selectedManagedBot.id] || '',
-        guildId: selectedManagedBot.guildId || ''
-      };
+      const sessionToken = botTokens[selectedManagedBot.id] || current.botToken || '';
+      const guildId = selectedManagedBot.guildId || current.guildId || '';
+      if (sessionToken === current.botToken && guildId === current.guildId) return current;
+      return { botToken: sessionToken, guildId };
     });
   }, [selectedManagedBot.id, selectedManagedBot.guildId, botTokens]);
 
@@ -3057,6 +3156,40 @@ function DiscordToolsPage() {
     control.counterTemplate,
     botConfig.botToken,
     botConfig.guildId
+  ]);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => {
+      if (!active || document.visibilityState === 'hidden') return;
+      void refreshBotStatus({ silent: true });
+    };
+    const firstRefresh = window.setTimeout(refresh, 250);
+    const timer = window.setInterval(refresh, 12_000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      active = false;
+      window.clearTimeout(firstRefresh);
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [control.selectedBotId, botConfig.botToken, botConfig.guildId]);
+
+  useEffect(() => {
+    if (section !== 'commands' || !botStatus?.bot?.id) return undefined;
+    const timer = window.setTimeout(() => {
+      void syncDiscordCommands(true);
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [
+    section,
+    botStatus?.bot?.id,
+    control.commandCooldown,
+    control.commandRole,
+    control.commandChannel,
+    JSON.stringify(control.commandConfig || {})
   ]);
 
   function showNotice(message) {
@@ -3393,21 +3526,30 @@ function DiscordToolsPage() {
     showNotice('Parando envio repetido...');
   }
 
-  async function loadBotStatus() {
-    await runAction('bot', async () => {
+  async function refreshBotStatus({ silent = false } = {}) {
+    if (autoRefreshBusyRef.current) return null;
+    autoRefreshBusyRef.current = true;
+    if (!silent) {
+      setLoading('bot');
+      setNotice('');
+    }
+    try {
       const payload = await api('/discord-tools/bot/status', {
         method: 'POST',
         body: botConfig
       });
       setBotStatus(payload);
-      const nextSettings = { ...settings, guildId: botConfig.guildId || payload.guild?.id || settings.guildId };
-      updateSettings(nextSettings);
+      setLastBotRefresh(new Date().toISOString());
+      const resolvedGuildId = botConfig.guildId || payload.guild?.id || settings.guildId;
+      if (resolvedGuildId && resolvedGuildId !== settings.guildId) {
+        updateSettings({ ...settings, guildId: resolvedGuildId });
+      }
       if (!botConfig.guildId && payload.guild?.id) updateBot('guildId', payload.guild.id);
       updateManagedBot(control.selectedBotId, {
         name: payload.bot?.username || selectedManagedBot.name,
         applicationId: payload.application?.id || payload.bot?.id || selectedManagedBot.applicationId || '',
         avatarUrl: payload.bot?.avatarUrl || selectedManagedBot.avatarUrl,
-        guildId: botConfig.guildId || payload.guild?.id || selectedManagedBot.guildId,
+        guildId: resolvedGuildId || selectedManagedBot.guildId,
         guildName: payload.guild?.name || selectedManagedBot.guildName,
         guildCount: payload.bot?.guildCount || 0,
         memberCount: payload.guild?.memberCount || 0,
@@ -3415,11 +3557,63 @@ function DiscordToolsPage() {
         channelCount: payload.guild?.channelCount || 0,
         roleCount: payload.guild?.roleCount || 0,
         ping: payload.bot?.ping || 0,
-        desiredStatus: payload.bot?.online ? control.desiredStatus : 'offline'
+        desiredStatus: payload.bot?.online ? control.desiredStatus : 'offline',
+        voiceConnected: Boolean(payload.runtime?.voice?.length)
       });
-      pushLog('bot', `Status carregado para ${payload.guild?.name || 'bot'}`);
-      showNotice(payload.warnings?.length ? payload.warnings[0] : 'Bot conectado.');
-    });
+      if (!silent) {
+        pushLog('bot', `Status carregado para ${payload.guild?.name || 'bot'}`);
+        showNotice(payload.warnings?.length ? payload.warnings[0] : 'Bot conectado e atualizacao automatica ativada.');
+      }
+      return payload;
+    } catch (error) {
+      if (!silent) showNotice(error.message);
+      return null;
+    } finally {
+      autoRefreshBusyRef.current = false;
+      if (!silent) setLoading('');
+    }
+  }
+
+  async function loadBotStatus() {
+    return refreshBotStatus({ silent: false });
+  }
+
+  async function syncDiscordCommands(silent = false) {
+    if (commandSyncBusyRef.current) return null;
+    commandSyncBusyRef.current = true;
+    setCommandsSyncing(true);
+    try {
+      const result = await api('/discord-tools/commands/sync', {
+        method: 'POST',
+        body: {
+          ...botConfig,
+          globalCooldown: control.commandCooldown,
+          roleId: control.commandRole,
+          channelId: control.commandChannel,
+          commands: discordCommandCatalog.map((command) => {
+            const current = { enabled: command.enabled, ...(control.commandConfig?.[command.id] || {}) };
+            return {
+              id: command.id,
+              enabled: current.enabled !== false,
+              cooldown: Number(current.cooldown ?? control.commandCooldown) || 0
+            };
+          })
+        }
+      });
+      setBotStatus((current) => current ? { ...current, commands: result.commands || [] } : current);
+      setLastBotRefresh(new Date().toISOString());
+      if (!silent) {
+        pushLog('bot', `${result.commands?.length || 0} slash command(s) sincronizado(s)`, selectedManagedBot.name);
+        showNotice('Comandos publicados no Discord. A lista agora atualiza sozinha.');
+      }
+      return result;
+    } catch (error) {
+      if (!silent) showNotice(error.message);
+      return null;
+    } finally {
+      commandSyncBusyRef.current = false;
+      setCommandsSyncing(false);
+    }
   }
 
   async function saveBotProfile() {
@@ -3678,12 +3872,10 @@ function DiscordToolsPage() {
             <p className="muted">Painel multi-bot com servidores, membros, voz, comandos, webhooks, logs e seguranca.</p>
           </div>
           <div className="discord-control-topbar">
-            <label>
+            <div className="discord-control-field">
               Bot
-              <select value={control.selectedBotId} onChange={(event) => selectManagedBot(event.target.value)}>
-                {botCards.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}
-              </select>
-            </label>
+              <DiscordBotSelect bots={botCards} value={control.selectedBotId} onChange={selectManagedBot} />
+            </div>
             <label>
               Servidor
               <select value={botConfig.guildId} onChange={(event) => updateBot('guildId', event.target.value)}>
@@ -3986,12 +4178,10 @@ function DiscordToolsPage() {
         <section className="panel discord-tool-card">
           <div className="panel-title"><h3>Criar convite do bot</h3><Share2 size={18} /></div>
           <div className="discord-form-grid">
-            <label>
+            <div className="discord-control-field">
               Bot
-              <select value={control.selectedBotId} onChange={(event) => selectManagedBot(event.target.value)}>
-                {managedBots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}
-              </select>
-            </label>
+              <DiscordBotSelect bots={botCards} value={control.selectedBotId} onChange={selectManagedBot} />
+            </div>
             <label>
               Client/Application ID
               <input value={control.inviteClientId} onChange={(event) => updateControl({ inviteClientId: event.target.value })} placeholder={selectedClientId || 'Carregue o bot ou cole o ID'} />
@@ -4066,10 +4256,25 @@ function DiscordToolsPage() {
   }
 
   function renderCommandCenter() {
+    const registeredNames = new Set((botStatus?.commands || []).map((command) => command.name));
     return (
       <div className="discord-control-stack">
         <section className="panel discord-tool-card">
-          <div className="panel-title"><h3>Command Center</h3><SlidersHorizontal size={18} /></div>
+          <div className="panel-title">
+            <div>
+              <h3>Command Center</h3>
+              <small className="muted">As alteracoes sao publicadas automaticamente no Discord.</small>
+            </div>
+            <button className="ghost-button" type="button" onClick={() => syncDiscordCommands(false)} disabled={commandsSyncing}>
+              <RefreshCw className={commandsSyncing ? 'spin' : ''} size={16} />
+              {commandsSyncing ? 'Sincronizando' : 'Sincronizar agora'}
+            </button>
+          </div>
+          <div className="discord-command-summary">
+            <span><strong>{registeredNames.size}</strong><small>registrados no Discord</small></span>
+            <span><strong>{discordCommandCatalog.filter((command) => ({ enabled: command.enabled, ...(control.commandConfig?.[command.id] || {}) }).enabled !== false).length}</strong><small>ativos no painel</small></span>
+            <span><strong>{botStatus?.guild?.name || 'Automatico'}</strong><small>escopo do servidor</small></span>
+          </div>
           <div className="discord-form-grid">
             <label>Cooldown global<input type="number" min="0" value={control.commandCooldown} onChange={(event) => updateControl({ commandCooldown: Number(event.target.value) })} /></label>
             <label>Role permitida<input value={control.commandRole} onChange={(event) => updateControl({ commandRole: event.target.value })} placeholder="Role ID opcional" /></label>
@@ -4079,10 +4284,13 @@ function DiscordToolsPage() {
         <div className="discord-command-grid">
           {discordCommandCatalog.map((command) => {
             const current = { enabled: command.enabled, ...(control.commandConfig?.[command.id] || {}) };
+            const isRegistered = registeredNames.has(command.id);
             return (
-              <article className="panel discord-tool-card discord-command-card" key={command.id}>
-                <strong>/{command.id}</strong>
-                <small>{command.label} - {command.category}</small>
+              <article className={`panel discord-tool-card discord-command-card ${isRegistered ? 'registered' : ''}`} key={command.id}>
+                <div className="discord-command-title">
+                  <span><strong>/{command.id}</strong><small>{command.label} - {command.category}</small></span>
+                  <i>{isRegistered ? <><Check size={13} /> Publicado</> : commandsSyncing ? 'Sincronizando' : 'Pendente'}</i>
+                </div>
                 <label className="switch-line"><input type="checkbox" checked={current.enabled} onChange={(event) => updateCommandConfig(command.id, { enabled: event.target.checked })} /> Ativo</label>
                 <label>Cooldown<input type="number" min="0" value={current.cooldown ?? control.commandCooldown} onChange={(event) => updateCommandConfig(command.id, { cooldown: Number(event.target.value) })} /></label>
               </article>
@@ -4097,7 +4305,7 @@ function DiscordToolsPage() {
     const checks = [
       { label: 'Protecao ativa', ok: antiNuke.enabled, detail: antiNuke.enabled ? 'Monitoramento ligado' : 'Desativada' },
       { label: 'Logs locais', ok: settings.modules?.logs !== false, detail: `${logs.length} eventos` },
-      { label: 'Token protegido', ok: true, detail: 'Token temporario nao fica salvo no navegador' },
+      { label: 'Token de sessao', ok: true, detail: 'Apagado automaticamente ao fechar a aba' },
       { label: 'Backup config', ok: true, detail: 'Exportacao pronta' }
     ];
     return (
@@ -5091,17 +5299,22 @@ function DiscordToolsPage() {
         title="Discord Tools"
         actions={(
           <>
+            <DiscordBotSelect bots={botCards} value={control.selectedBotId} onChange={selectManagedBot} compact />
             <button className="primary-button" type="button" onClick={openAddBotModal}>
               <Plus size={17} />
               Adicionar bot
             </button>
             <button className="ghost-button" type="button" onClick={loadBotStatus}>
               <RefreshCw size={17} />
-              Atualizar bot
+              Sincronizar agora
             </button>
           </>
         )}
       />
+      <div className="discord-auto-refresh-bar" aria-live="polite">
+        <span><i className="discord-live-pulse" /> Atualizacao automatica ativa</span>
+        <small>{lastBotRefresh ? `Ultima leitura ${formatDate(lastBotRefresh)}` : 'Conectando ao bot...'}</small>
+      </div>
       {renderAddBotModal()}
       {notice && (
         <button className="toast discord-toast" onClick={() => setNotice('')}>

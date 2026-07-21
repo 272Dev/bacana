@@ -54,8 +54,71 @@ const messageHistories = new Map();
 const resourceSnapshots = new Map();
 const inviteSnapshots = new Map();
 const salesCooldowns = new Map();
+const commandPolicies = new Map();
+const commandCooldowns = new Map();
 const SALES_COMMAND_NAME = 'conta';
 const SALES_COOLDOWN_MS = 60_000;
+
+const DASHBOARD_COMMAND_DEFINITIONS = [
+  {
+    name: 'ban',
+    description: 'Banir um membro do servidor',
+    defaultMemberPermissions: PermissionFlagsBits.BanMembers.toString(),
+    options: [
+      { type: 6, name: 'usuario', description: 'Usuario que sera banido', required: true },
+      { type: 3, name: 'motivo', description: 'Motivo da punicao', required: false, max_length: 400 }
+    ]
+  },
+  {
+    name: 'kick',
+    description: 'Expulsar um membro do servidor',
+    defaultMemberPermissions: PermissionFlagsBits.KickMembers.toString(),
+    options: [
+      { type: 6, name: 'usuario', description: 'Usuario que sera expulso', required: true },
+      { type: 3, name: 'motivo', description: 'Motivo da punicao', required: false, max_length: 400 }
+    ]
+  },
+  {
+    name: 'timeout',
+    description: 'Aplicar timeout em um membro',
+    defaultMemberPermissions: PermissionFlagsBits.ModerateMembers.toString(),
+    options: [
+      { type: 6, name: 'usuario', description: 'Usuario que recebera timeout', required: true },
+      { type: 4, name: 'minutos', description: 'Duracao entre 1 e 40320 minutos', required: true, min_value: 1, max_value: 40320 },
+      { type: 3, name: 'motivo', description: 'Motivo da punicao', required: false, max_length: 400 }
+    ]
+  },
+  {
+    name: 'clear',
+    description: 'Apagar mensagens recentes do canal',
+    defaultMemberPermissions: PermissionFlagsBits.ManageMessages.toString(),
+    options: [
+      { type: 4, name: 'quantidade', description: 'Quantidade entre 1 e 100', required: true, min_value: 1, max_value: 100 }
+    ]
+  },
+  {
+    name: 'userinfo',
+    description: 'Mostrar informacoes de um usuario',
+    options: [
+      { type: 6, name: 'usuario', description: 'Usuario consultado', required: false }
+    ]
+  },
+  { name: 'serverinfo', description: 'Mostrar informacoes deste servidor' },
+  {
+    name: 'logs',
+    description: 'Mostrar o estado atual do bot e da protecao',
+    defaultMemberPermissions: PermissionFlagsBits.ViewAuditLog.toString()
+  },
+  {
+    name: 'welcome',
+    description: 'Enviar uma mensagem de boas-vindas pelo bot',
+    defaultMemberPermissions: PermissionFlagsBits.ManageGuild.toString(),
+    options: [
+      { type: 3, name: 'mensagem', description: 'Mensagem que sera enviada', required: true, max_length: 1800 }
+    ]
+  }
+];
+const DASHBOARD_COMMAND_NAMES = new Set(DASHBOARD_COMMAND_DEFINITIONS.map((command) => command.name));
 
 function makeHttpError(message, status = 500) {
   const error = new Error(message);
@@ -132,21 +195,55 @@ function safeCredential(value, max = 1000) {
   return String(value || '').replace(/`/g, 'ˋ').slice(0, max);
 }
 
-async function registerSalesCommand(entry) {
-  if (!entry?.client?.isReady?.() || !isDefaultBotToken(entry.token)) return;
-  const definition = {
+function salesCommandDefinition() {
+  return {
     name: SALES_COMMAND_NAME,
     description: 'Receber uma conta do estoque Nexus no privado',
     dmPermission: false
   };
-  const guildId = cleanText(config.discordBot.defaultGuildId);
-  const manager = guildId
-    ? (await entry.client.guilds.fetch(guildId)).commands
-    : entry.client.application.commands;
-  const commands = await manager.fetch();
-  if (!commands.find((command) => command.name === SALES_COMMAND_NAME)) {
-    await manager.create(definition);
+}
+
+function commandPolicyKey(token, guildId = '') {
+  return `${tokenFingerprint(token)}:${cleanText(guildId) || 'global'}`;
+}
+
+async function commandManager(entry, guildId = '') {
+  const cleanGuildId = cleanText(guildId);
+  if (cleanGuildId) return (await entry.client.guilds.fetch(assertSnowflake(cleanGuildId, 'Servidor ID'))).commands;
+  return entry.client.application.commands;
+}
+
+async function upsertCommands(manager, definitions, removableNames = new Set()) {
+  const current = await manager.fetch();
+  const wanted = new Map(definitions.map((definition) => [definition.name, definition]));
+
+  for (const definition of definitions) {
+    const existing = current.find((command) => command.name === definition.name);
+    if (existing) await existing.edit(definition);
+    else await manager.create(definition);
   }
+
+  for (const command of current.values()) {
+    if (removableNames.has(command.name) && !wanted.has(command.name)) await command.delete();
+  }
+
+  return manager.fetch();
+}
+
+async function registerSalesCommand(entry) {
+  if (!entry?.client?.isReady?.() || !isDefaultBotToken(entry.token)) return;
+  const guildId = cleanText(config.discordBot.defaultGuildId);
+  const manager = await commandManager(entry, guildId);
+  const definitions = [...DASHBOARD_COMMAND_DEFINITIONS, salesCommandDefinition()];
+  const commands = await upsertCommands(manager, definitions, new Set([...DASHBOARD_COMMAND_NAMES, SALES_COMMAND_NAME]));
+  commandPolicies.set(commandPolicyKey(entry.token, guildId), {
+    guildId,
+    globalCooldown: 5,
+    roleId: '',
+    channelId: '',
+    commands: Object.fromEntries(DASHBOARD_COMMAND_DEFINITIONS.map((command) => [command.name, { enabled: true, cooldown: 5 }]))
+  });
+  return commands;
 }
 
 async function handleSalesInteraction(entry, interaction) {
@@ -212,6 +309,112 @@ async function handleSalesInteraction(entry, interaction) {
       ? 'Nao consegui enviar a DM. Ative mensagens privadas deste servidor e tente novamente.'
       : error?.message || 'Nao foi possivel entregar uma conta agora.';
     await interaction.editReply(message.slice(0, 1900)).catch(() => {});
+  }
+}
+
+async function replyCommandError(interaction, message) {
+  const payload = { content: String(message || 'Nao foi possivel executar este comando.').slice(0, 1900), flags: MessageFlags.Ephemeral };
+  if (interaction.deferred || interaction.replied) return interaction.editReply(payload.content).catch(() => {});
+  return interaction.reply(payload).catch(() => {});
+}
+
+function resolveCommandPolicy(entry, interaction) {
+  const guildId = interaction.guildId || '';
+  return commandPolicies.get(commandPolicyKey(entry.token, guildId))
+    || commandPolicies.get(commandPolicyKey(entry.token, ''))
+    || { globalCooldown: 5, roleId: '', channelId: '', commands: {} };
+}
+
+async function handleDashboardInteraction(entry, interaction) {
+  if (!interaction.isChatInputCommand?.() || !DASHBOARD_COMMAND_NAMES.has(interaction.commandName)) return;
+  if (!interaction.inGuild?.() || !interaction.guild) {
+    await replyCommandError(interaction, 'Este comando so funciona dentro de um servidor.');
+    return;
+  }
+
+  const policy = resolveCommandPolicy(entry, interaction);
+  const commandPolicy = policy.commands?.[interaction.commandName] || {};
+  if (commandPolicy.enabled === false) {
+    await replyCommandError(interaction, 'Este comando esta desativado no painel Nexus.');
+    return;
+  }
+  if (policy.channelId && interaction.channelId !== policy.channelId) {
+    await replyCommandError(interaction, `Use este comando no canal <#${policy.channelId}>.`);
+    return;
+  }
+  if (policy.roleId) {
+    const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+    if (!member?.roles?.cache?.has(policy.roleId)) {
+      await replyCommandError(interaction, 'Voce nao possui o cargo permitido para este comando.');
+      return;
+    }
+  }
+
+  const cooldownSeconds = Math.max(0, Number(commandPolicy.cooldown ?? policy.globalCooldown ?? 5));
+  const cooldownKey = `${tokenFingerprint(entry.token)}:${interaction.guildId}:${interaction.user.id}:${interaction.commandName}`;
+  const lastUse = commandCooldowns.get(cooldownKey) || 0;
+  const retryAfter = cooldownSeconds * 1000 - (Date.now() - lastUse);
+  if (retryAfter > 0) {
+    await replyCommandError(interaction, `Aguarde ${Math.ceil(retryAfter / 1000)} segundo(s) para usar este comando novamente.`);
+    return;
+  }
+  commandCooldowns.set(cooldownKey, Date.now());
+
+  const reason = cleanText(interaction.options.getString('motivo')) || `Acao executada por ${interaction.user.tag || interaction.user.id}`;
+  try {
+    if (interaction.commandName === 'ban') {
+      const user = interaction.options.getUser('usuario', true);
+      if (user.id === interaction.user.id || user.id === interaction.client.user.id) throw makeHttpError('Esse usuario nao pode ser banido por este comando.', 400);
+      await interaction.guild.members.ban(user.id, { reason });
+      await interaction.reply({ content: `${user.tag} foi banido. Motivo: ${reason}`, flags: MessageFlags.Ephemeral });
+    } else if (interaction.commandName === 'kick') {
+      const user = interaction.options.getUser('usuario', true);
+      const member = await interaction.guild.members.fetch(user.id);
+      if (!member.kickable) throw makeHttpError('Nao consigo expulsar esse membro. Confira a hierarquia dos cargos.', 400);
+      await member.kick(reason);
+      await interaction.reply({ content: `${user.tag} foi expulso. Motivo: ${reason}`, flags: MessageFlags.Ephemeral });
+    } else if (interaction.commandName === 'timeout') {
+      const user = interaction.options.getUser('usuario', true);
+      const minutes = interaction.options.getInteger('minutos', true);
+      const member = await interaction.guild.members.fetch(user.id);
+      if (!member.moderatable) throw makeHttpError('Nao consigo aplicar timeout nesse membro. Confira a hierarquia dos cargos.', 400);
+      await member.timeout(minutes * 60_000, reason);
+      await interaction.reply({ content: `${user.tag} recebeu timeout por ${minutes} minuto(s).`, flags: MessageFlags.Ephemeral });
+    } else if (interaction.commandName === 'clear') {
+      const amount = interaction.options.getInteger('quantidade', true);
+      if (typeof interaction.channel?.bulkDelete !== 'function') throw makeHttpError('Este canal nao permite apagar mensagens em lote.', 400);
+      const deleted = await interaction.channel.bulkDelete(amount, true);
+      await interaction.reply({ content: `${deleted.size} mensagem(ns) apagada(s).`, flags: MessageFlags.Ephemeral });
+    } else if (interaction.commandName === 'userinfo') {
+      const user = interaction.options.getUser('usuario') || interaction.user;
+      const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+      const created = Math.floor(user.createdTimestamp / 1000);
+      const joined = member?.joinedTimestamp ? Math.floor(member.joinedTimestamp / 1000) : null;
+      await interaction.reply({
+        content: [`**${user.tag}**`, `ID: \`${user.id}\``, `Conta criada: <t:${created}:R>`, joined ? `Entrou no servidor: <t:${joined}:R>` : null, `Cargos: ${Math.max(0, (member?.roles?.cache?.size || 1) - 1)}`].filter(Boolean).join('\n'),
+        flags: MessageFlags.Ephemeral
+      });
+    } else if (interaction.commandName === 'serverinfo') {
+      const guild = interaction.guild;
+      await interaction.reply({
+        content: [`**${guild.name}**`, `ID: \`${guild.id}\``, `Membros: ${guild.memberCount}`, `Canais: ${guild.channels.cache.size}`, `Cargos: ${guild.roles.cache.size}`, `Criado: <t:${Math.floor(guild.createdTimestamp / 1000)}:R>`].join('\n'),
+        flags: MessageFlags.Ephemeral
+      });
+    } else if (interaction.commandName === 'logs') {
+      const state = clientState(entry);
+      const protection = protectionSettings.get(interaction.guildId);
+      await interaction.reply({
+        content: [`**Nexus status**`, `Gateway: ${state.online ? 'online' : 'offline'}`, `Ping: ${entry.client.ws.ping || 0}ms`, `Uptime: ${Math.floor((state.uptimeMs || 0) / 60000)} min`, `Protecao: ${protection?.enabled === false ? 'desativada' : 'ativa'}`, `Call: ${state.voice.length ? 'conectada' : 'desconectada'}`].join('\n'),
+        flags: MessageFlags.Ephemeral
+      });
+    } else if (interaction.commandName === 'welcome') {
+      const message = interaction.options.getString('mensagem', true).slice(0, 1800);
+      await interaction.channel.send({ content: message, allowedMentions: { parse: [] } });
+      await interaction.reply({ content: 'Mensagem de boas-vindas enviada.', flags: MessageFlags.Ephemeral });
+    }
+  } catch (error) {
+    commandCooldowns.delete(cooldownKey);
+    await replyCommandError(interaction, error?.message || 'Nao foi possivel executar o comando.');
   }
 }
 
@@ -1177,8 +1380,12 @@ function attachProtectionHandlers(entry) {
   const client = entry.client;
 
   client.on(Events.InteractionCreate, (interaction) => {
-    void handleSalesInteraction(entry, interaction).catch((error) => {
-      console.warn(`[nexus] Falha no comando de vendas: ${error.message}`);
+    const handler = interaction.commandName === SALES_COMMAND_NAME
+      ? handleSalesInteraction(entry, interaction)
+      : handleDashboardInteraction(entry, interaction);
+    void handler.catch((error) => {
+      console.warn(`[nexus] Falha no comando /${interaction.commandName || 'desconhecido'}: ${error.message}`);
+      void replyCommandError(interaction, error.message);
     });
   });
 
@@ -1453,6 +1660,65 @@ async function ensureClient({ botToken, status, activityType, activityMessage } 
 export async function getDiscordRuntimeState({ botToken } = {}) {
   const token = getRuntimeToken(botToken);
   return clientState(clients.get(token));
+}
+
+export async function syncDiscordCommands({
+  botToken,
+  guildId,
+  commands = [],
+  globalCooldown = 5,
+  roleId = '',
+  channelId = ''
+} = {}) {
+  const entry = await ensureClient({ botToken, status: 'online' });
+  const cleanGuildId = cleanText(guildId) || cleanText(config.discordBot.defaultGuildId);
+  const manager = await commandManager(entry, cleanGuildId);
+  const requested = new Map(
+    (Array.isArray(commands) ? commands : [])
+      .filter((command) => DASHBOARD_COMMAND_NAMES.has(cleanText(command?.id)))
+      .map((command) => [cleanText(command.id), {
+        enabled: command.enabled !== false,
+        cooldown: Math.max(0, Math.min(3600, Number(command.cooldown ?? globalCooldown) || 0))
+      }])
+  );
+  const hasExplicitConfiguration = requested.size > 0;
+  const enabledDefinitions = DASHBOARD_COMMAND_DEFINITIONS.filter((definition) => (
+    hasExplicitConfiguration ? requested.get(definition.name)?.enabled === true : true
+  ));
+  if (isDefaultBotToken(entry.token)) enabledDefinitions.push(salesCommandDefinition());
+
+  const synced = await upsertCommands(
+    manager,
+    enabledDefinitions,
+    new Set([...DASHBOARD_COMMAND_NAMES, SALES_COMMAND_NAME])
+  );
+  const normalizedPolicy = Object.fromEntries(DASHBOARD_COMMAND_DEFINITIONS.map((definition) => {
+    const configured = requested.get(definition.name);
+    return [definition.name, {
+      enabled: configured ? configured.enabled : !hasExplicitConfiguration,
+      cooldown: configured?.cooldown ?? Math.max(0, Number(globalCooldown) || 0)
+    }];
+  }));
+  commandPolicies.set(commandPolicyKey(entry.token, cleanGuildId), {
+    guildId: cleanGuildId,
+    globalCooldown: Math.max(0, Math.min(3600, Number(globalCooldown) || 0)),
+    roleId: cleanText(roleId),
+    channelId: cleanText(channelId),
+    commands: normalizedPolicy
+  });
+
+  return {
+    ok: true,
+    scope: cleanGuildId ? 'guild' : 'global',
+    guildId: cleanGuildId || null,
+    commands: [...synced.values()].map((command) => ({
+      id: command.id,
+      name: command.name,
+      description: command.description,
+      defaultMemberPermissions: command.defaultMemberPermissions?.bitfield?.toString?.() || null
+    })),
+    runtime: clientState(entry)
+  };
 }
 
 export async function runDiscordBotLifecycle({ botToken, action = 'start', status = 'online', activityType, activityMessage } = {}) {

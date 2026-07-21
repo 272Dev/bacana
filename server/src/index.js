@@ -61,7 +61,8 @@ import {
   restoreDiscordVoiceConnections,
   runDiscordBotLifecycle,
   runDiscordVoiceAction,
-  startDefaultDiscordBot
+  startDefaultDiscordBot,
+  syncDiscordCommands
 } from './discordRuntime.js';
 import { lookupRobloxUsername } from './roblox.js';
 import {
@@ -452,6 +453,17 @@ const discordBotLifecycleSchema = discordBotRequestSchema.extend({
   status: z.enum(['online', 'idle', 'dnd', 'invisible', 'offline']).optional().default('online'),
   activityType: z.enum(['Watching', 'Playing', 'Listening', 'Competing']).optional().default('Watching'),
   activityMessage: z.string().trim().max(128).optional().or(z.literal(''))
+});
+
+const discordCommandsSchema = discordBotRequestSchema.extend({
+  globalCooldown: z.coerce.number().min(0).max(3600).optional().default(5),
+  roleId: z.string().trim().max(32).optional().or(z.literal('')),
+  channelId: z.string().trim().max(32).optional().or(z.literal('')),
+  commands: z.array(z.object({
+    id: z.enum(['ban', 'kick', 'timeout', 'clear', 'userinfo', 'serverinfo', 'logs', 'welcome']),
+    enabled: z.boolean().optional().default(true),
+    cooldown: z.coerce.number().min(0).max(3600).optional().default(5)
+  })).max(20).optional().default([])
 });
 
 const discordBotProfileSchema = discordBotRequestSchema.extend({
@@ -1356,6 +1368,20 @@ app.post('/api/discord-tools/bot/lifecycle', requireAuth, async (req, res) => {
     action: `discord_tools.bot_${payload.action}`,
     targetType: 'discord_bot',
     metadata: { status: payload.status, activityType: payload.activityType },
+    ip: req.ip
+  });
+  res.json(result);
+});
+
+app.post('/api/discord-tools/commands/sync', requireAuth, async (req, res) => {
+  const payload = discordCommandsSchema.parse(req.body);
+  const result = await syncDiscordCommands(payload);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.commands_sync',
+    targetType: 'discord_guild',
+    targetId: result.guildId,
+    metadata: { scope: result.scope, commands: result.commands.map((command) => command.name) },
     ip: req.ip
   });
   res.json(result);
