@@ -301,6 +301,18 @@ const schemaSql = `
     PRIMARY KEY (guild_id, detector_id)
   );
 
+  CREATE TABLE IF NOT EXISTS discord_voice_configs (
+    id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    voice_channel_id TEXT NOT NULL,
+    bot_token_encrypted TEXT NOT NULL,
+    settings_json TEXT NOT NULL DEFAULT '{}',
+    expires_at TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_discord_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform);
   CREATE INDEX IF NOT EXISTS idx_shares_user ON account_shares(shared_with_discord_id);
@@ -331,6 +343,8 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_discord_protection_enabled ON discord_protection_configs(enabled);
   CREATE INDEX IF NOT EXISTS idx_discord_protection_events_guild ON discord_protection_events(guild_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_discord_protection_events_detector ON discord_protection_events(detector_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_discord_voice_guild ON discord_voice_configs(guild_id);
+  CREATE INDEX IF NOT EXISTS idx_discord_voice_enabled ON discord_voice_configs(enabled);
 `;
 
 function toPostgresSql(sql) {

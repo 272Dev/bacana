@@ -58,6 +58,7 @@ import {
   getDiscordProtectionStats,
   getDiscordRuntimeState,
   restoreDiscordProtections,
+  restoreDiscordVoiceConnections,
   runDiscordBotLifecycle,
   runDiscordVoiceAction,
   startDefaultDiscordBot
@@ -120,7 +121,7 @@ for (const method of ['get', 'post', 'put', 'patch', 'delete']) {
   app[method] = (pathOrRoute, ...handlers) => original(pathOrRoute, ...handlers.map(wrapAsync));
 }
 
-// Render places one proxy in front of the service. Trusting a hop count keeps
+// Production hosts place one proxy in front of the service. Trusting a hop count keeps
 // the client IP useful for HWID abuse detection without enabling arbitrary
 // forwarded headers to bypass rate limiting.
 app.set('trust proxy', config.security.trustProxy ? 1 : false);
@@ -1961,13 +1962,22 @@ app.use((error, _req, res, _next) => {
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
   app.listen(config.port, '0.0.0.0', () => {
     console.log(`Nexus API pronta em ${config.apiPublicUrl}`);
-    void Promise.allSettled([startDefaultDiscordBot(), restoreDiscordProtections()]).then(([botResult, protectionResult]) => {
+    void Promise.allSettled([
+      startDefaultDiscordBot(),
+      restoreDiscordProtections(),
+      restoreDiscordVoiceConnections()
+    ]).then(([botResult, protectionResult, voiceResult]) => {
       if (botResult.status === 'fulfilled' && botResult.value) console.log('Discord bot conectado ao Gateway.');
       if (botResult.status === 'rejected') console.warn(`Discord bot nao conectou ao Gateway: ${botResult.reason.message}`);
       if (protectionResult.status === 'fulfilled') {
         console.log(`Protecoes Discord restauradas: ${protectionResult.value.restored}; falhas: ${protectionResult.value.failed.length}.`);
       } else {
         console.warn(`Protecoes Discord nao foram restauradas: ${protectionResult.reason.message}`);
+      }
+      if (voiceResult.status === 'fulfilled') {
+        console.log(`Calls Discord restauradas: ${voiceResult.value.restored}; falhas: ${voiceResult.value.failed.length}.`);
+      } else {
+        console.warn(`Calls Discord nao foram restauradas: ${voiceResult.reason.message}`);
       }
     });
   });
