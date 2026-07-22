@@ -2455,13 +2455,25 @@ function TempEmailPage() {
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [providerStatus, setProviderStatus] = useState({
+    configured: true,
+    inboxCount: null,
+    inboxLimit: null,
+    creditsRemaining: null
+  });
+
+  const refreshProviderStatus = useCallback(async () => {
+    const payload = await api('/temp-email/status');
+    setProviderStatus(payload);
+    return payload;
+  }, []);
 
   const loadInboxes = useCallback(async () => {
     const query = search ? `?search=${encodeURIComponent(search)}` : '';
     const payload = await api(`/temp-email/inboxes${query}`);
     setInboxes(payload.inboxes);
     setSelectedInbox((current) => {
-      if (!current) return payload.inboxes[0] || null;
+      if (!current) return null;
       return payload.inboxes.find((inbox) => inbox.id === current.id) || payload.inboxes[0] || null;
     });
   }, [search]);
@@ -2473,13 +2485,17 @@ function TempEmailPage() {
         setForm((current) => ({ ...current, domain: current.domain || payload.domains[0]?.domain || '' }));
       })
       .catch((error) => setNotice(error.message));
-  }, []);
+    refreshProviderStatus().catch((error) => {
+      setProviderStatus((current) => ({ ...current, configured: false }));
+      setNotice(error.message);
+    });
+  }, [refreshProviderStatus]);
 
   useEffect(() => {
     loadInboxes().catch((error) => setNotice(error.message));
   }, [loadInboxes]);
 
-  const loadMessages = useCallback(async (inbox = selectedInbox) => {
+  const loadMessages = useCallback(async (inbox) => {
     if (!inbox) {
       setMessages([]);
       setSelectedMessage(null);
@@ -2498,19 +2514,9 @@ function TempEmailPage() {
       setNotice(error.message);
     } finally {
       setLoading(false);
+      refreshProviderStatus().catch(() => {});
     }
-  }, [selectedInbox]);
-
-  useEffect(() => {
-    loadMessages().catch(() => {});
-  }, [selectedInbox, loadMessages]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      loadMessages().catch(() => {});
-    }, 12000);
-    return () => window.clearInterval(timer);
-  }, [loadMessages]);
+  }, [refreshProviderStatus]);
 
   function updateForm(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -2530,18 +2536,28 @@ function TempEmailPage() {
       setNotice(error.message);
     } finally {
       setCreating(false);
+      refreshProviderStatus().catch(() => {});
     }
   }
 
   async function deleteInbox(inbox) {
     const confirmed = window.confirm(`Excluir ${inbox.address}?`);
     if (!confirmed) return;
-    await api(`/temp-email/inboxes/${inbox.id}`, { method: 'DELETE' });
-    setSelectedInbox(null);
-    setSelectedMessage(null);
-    setMessages([]);
-    setNotice('Email temporario removido.');
-    await loadInboxes();
+    setLoading(true);
+    setNotice('');
+    try {
+      await api(`/temp-email/inboxes/${inbox.id}`, { method: 'DELETE' });
+      setSelectedInbox(null);
+      setSelectedMessage(null);
+      setMessages([]);
+      setNotice('Email temporario removido.');
+      await loadInboxes();
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setLoading(false);
+      refreshProviderStatus().catch(() => {});
+    }
   }
 
   async function openMessage(message) {
@@ -2555,14 +2571,17 @@ function TempEmailPage() {
       setNotice(error.message);
     } finally {
       setLoading(false);
+      refreshProviderStatus().catch(() => {});
     }
   }
 
   const mailText = selectedMessage?.text || selectedMessage?.intro || '';
+  const creditsExhausted = providerStatus.creditsRemaining != null && providerStatus.creditsRemaining <= 0;
+  const canCreateInbox = providerStatus.configured !== false && !creditsExhausted && domains.length > 0;
 
   return (
     <section className="page">
-      <PageHeader eyebrow="Firemail" title="Temp Email" />
+      <PageHeader eyebrow="RushMail" title="Temp Email" />
       {notice && <div className="notice">{notice}</div>}
       <div className="temp-email-layout">
         <section className="panel">
@@ -2587,14 +2606,15 @@ function TempEmailPage() {
                 ))}
               </NexusSelect>
             </label>
-            <button className="primary-button" disabled={creating || domains.length === 0}>
+            <button className="primary-button" disabled={creating || !canCreateInbox}>
               <Plus size={17} />
-              {creating ? 'Criando' : 'Criar email'}
+              {creating ? 'Criando' : providerStatus.configured === false ? 'API indisponivel' : creditsExhausted ? 'Sem creditos' : 'Criar email'}
             </button>
           </form>
           <div className="temp-email-source">
             <MailOpen size={17} />
-            <a href="https://firemail.com.br/api" target="_blank" rel="noreferrer">Powered by Firemail</a>
+            <a href="https://rushmail.dev/api" target="_blank" rel="noreferrer">Powered by RushMail</a>
+            {providerStatus.creditsRemaining != null && <span>{providerStatus.creditsRemaining} creditos</span>}
           </div>
         </section>
 
@@ -2612,7 +2632,12 @@ function TempEmailPage() {
           <div className="temp-email-inbox-list">
             {inboxes.map((inbox) => (
               <article className={selectedInbox?.id === inbox.id ? 'temp-email-inbox active' : 'temp-email-inbox'} key={inbox.id}>
-                <button onClick={() => setSelectedInbox(inbox)}>
+                <button onClick={() => {
+                  setSelectedInbox(inbox);
+                  setSelectedMessage(null);
+                  setMessages([]);
+                  loadMessages(inbox).catch(() => {});
+                }}>
                   <span>
                     <strong>{inbox.label || inbox.address}</strong>
                     <small>{inbox.address}</small>
@@ -2639,7 +2664,7 @@ function TempEmailPage() {
               <h3>{selectedInbox?.address || 'Mensagens'}</h3>
               <small>{selectedInbox?.lastCheckedAt ? `Atualizado ${formatDate(selectedInbox.lastCheckedAt)}` : 'Aguardando caixa'}</small>
             </div>
-            <button className="ghost-button" onClick={() => loadMessages()} disabled={!selectedInbox || loading}>
+            <button className="ghost-button" onClick={() => loadMessages(selectedInbox)} disabled={!selectedInbox || loading}>
               <RefreshCw size={17} />
               {loading ? 'Atualizando' : 'Atualizar'}
             </button>
