@@ -78,6 +78,10 @@ export const config = {
   robloxGenerator: {
     sourceFile: path.resolve(rootDir, env('ROBLOX_ACCOUNTS_FILE', './data/roblox-accounts.txt'))
   },
+  rushmail: {
+    apiKey: env('RUSHMAIL_API_KEY'),
+    baseUrl: env('RUSHMAIL_API_URL', 'https://rushmail.dev/public-api').replace(/\/+$/, '')
+  },
   discord: {
     clientId: env('DISCORD_CLIENT_ID'),
     clientSecret: env('DISCORD_CLIENT_SECRET'),

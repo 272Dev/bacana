@@ -242,7 +242,7 @@ Recursos:
 
 ## Temp Email
 
-A aba Temp Email cria caixas temporarias usando a API publica da Firemail.
+A aba Temp Email cria caixas temporarias usando a API oficial da RushMail.
 
 Recursos:
 
@@ -253,9 +253,11 @@ Recursos:
 - copiar texto da mensagem ou links detectados
 - excluir caixa temporaria
 
-Nao precisa configurar API key no Render. A Firemail informa que a API e aberta, sem autenticacao e possui limite de 300 requisicoes por hora por IP. As caixas temporarias sao removidas apos 7 dias de inatividade. O Nexus mostra a atribuicao `Powered by Firemail` na interface.
+Configure `RUSHMAIL_API_KEY` somente nas variaveis de ambiente do servidor. Nunca envie a chave para o GitHub ou para o frontend. A URL padrao e `https://rushmail.dev/public-api` e pode ser alterada com `RUSHMAIL_API_URL`.
 
-O Nexus armazena apenas endereco, nome da caixa e metadados minimos. As mensagens sao buscadas na Firemail quando a aba e aberta ou atualizada.
+Cada criacao, listagem de mensagens, leitura completa ou exclusao bem-sucedida consome 1 credito da RushMail. A consulta de status (`GET /me`) e gratuita. Por isso, o Nexus nao faz polling automatico: as mensagens sao consultadas quando uma caixa e selecionada ou quando o usuario clica em atualizar.
+
+O Nexus armazena apenas o endereco, o ID remoto, o nome da caixa e metadados minimos. Caixas antigas da Firemail continuam legiveis pelo adaptador legado; novas caixas usam exclusivamente a RushMail.
 
 ## Midia com Cloudflare R2 ou Cloudinary
 

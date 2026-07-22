@@ -173,7 +173,7 @@ const schemaSql = `
     id TEXT PRIMARY KEY,
     label TEXT,
     address TEXT NOT NULL UNIQUE,
-    provider TEXT NOT NULL DEFAULT 'mail.tm',
+    provider TEXT NOT NULL DEFAULT 'rushmail',
     provider_account_id TEXT,
     password_encrypted TEXT NOT NULL,
     token_encrypted TEXT NOT NULL,
