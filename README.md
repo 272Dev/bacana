@@ -120,7 +120,7 @@ POST /api/licenses/validate
 
 As keys ficam cifradas com `APP_MASTER_KEY`, possuem hash separado para validacao
 e aparecem completas somente para administradores autenticados. Em producao use
-Postgres persistente (`DATABASE_URL`) e configure `TRUST_PROXY=true` no Render.
+Postgres persistente (`DATABASE_URL`) e configure `TRUST_PROXY=true` na hospedagem.
 
 ### Loader protegido no proprio site
 
@@ -133,10 +133,10 @@ Em **Usuarios > Loader protegido**, o owner/admin pode selecionar qualquer arqui
 - entrega o payload por um ticket aleatorio de uso unico, valido por 45 segundos;
 - permite ativar outra versao e invalida tickets antigos automaticamente.
 
-O endereco estavel e:
+O endereco estavel na Square Cloud e:
 
 ```text
-https://nexus-zks.onrender.com/loader/nexus.lua
+https://nexus-zks.squareweb.app/loader/nexus.lua
 ```
 
 O loadstring aparece no proprio painel depois do primeiro upload. Esta protecao
@@ -242,7 +242,7 @@ Recursos:
 
 ## Temp Email
 
-A aba Temp Email cria caixas temporarias usando a API publica da Firemail.
+A aba Temp Email cria caixas temporarias usando a API oficial da RushMail.
 
 Recursos:
 
@@ -253,9 +253,11 @@ Recursos:
 - copiar texto da mensagem ou links detectados
 - excluir caixa temporaria
 
-Nao precisa configurar API key no Render. A Firemail informa que a API e aberta, sem autenticacao e possui limite de 300 requisicoes por hora por IP. As caixas temporarias sao removidas apos 7 dias de inatividade. O Nexus mostra a atribuicao `Powered by Firemail` na interface.
+Configure `RUSHMAIL_API_KEY` somente nas variaveis de ambiente do servidor. Nunca envie a chave para o GitHub ou para o frontend. A URL padrao e `https://rushmail.dev/public-api` e pode ser alterada com `RUSHMAIL_API_URL`.
 
-O Nexus armazena apenas endereco, nome da caixa e metadados minimos. As mensagens sao buscadas na Firemail quando a aba e aberta ou atualizada.
+Cada criacao, listagem de mensagens, leitura completa ou exclusao bem-sucedida consome 1 credito da RushMail. A consulta de status (`GET /me`) e gratuita. Por isso, o Nexus nao faz polling automatico: as mensagens sao consultadas quando uma caixa e selecionada ou quando o usuario clica em atualizar.
+
+O Nexus armazena apenas o endereco, o ID remoto, o nome da caixa e metadados minimos. Caixas antigas da Firemail continuam legiveis pelo adaptador legado; novas caixas usam exclusivamente a RushMail.
 
 ## Midia com Cloudflare R2 ou Cloudinary
 
@@ -299,6 +301,34 @@ DISCORD_REDIRECT_URI=https://seu-dominio/api/auth/discord/callback
 
 Adicione esse redirect HTTPS tambem no Discord Developer Portal.
 
+### Square Cloud
+
+O arquivo `squarecloud.app` da raiz publica o frontend, a API e o bot Discord no
+mesmo processo. O deploy usa 512 MB, executa o build do Vite e inicia o servidor
+Express em seguida. O dominio configurado e:
+
+```text
+https://nexus-zks.squareweb.app
+```
+
+Cadastre no painel da Square Cloud as mesmas variaveis secretas usadas na
+hospedagem anterior. As variaveis especificas de producao devem ser:
+
+```env
+NODE_ENV=production
+PORT=80
+CLIENT_URL=https://nexus-zks.squareweb.app
+API_PUBLIC_URL=https://nexus-zks.squareweb.app
+DISCORD_REDIRECT_URI=https://nexus-zks.squareweb.app/api/auth/discord/callback
+REQUIRE_HTTPS=true
+TRUST_PROXY=true
+```
+
+Use `DATABASE_URL` com Postgres/Neon para preservar usuarios, keys, tags e as
+configuracoes do bot entre deploys. Mantenha midias no R2 ou Cloudinary. Nao
+inclua `.env`, `node_modules`, `package-lock.json`, `dist` nem a pasta `data` no
+ZIP enviado ao painel.
+
 ### Render
 
 Configuracao sugerida do Web Service:
@@ -339,7 +369,8 @@ Importante: no plano gratis do Render, o disco do Web Service nao deve ser usado
 
 ### Neon Postgres
 
-Para guardar as contas de forma permanente no plano gratis, crie um banco no Neon e adicione no Render:
+Para guardar as contas de forma permanente, crie um banco no Neon e adicione a
+connection string na hospedagem:
 
 ```env
 DATABASE_URL=sua_connection_string_do_neon
