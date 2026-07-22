@@ -7,6 +7,8 @@ const envPath = path.resolve(rootDir, '.env');
 
 dotenv.config({ path: envPath, override: true });
 
+const productionDefaultPort = process.env.NODE_ENV === 'production' ? '80' : '4000';
+
 function env(name, fallback = '') {
   return process.env[name] || fallback;
 }
@@ -54,10 +56,10 @@ function normalizeCloudinaryCloudName(raw) {
 export const config = {
   rootDir,
   envPath,
-  port: Number(env('PORT', '4000')),
+  port: Number(env('PORT', productionDefaultPort)),
   nodeEnv: env('NODE_ENV', 'development'),
   clientUrl: env('CLIENT_URL', 'http://localhost:5173'),
-  apiPublicUrl: env('API_PUBLIC_URL', `http://localhost:${env('PORT', '4000')}`),
+  apiPublicUrl: env('API_PUBLIC_URL', `http://localhost:${env('PORT', productionDefaultPort)}`),
   databaseUrl: env('DATABASE_URL'),
   databasePath: path.resolve(rootDir, env('DATABASE_PATH', './data/nexus.db')),
   cloudinary: {
@@ -75,6 +77,10 @@ export const config = {
   },
   robloxGenerator: {
     sourceFile: path.resolve(rootDir, env('ROBLOX_ACCOUNTS_FILE', './data/roblox-accounts.txt'))
+  },
+  rushmail: {
+    apiKey: env('RUSHMAIL_API_KEY'),
+    baseUrl: env('RUSHMAIL_API_URL', 'https://rushmail.dev/public-api').replace(/\/+$/, '')
   },
   discord: {
     clientId: env('DISCORD_CLIENT_ID'),

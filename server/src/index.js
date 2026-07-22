@@ -33,6 +33,8 @@ import {
   createTempEmailInbox,
   deleteTempEmailInbox,
   getTempEmailMessage,
+  getTempEmailProvider,
+  getTempEmailProviderStatus,
   listTempEmailDomains,
   listTempEmailInboxes,
   listTempEmailMessages
@@ -1257,12 +1259,20 @@ app.delete('/api/authenticators/:id', requireAuth, async (req, res, next) => {
 
 app.get('/api/temp-email/domains', requireAuth, async (_req, res) => {
   const domains = await listTempEmailDomains();
-  res.json({ domains, provider: 'firemail' });
+  res.json({ domains, provider: getTempEmailProvider() });
+});
+
+app.get('/api/temp-email/status', requireAuth, async (_req, res, next) => {
+  try {
+    res.json(await getTempEmailProviderStatus());
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.get('/api/temp-email/inboxes', requireAuth, async (req, res) => {
   const inboxes = await listTempEmailInboxes({ search: req.query.search });
-  res.json({ inboxes, provider: 'firemail' });
+  res.json({ inboxes, provider: getTempEmailProvider() });
 });
 
 app.post('/api/temp-email/inboxes', requireAuth, async (req, res, next) => {
