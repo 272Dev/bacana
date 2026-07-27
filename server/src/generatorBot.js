@@ -14,6 +14,7 @@ import {
 import { config, missingEnv } from './config.js';
 import { db, nowIso } from './db.js';
 import { logAudit } from './audit.js';
+import { createQrPng } from './qrCode.js';
 import {
   getGeneratorAccess,
   getGeneratorDeliveryForBuyer,
@@ -216,6 +217,22 @@ function normalizeLivePixCheckoutUrl(value) {
     throw makeLivePixError('A LivePix retornou um checkout nao confiavel.', 'LIVEPIX_UNTRUSTED_CHECKOUT');
   }
   return parsed.href;
+}
+
+async function createLivePixQrCode(checkoutUrl) {
+  const trustedCheckoutUrl = normalizeLivePixCheckoutUrl(checkoutUrl);
+  try {
+    return await createQrPng(trustedCheckoutUrl, {
+      scale: 10,
+      margin: 4,
+      errorCorrectionLevel: 'H'
+    });
+  } catch {
+    throw makeLivePixError(
+      'A cobranca foi criada, mas nao foi possivel montar o QR Code.',
+      'LIVEPIX_QR_GENERATION_FAILED'
+    );
+  }
 }
 
 async function createLivePixPaymentRequest(amountCents, accessToken) {
@@ -526,11 +543,14 @@ async function createPixCharge(interaction) {
 
   try {
     const payment = await createLivePixPayment(amountCents);
+    const qrCode = await createLivePixQrCode(payment.checkoutUrl);
+    const qrCodeName = 'nexus-pix-qr.png';
     const paymentEmbed = await brandEmbed(interaction, {
       title: 'Pagamento Pix',
       description: [
         '**Cobranca gerada com seguranca pela LivePix.**',
-        'Clique no botao abaixo para abrir o checkout e concluir o pagamento.',
+        'Escaneie o QR Code abaixo para abrir a cobranca e pagar.',
+        'Se preferir, use o botao para abrir o checkout no aparelho.',
         '',
         '━━━━━━━━━━━━━━━━━━━━'
       ].join('\n'),
@@ -541,6 +561,7 @@ async function createPixCharge(interaction) {
       ],
       image: false
     });
+    paymentEmbed.setImage(`attachment://${qrCodeName}`);
     const paymentRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setLabel('Pagar com Pix')
@@ -551,6 +572,7 @@ async function createPixCharge(interaction) {
     const payload = {
       embeds: [paymentEmbed],
       components: [paymentRow],
+      files: [{ attachment: qrCode, name: qrCodeName }],
       allowedMentions: { parse: [] }
     };
 

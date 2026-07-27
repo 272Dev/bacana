@@ -232,8 +232,10 @@ executa-lo. O bot:
 
 O bot tambem publica o comando administrativo `/pix valor`. Ele cria a cobranca
 pela API oficial da LivePix e publica no canal um card com o valor, a referencia
-e um botao para o checkout. Somente membros com **Gerenciar servidor** podem
-usar o comando. Configure as credenciais apenas no ambiente do servidor:
+e um QR Code gerado localmente pelo Nexus, alem do botao para o checkout. Ao
+escanear o QR, o usuario abre diretamente a cobranca segura da LivePix. Somente
+membros com **Gerenciar servidor** podem usar o comando. Configure as
+credenciais apenas no ambiente do servidor:
 
 ```env
 LIVEPIX_CLIENT_ID=seu_client_id
