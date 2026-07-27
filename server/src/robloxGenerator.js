@@ -392,7 +392,7 @@ async function clearStaleRobloxSalesReservations() {
   `).run(staleBefore);
 }
 
-async function assertRobloxSalesEligibility(buyerDiscordId) {
+async function assertRobloxSalesEligibility(buyerDiscordId, policy = null) {
   const settings = await getRobloxGeneratorSettings();
   if (!settings.generatorEnabled) {
     const error = new Error('O gerador de contas esta pausado pelo administrador.');
@@ -409,15 +409,22 @@ async function assertRobloxSalesEligibility(buyerDiscordId) {
   `).get(buyerDiscordId);
   const delivered = Number(buyerStats?.delivered || 0);
 
-  if (settings.maxDeliveriesPerUser > 0 && delivered >= settings.maxDeliveriesPerUser) {
-    const error = new Error(`Voce atingiu o limite de ${settings.maxDeliveriesPerUser} conta(s) por usuario.`);
+  const maxDeliveriesPerUser = policy
+    ? Math.max(0, Number(policy.maxDeliveriesPerUser || 0))
+    : settings.maxDeliveriesPerUser;
+  const cooldownSeconds = policy
+    ? Math.max(0, Number(policy.cooldownSeconds || 0))
+    : settings.cooldownSeconds;
+
+  if (maxDeliveriesPerUser > 0 && delivered >= maxDeliveriesPerUser) {
+    const error = new Error(`Voce atingiu o limite de ${maxDeliveriesPerUser} conta(s) por usuario.`);
     error.status = 403;
     throw error;
   }
 
   const lastDeliveryAt = Date.parse(buyerStats?.last_delivery_at || '');
-  if (settings.cooldownSeconds > 0 && Number.isFinite(lastDeliveryAt)) {
-    const retryAfterMs = (settings.cooldownSeconds * 1000) - (Date.now() - lastDeliveryAt);
+  if (cooldownSeconds > 0 && Number.isFinite(lastDeliveryAt)) {
+    const retryAfterMs = (cooldownSeconds * 1000) - (Date.now() - lastDeliveryAt);
     if (retryAfterMs > 0) {
       const retryAfterSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
       const error = new Error(`Aguarde ${retryAfterSeconds} segundo(s) antes de solicitar outra conta.`);
@@ -717,7 +724,7 @@ export async function selectRandomRobloxGeneratorAccount() {
   });
 }
 
-export async function reserveRandomRobloxSalesAccount({ buyerDiscordId, channel = 'discord' } = {}) {
+export async function reserveRandomRobloxSalesAccount({ buyerDiscordId, channel = 'discord', policy = null } = {}) {
   const buyer = cleanText(buyerDiscordId);
   if (!/^\d{5,32}$/.test(buyer)) {
     const error = new Error('Discord ID do comprador invalido.');
@@ -726,7 +733,7 @@ export async function reserveRandomRobloxSalesAccount({ buyerDiscordId, channel 
   }
 
   await clearStaleRobloxSalesReservations();
-  await assertRobloxSalesEligibility(buyer);
+  await assertRobloxSalesEligibility(buyer, policy);
 
   const rows = await hydrateMissingRobloxProfiles(await db.prepare(`
     SELECT account.*
