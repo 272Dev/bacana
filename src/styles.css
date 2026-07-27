@@ -1310,6 +1310,157 @@ textarea {
   grid-column: 1 / -1;
 }
 
+.generator-permissions-panel {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 14px;
+}
+
+.generator-permission-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.generator-permission-form > label {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.generator-permission-form input {
+  width: 100%;
+}
+
+.generator-permission-form .primary-button {
+  min-height: 44px;
+  white-space: nowrap;
+}
+
+.generator-permission-summary {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 2px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.generator-permission-summary > span,
+.generator-permission-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.generator-permission-summary > span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.generator-permission-refresh {
+  padding: 5px 2px;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.74rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.generator-permission-refresh:hover {
+  color: var(--text);
+}
+
+.generator-permission-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(285px, 1fr));
+  gap: 8px;
+}
+
+.generator-permission-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.025);
+  transition: border-color 170ms ease, background 170ms ease;
+}
+
+.generator-permission-row.is-enabled {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.generator-permission-row > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.generator-permission-row strong,
+.generator-permission-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.generator-permission-row small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.generator-permission-toggle {
+  min-width: 94px;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  background: rgba(0, 0, 0, 0.22);
+  font-size: 0.7rem;
+  font-weight: 850;
+  cursor: pointer;
+}
+
+.generator-permission-toggle.is-enabled {
+  border-color: rgba(255, 255, 255, 0.32);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.generator-permission-toggle:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.generator-permission-empty {
+  grid-column: 1 / -1;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+}
+
 .generator-power-control {
   width: 100%;
   min-height: 62px;
@@ -5603,6 +5754,7 @@ label {
   .folder-form,
   .media-layout,
   .generator-management-grid,
+  .generator-permission-form,
   .generator-settings-fields,
   .generator-delivery-list,
   .roblox-generator-layout,

@@ -96,8 +96,8 @@ const emptyNameTagForm = {
 const accessPermissionOptions = [
   { id: 'media.view', label: 'Ver midia' },
   { id: 'media.manage', label: 'Gerenciar midia' },
-  { id: 'sales.use', label: 'Usar bot de vendas' },
-  { id: 'sales.manage', label: 'Gerenciar estoque' }
+  { id: 'sales.use', label: 'Gerar contas com /conta' },
+  { id: 'sales.manage', label: 'Gerenciar gerador e estoque' }
 ];
 
 function userCan(user, permission) {
@@ -1897,6 +1897,10 @@ function RobloxGeneratorPage({ user }) {
   const [accounts, setAccounts] = useState([]);
   const [filters, setFilters] = useState({ search: '', status: '' });
   const [selectedAccount, setSelectedAccount] = useState(null);
+  const [generatorUsers, setGeneratorUsers] = useState([]);
+  const [permissionForm, setPermissionForm] = useState({ discordId: '', label: '' });
+  const [permissionLoading, setPermissionLoading] = useState(false);
+  const [permissionSavingId, setPermissionSavingId] = useState('');
   const [management, setManagement] = useState({
     settings: {
       cooldownSeconds: 60,
@@ -1931,6 +1935,18 @@ function RobloxGeneratorPage({ user }) {
   const loadingMoreRef = useRef(false);
   const canImport = ['owner', 'admin'].includes(user.role);
   const canConfigure = ['owner', 'admin'].includes(user.role);
+  const canManagePermissions = user.role === 'owner';
+
+  const loadGeneratorUsers = useCallback(async ({ silent = false } = {}) => {
+    if (!canManagePermissions) return;
+    if (!silent) setPermissionLoading(true);
+    try {
+      const payload = await api('/authorized-users');
+      setGeneratorUsers(payload.users || []);
+    } finally {
+      if (!silent) setPermissionLoading(false);
+    }
+  }, [canManagePermissions]);
 
   const loadManagement = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setManagementLoading(true);
@@ -2013,6 +2029,10 @@ function RobloxGeneratorPage({ user }) {
   useEffect(() => {
     loadManagement().catch((error) => setMessage(error.message));
   }, [loadManagement]);
+
+  useEffect(() => {
+    loadGeneratorUsers().catch((error) => setMessage(error.message));
+  }, [loadGeneratorUsers]);
 
   const refreshVisibleAccounts = useCallback(async () => {
     const visibleLimit = Math.min(80, Math.max(ROBLOX_GENERATOR_PAGE_SIZE, accounts.length || ROBLOX_GENERATOR_PAGE_SIZE));
@@ -2186,8 +2206,83 @@ function RobloxGeneratorPage({ user }) {
     }
   }
 
+  async function grantGeneratorPermission(event) {
+    event.preventDefault();
+    if (!canManagePermissions || permissionSavingId) return;
+
+    const discordId = permissionForm.discordId.trim();
+    const label = permissionForm.label.trim();
+    if (!/^\d{5,24}$/.test(discordId)) {
+      setMessage('Informe um Discord ID valido.');
+      return;
+    }
+
+    setPermissionSavingId(discordId);
+    setMessage('');
+    try {
+      const existing = generatorUsers.find((entry) => entry.discordId === discordId);
+      if (existing) {
+        const permissions = Array.from(new Set([...(existing.permissions || []), 'sales.use']));
+        await api(`/authorized-users/${discordId}`, {
+          method: 'PATCH',
+          body: { permissions, ...(label ? { label } : {}) }
+        });
+      } else {
+        await api('/authorized-users', {
+          method: 'POST',
+          body: {
+            discordId,
+            role: 'member',
+            label: label || `Discord ${discordId}`,
+            permissions: ['sales.use']
+          }
+        });
+      }
+      setPermissionForm({ discordId: '', label: '' });
+      setMessage(`Permissao de /conta liberada para ${discordId}.`);
+      await loadGeneratorUsers({ silent: true });
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setPermissionSavingId('');
+    }
+  }
+
+  async function setGeneratorPermission(targetUser, enabled) {
+    if (!canManagePermissions || targetUser.role === 'owner' || permissionSavingId) return;
+
+    setPermissionSavingId(targetUser.discordId);
+    setMessage('');
+    try {
+      const current = targetUser.permissions || [];
+      const permissions = enabled
+        ? Array.from(new Set([...current, 'sales.use']))
+        : current.filter((permission) => permission !== 'sales.use');
+      await api(`/authorized-users/${targetUser.discordId}`, {
+        method: 'PATCH',
+        body: { permissions }
+      });
+      setGeneratorUsers((users) => users.map((entry) => (
+        entry.discordId === targetUser.discordId ? { ...entry, permissions } : entry
+      )));
+      setMessage(
+        enabled
+          ? `Permissao de /conta liberada para ${targetUser.discordId}.`
+          : `Permissao de /conta removida de ${targetUser.discordId}.`
+      );
+    } catch (error) {
+      setMessage(error.message);
+      await loadGeneratorUsers({ silent: true }).catch(() => {});
+    } finally {
+      setPermissionSavingId('');
+    }
+  }
+
   const availableCount = accounts.filter((account) => account.status === 'available').length;
   const inUseCount = accounts.filter((account) => account.status === 'in_use').length;
+  const allowedGeneratorUsers = generatorUsers.filter((entry) => (
+    entry.role === 'owner' || (entry.permissions || []).includes('sales.use')
+  )).length;
   const showSkeleton = listLoading && accounts.length === 0;
   const totalCount = typeof pagination.total === 'number' ? pagination.total : null;
 
@@ -2311,6 +2406,87 @@ function RobloxGeneratorPage({ user }) {
             </span>
           </div>
         </section>
+
+        {canManagePermissions && (
+          <section className="panel generator-permissions-panel">
+            <div className="panel-title">
+              <div>
+                <small>PERMISSAO DO COMANDO</small>
+                <h3>Quem pode usar /conta</h3>
+                <p className="muted">Adicione pelo Discord ID ou altere o acesso abaixo. A mudanca vale imediatamente no bot.</p>
+              </div>
+              <ShieldCheck size={19} />
+            </div>
+            <form className="generator-permission-form" onSubmit={grantGeneratorPermission}>
+              <label>
+                Discord ID
+                <input
+                  value={permissionForm.discordId}
+                  onChange={(event) => setPermissionForm((current) => ({ ...current, discordId: event.target.value.replace(/\D/g, '') }))}
+                  placeholder="Ex.: 123456789012345678"
+                  inputMode="numeric"
+                  required
+                />
+              </label>
+              <label>
+                Nome para identificar
+                <input
+                  value={permissionForm.label}
+                  onChange={(event) => setPermissionForm((current) => ({ ...current, label: event.target.value }))}
+                  placeholder="Ex.: Cliente Discord"
+                />
+              </label>
+              <button className="primary-button" disabled={Boolean(permissionSavingId)}>
+                <Plus size={17} />
+                Liberar /conta
+              </button>
+            </form>
+            <div className="generator-permission-summary">
+              <span><BadgeCheck size={16} /> {allowedGeneratorUsers} autorizado(s)</span>
+              <button
+                type="button"
+                className="generator-permission-refresh"
+                onClick={() => loadGeneratorUsers().catch((error) => setMessage(error.message))}
+                disabled={permissionLoading}
+              >
+                <RefreshCw className={permissionLoading ? 'spin' : ''} size={15} />
+                Atualizar
+              </button>
+            </div>
+            <div className="generator-permission-list">
+              {permissionLoading && generatorUsers.length === 0 && (
+                <p className="muted generator-permission-empty"><RefreshCw className="spin" size={16} /> Carregando usuarios</p>
+              )}
+              {!permissionLoading && generatorUsers.length === 0 && (
+                <p className="muted generator-permission-empty">Nenhum usuario autorizado cadastrado.</p>
+              )}
+              {generatorUsers.map((entry) => {
+                const enabled = entry.role === 'owner' || (entry.permissions || []).includes('sales.use');
+                const isSaving = permissionSavingId === entry.discordId;
+                return (
+                  <article className={`generator-permission-row ${enabled ? 'is-enabled' : ''}`} key={entry.discordId}>
+                    <Avatar src={entry.avatarUrl} name={entry.globalName || entry.username || entry.label} />
+                    <span>
+                      <strong>{entry.globalName || entry.username || entry.label || `Discord ${entry.discordId}`}</strong>
+                      <small>{entry.discordId} · {entry.role}</small>
+                    </span>
+                    <button
+                      type="button"
+                      className={`generator-permission-toggle ${enabled ? 'is-enabled' : ''}`}
+                      onClick={() => setGeneratorPermission(entry, !enabled)}
+                      disabled={entry.role === 'owner' || Boolean(permissionSavingId)}
+                      aria-pressed={enabled}
+                      aria-label={`${enabled ? 'Remover' : 'Liberar'} permissao de gerar contas para ${entry.discordId}`}
+                    >
+                      {isSaving ? <RefreshCw className="spin" size={15} /> : enabled ? <Check size={15} /> : <X size={15} />}
+                      {entry.role === 'owner' ? 'Owner' : enabled ? 'Permitido' : 'Bloqueado'}
+                    </button>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        )}
 
         <section className="panel generator-deliveries-panel">
           <div className="panel-title">
