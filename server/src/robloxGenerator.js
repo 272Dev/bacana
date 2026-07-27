@@ -12,6 +12,9 @@ const ROBLOX_GENERATOR_PAGE_SIZE = 24;
 const ROBLOX_GENERATOR_MAX_PAGE_SIZE = 80;
 const ROBLOX_GENERATOR_STATUS_SCAN_SIZE = 100;
 const ROBLOX_PRESENCE_CACHE_TTL_MS = 15_000;
+const ROBLOX_GENERATOR_SETTINGS_ID = 'default';
+const ROBLOX_GENERATOR_DEFAULT_COOLDOWN_SECONDS = 60;
+const ROBLOX_GENERATOR_STALE_RESERVATION_MS = 10 * 60 * 1000;
 const presenceCache = new Map();
 
 function cleanText(value) {
@@ -253,6 +256,180 @@ function normalizePageNumber(value, fallback, max = Number.MAX_SAFE_INTEGER) {
   return Math.min(Math.max(number, 0), max);
 }
 
+function mapGeneratorSettings(row) {
+  return {
+    cooldownSeconds: Math.max(0, Number(row?.cooldown_seconds ?? ROBLOX_GENERATOR_DEFAULT_COOLDOWN_SECONDS)),
+    generatorEnabled: Number(row?.generator_enabled ?? 1) === 1,
+    maxDeliveriesPerUser: Math.max(0, Number(row?.max_deliveries_per_user || 0)),
+    updatedBy: row?.updated_by || null,
+    updatedAt: row?.updated_at || null
+  };
+}
+
+export async function getRobloxGeneratorSettings() {
+  const timestamp = nowIso();
+  await db.prepare(`
+    INSERT INTO roblox_generator_settings (
+      id, cooldown_seconds, generator_enabled, max_deliveries_per_user,
+      updated_by, created_at, updated_at
+    ) VALUES (?, ?, 1, 0, NULL, ?, ?)
+    ON CONFLICT (id) DO NOTHING
+  `).run(
+    ROBLOX_GENERATOR_SETTINGS_ID,
+    ROBLOX_GENERATOR_DEFAULT_COOLDOWN_SECONDS,
+    timestamp,
+    timestamp
+  );
+
+  return mapGeneratorSettings(
+    await db.prepare('SELECT * FROM roblox_generator_settings WHERE id = ?').get(ROBLOX_GENERATOR_SETTINGS_ID)
+  );
+}
+
+export async function updateRobloxGeneratorSettings({
+  cooldownSeconds,
+  generatorEnabled,
+  maxDeliveriesPerUser,
+  actorDiscordId = null
+} = {}) {
+  const current = await getRobloxGeneratorSettings();
+  const next = {
+    cooldownSeconds: Math.min(604_800, Math.max(0, Number(cooldownSeconds ?? current.cooldownSeconds))),
+    generatorEnabled: generatorEnabled == null ? current.generatorEnabled : Boolean(generatorEnabled),
+    maxDeliveriesPerUser: Math.min(100_000, Math.max(0, Number(maxDeliveriesPerUser ?? current.maxDeliveriesPerUser)))
+  };
+  const timestamp = nowIso();
+
+  await db.prepare(`
+    UPDATE roblox_generator_settings
+    SET cooldown_seconds = ?,
+        generator_enabled = ?,
+        max_deliveries_per_user = ?,
+        updated_by = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(
+    Math.floor(next.cooldownSeconds),
+    next.generatorEnabled ? 1 : 0,
+    Math.floor(next.maxDeliveriesPerUser),
+    cleanText(actorDiscordId) || null,
+    timestamp,
+    ROBLOX_GENERATOR_SETTINGS_ID
+  );
+
+  return getRobloxGeneratorSettings();
+}
+
+export async function getRobloxGeneratorManagement({ deliveryLimit = 30 } = {}) {
+  const limit = normalizePageNumber(deliveryLimit, 30, 100) || 30;
+  const [settings, accountStats, deliveryStats, deliveries] = await Promise.all([
+    getRobloxGeneratorSettings(),
+    db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN selected_at IS NULL THEN 1 ELSE 0 END) AS never_selected,
+        SUM(CASE WHEN selected_at IS NOT NULL THEN 1 ELSE 0 END) AS selected
+      FROM roblox_generator_accounts
+    `).get(),
+    db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN status = 'reserved' THEN 1 ELSE 0 END) AS reserved,
+        SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) AS delivered,
+        COUNT(DISTINCT buyer_discord_id) AS buyers
+      FROM sales_deliveries
+    `).get(),
+    db.prepare(`
+      SELECT
+        delivery.id,
+        delivery.account_id,
+        delivery.buyer_discord_id,
+        delivery.channel,
+        delivery.status,
+        delivery.created_at,
+        delivery.delivered_at,
+        account.username
+      FROM sales_deliveries delivery
+      JOIN roblox_generator_accounts account ON account.id = delivery.account_id
+      ORDER BY COALESCE(delivery.delivered_at, delivery.created_at) DESC
+      LIMIT ?
+    `).all(limit)
+  ]);
+
+  const totalAccounts = Number(accountStats?.total || 0);
+  const reserved = Number(deliveryStats?.reserved || 0);
+  const delivered = Number(deliveryStats?.delivered || 0);
+
+  return {
+    settings,
+    stats: {
+      totalAccounts,
+      availableForDelivery: Math.max(0, totalAccounts - reserved - delivered),
+      reserved,
+      delivered,
+      buyers: Number(deliveryStats?.buyers || 0),
+      selected: Number(accountStats?.selected || 0),
+      neverSelected: Number(accountStats?.never_selected || 0)
+    },
+    deliveries: deliveries.map((row) => ({
+      id: row.id,
+      accountId: row.account_id,
+      username: row.username,
+      buyerDiscordId: row.buyer_discord_id,
+      channel: row.channel,
+      status: row.status,
+      createdAt: row.created_at,
+      deliveredAt: row.delivered_at
+    }))
+  };
+}
+
+async function clearStaleRobloxSalesReservations() {
+  const staleBefore = new Date(Date.now() - ROBLOX_GENERATOR_STALE_RESERVATION_MS).toISOString();
+  await db.prepare(`
+    DELETE FROM sales_deliveries
+    WHERE status = 'reserved' AND created_at < ?
+  `).run(staleBefore);
+}
+
+async function assertRobloxSalesEligibility(buyerDiscordId) {
+  const settings = await getRobloxGeneratorSettings();
+  if (!settings.generatorEnabled) {
+    const error = new Error('O gerador de contas esta pausado pelo administrador.');
+    error.status = 503;
+    throw error;
+  }
+
+  const buyerStats = await db.prepare(`
+    SELECT
+      COUNT(*) AS delivered,
+      MAX(COALESCE(delivered_at, created_at)) AS last_delivery_at
+    FROM sales_deliveries
+    WHERE buyer_discord_id = ? AND status = 'delivered'
+  `).get(buyerDiscordId);
+  const delivered = Number(buyerStats?.delivered || 0);
+
+  if (settings.maxDeliveriesPerUser > 0 && delivered >= settings.maxDeliveriesPerUser) {
+    const error = new Error(`Voce atingiu o limite de ${settings.maxDeliveriesPerUser} conta(s) por usuario.`);
+    error.status = 403;
+    throw error;
+  }
+
+  const lastDeliveryAt = Date.parse(buyerStats?.last_delivery_at || '');
+  if (settings.cooldownSeconds > 0 && Number.isFinite(lastDeliveryAt)) {
+    const retryAfterMs = (settings.cooldownSeconds * 1000) - (Date.now() - lastDeliveryAt);
+    if (retryAfterMs > 0) {
+      const retryAfterSeconds = Math.max(1, Math.ceil(retryAfterMs / 1000));
+      const error = new Error(`Aguarde ${retryAfterSeconds} segundo(s) antes de solicitar outra conta.`);
+      error.status = 429;
+      error.retryAfterSeconds = retryAfterSeconds;
+      throw error;
+    }
+  }
+
+  return settings;
+}
+
 function buildListQuery({ search = '' } = {}) {
   const cleanSearch = cleanText(search).toLowerCase();
   const where = [];
@@ -359,15 +536,25 @@ export async function importRobloxGeneratorText({ text, actorDiscordId = null, s
   };
 }
 
-export async function importRobloxGeneratorFile({ actorDiscordId = null } = {}) {
+export async function importRobloxGeneratorFile({ actorDiscordId = null, consume = false } = {}) {
   try {
     const text = await fs.readFile(config.robloxGenerator.sourceFile, 'utf8');
     if (!text.trim()) return null;
-    return importRobloxGeneratorText({
+    const result = await importRobloxGeneratorText({
       text,
       actorDiscordId,
       sourceLabel: config.robloxGenerator.sourceFile
     });
+    let sourceConsumed = false;
+    if (consume) {
+      try {
+        await fs.unlink(config.robloxGenerator.sourceFile);
+        sourceConsumed = true;
+      } catch {
+        sourceConsumed = false;
+      }
+    }
+    return { ...result, sourceConsumed };
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
@@ -537,6 +724,9 @@ export async function reserveRandomRobloxSalesAccount({ buyerDiscordId, channel 
     error.status = 400;
     throw error;
   }
+
+  await clearStaleRobloxSalesReservations();
+  await assertRobloxSalesEligibility(buyer);
 
   const rows = await hydrateMissingRobloxProfiles(await db.prepare(`
     SELECT account.*
