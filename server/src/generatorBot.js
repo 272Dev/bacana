@@ -328,21 +328,21 @@ async function createPixCharge(interaction) {
   }
 
   const value = interaction.options.getNumber('valor', true);
-  const buyer = interaction.options.getUser('usuario', true);
-  const requestedPlan = interaction.options.getString('plano', true);
+  const buyer = interaction.user;
   const amountCents = Math.round(value * 100);
   pixRequestsInFlight.add(interaction.user.id);
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   try {
-    const plan = await findGeneratorPlan(requestedPlan);
-    if (!plan || plan.priceCents <= 0) {
-      throw new Error('Plano invalido, gratuito ou indisponivel para venda.');
+    const matchingPlans = (await listGeneratorPlans({ activeOnly: true }))
+      .filter((candidate) => candidate.priceCents > 0 && candidate.priceCents === amountCents);
+    if (!matchingPlans.length) {
+      throw new Error(`Nenhum plano ativo possui o valor ${formatPrice(amountCents)}.`);
     }
-    if (buyer.bot) throw new Error('Selecione uma pessoa, nao um bot.');
-    if (amountCents !== plan.priceCents) {
-      throw new Error(`O valor do plano ${plan.name} deve ser exatamente ${formatPrice(plan.priceCents)}.`);
+    if (matchingPlans.length > 1) {
+      throw new Error('Mais de um plano possui este valor. Peça para a equipe corrigir os preços dos planos.');
     }
+    const [plan] = matchingPlans;
 
     const payment = await createLivePixPayment(amountCents);
     await createLivePixPaymentIntent({
@@ -1343,9 +1343,8 @@ export function generatorCommandDefinitions() {
     },
     {
       name: 'pix',
-      description: 'Gerar uma cobranca Pix pela LivePix',
+      description: 'Comprar um plano Nexus com Pix',
       dmPermission: false,
-      defaultMemberPermissions: PermissionFlagsBits.ManageGuild.toString(),
       options: [
         {
           type: 10,
@@ -1354,20 +1353,6 @@ export function generatorCommandDefinitions() {
           required: true,
           min_value: 1,
           max_value: 100000
-        },
-        {
-          type: 6,
-          name: 'usuario',
-          description: 'Usuario que recebera a key automaticamente',
-          required: true
-        },
-        {
-          type: 3,
-          name: 'plano',
-          description: 'ID ou nome do plano (weekly, monthly, vip ou lifetime)',
-          required: true,
-          min_length: 2,
-          max_length: 64
         }
       ]
     }
