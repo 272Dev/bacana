@@ -209,6 +209,8 @@ ROBLOX_ACCOUNTS_FILE=./data/roblox-accounts.txt
 ```
 
 Nao envie arquivos TXT com contas reais para o GitHub. As senhas importadas ficam criptografadas no banco.
+Em producao, o arquivo configurado em `ROBLOX_ACCOUNTS_FILE` e consumido e removido
+logo depois de uma importacao bem-sucedida.
 
 ### Bot de vendas
 
@@ -221,7 +223,10 @@ executa-lo. O bot:
 - confirma publicamente apenas por resposta efemera;
 - libera a reserva se a DM estiver fechada;
 - impede entrega duplicada e registra auditoria sem salvar a senha no log;
-- aplica intervalo de 60 segundos entre solicitacoes do mesmo usuario.
+- aplica um delay persistente por usuario, configuravel no painel;
+- permite pausar novas entregas e definir um limite total por usuario;
+- recupera reservas abandonadas e mostra estoque, compradores e historico recente
+  na area administrativa.
 
 O banco ja guarda referencia e estado do pagamento por entrega. A cobranca
 LivePix ainda fica desativada: ela deve ser conectada depois com webhook assinado
