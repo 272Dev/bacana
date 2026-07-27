@@ -1288,6 +1288,207 @@ textarea {
   gap: 14px;
 }
 
+.generator-management-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.86fr) minmax(320px, 1fr);
+  gap: 14px;
+}
+
+.generator-management-grid > .panel {
+  min-width: 0;
+  padding: 18px;
+}
+
+.generator-settings-panel,
+.generator-overview-panel {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.generator-deliveries-panel {
+  grid-column: 1 / -1;
+}
+
+.generator-power-control {
+  width: 100%;
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.035);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 180ms ease, background 180ms ease, color 180ms ease;
+}
+
+.generator-power-control.is-active {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.26);
+  background: rgba(255, 255, 255, 0.075);
+}
+
+.generator-power-control:disabled {
+  cursor: default;
+}
+
+.generator-power-control > span,
+.generator-policy-summary > span,
+.generator-delivery-row > span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.generator-power-control small,
+.generator-policy-summary small,
+.generator-delivery-row small {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.generator-settings-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.generator-settings-fields > label {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.generator-settings-fields > label > small {
+  line-height: 1.35;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.generator-number-field {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(64px, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: rgba(0, 0, 0, 0.24);
+}
+
+.generator-number-field input {
+  min-width: 0;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.generator-number-field span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.generator-save-settings {
+  width: 100%;
+}
+
+.generator-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  transition: opacity 180ms ease;
+}
+
+.generator-stat-grid.is-loading {
+  opacity: 0.52;
+}
+
+.generator-stat-grid > span {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 13px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.generator-stat-grid strong {
+  font-size: 1.35rem;
+}
+
+.generator-stat-grid small {
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.25;
+}
+
+.generator-policy-summary {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.generator-delivery-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.generator-delivery-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.generator-delivery-row > span:last-child {
+  text-align: right;
+}
+
+.generator-delivery-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delivery-state {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.delivery-state.delivered {
+  color: var(--text);
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.09);
+}
+
 .roblox-generator-layout {
   display: grid;
   grid-template-columns: minmax(300px, 0.36fr) minmax(0, 1fr);
@@ -5268,6 +5469,7 @@ label {
   .dashboard-grid,
   .details-layout,
   .media-layout,
+  .generator-management-grid,
   .roblox-generator-layout,
   .authenticator-layout,
   .temp-email-layout,
@@ -5400,6 +5602,9 @@ label {
   .user-form,
   .folder-form,
   .media-layout,
+  .generator-management-grid,
+  .generator-settings-fields,
+  .generator-delivery-list,
   .roblox-generator-layout,
   .authenticator-layout,
   .temp-email-layout,
@@ -5414,6 +5619,10 @@ label {
   .discord-command-summary,
   .discord-stat-grid {
     grid-template-columns: 1fr;
+  }
+
+  .generator-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .discord-bot-select.compact {
