@@ -2108,7 +2108,49 @@ export async function notifyLivePixPaymentIntent(intent) {
   const entry = clients.get(config.discordBot.token);
   if (!entry?.client?.isReady?.()) return false;
   const fulfilledIntent = await fulfillLivePixPaymentIntent(entry.client, intent);
-  return updateLivePixPaymentMessage(entry.client, fulfilledIntent);
+  const messageUpdated = await updateLivePixPaymentMessage(entry.client, fulfilledIntent);
+  if (messageUpdated) return true;
+  return fulfilledIntent?.fulfillmentStatus === 'completed'
+    && Boolean(fulfilledIntent?.metadata?.ticketExpiredAt);
+}
+
+export async function closeExpiredLivePixPurchaseTicket(intent) {
+  if (!config.discordBot.token || missingEnv(config.discordBot.token)) return false;
+  const entry = clients.get(config.discordBot.token);
+  if (!entry?.client?.isReady?.()) return false;
+  const guildId = String(intent?.guildId || '').trim();
+  const channelId = String(
+    intent?.channelId
+    || intent?.metadata?.ticketOriginalChannelId
+    || ''
+  ).trim();
+  if (!guildId || !channelId) return false;
+  let guild = entry.client.guilds.cache.get(guildId);
+  if (!guild) {
+    guild = await entry.client.guilds.fetch(guildId).catch(() => null);
+  }
+  if (!guild) return false;
+  let channel = guild.channels.cache.get(channelId);
+  if (!channel) {
+    try {
+      channel = await guild.channels.fetch(channelId);
+    } catch (error) {
+      if (Number(error?.code) === 10003) return true;
+      throw error;
+    }
+  }
+  if (!channel) return true;
+  const expectedBuyer = String(intent?.buyerDiscordId || '').trim();
+  const topic = String(channel.topic || '');
+  if (
+    channel.type !== ChannelType.GuildText
+    || !topic.includes('type:purchase')
+    || (expectedBuyer && !topic.includes(`nexus-user:${expectedBuyer}`))
+  ) {
+    return false;
+  }
+  await channel.delete('Ticket Nexus fechado automaticamente: Pix nao pago em 20 minutos.');
+  return true;
 }
 
 // Pequena superficie interna para testes de regressao; nao e exposta por HTTP.

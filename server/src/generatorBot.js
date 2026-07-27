@@ -49,6 +49,7 @@ const requestsInFlight = new Set();
 const pixRequestsInFlight = new Set();
 const BRAND_COLOR = 0x0A0A0A;
 const DEFAULT_FOOTER = 'Nexus • Gerador premium';
+const PURCHASE_TICKET_TTL_MS = 20 * 60 * 1000;
 const SUPPORT_TYPES = {
   generation: 'Problema na geração',
   purchase: 'Compra',
@@ -946,6 +947,7 @@ async function publishTicketPixCheckout(interaction, channel, plan) {
   if (!plan?.active || plan.priceCents <= 0) {
     throw new Error('Este plano nao esta disponivel para pagamento automatico.');
   }
+  const expiresAt = new Date(Date.now() + PURCHASE_TICKET_TTL_MS);
   const payment = await createLivePixPayment(plan.priceCents);
   await createLivePixPaymentIntent({
     reference: payment.reference,
@@ -962,7 +964,8 @@ async function publishTicketPixCheckout(interaction, channel, plan) {
       source: 'discord_purchase_ticket',
       ticketChannelId: channel.id,
       planName: plan.name,
-      planPriceCents: plan.priceCents
+      planPriceCents: plan.priceCents,
+      expiresAt: expiresAt.toISOString()
     }
   });
 
@@ -982,6 +985,7 @@ async function publishTicketPixCheckout(interaction, channel, plan) {
       { name: 'Valor', value: formatPrice(payment.amountCents), inline: true },
       { name: 'Status', value: 'Aguardando pagamento', inline: true },
       { name: 'Comprador', value: `<@${interaction.user.id}>`, inline: true },
+      { name: 'Expira', value: `<t:${Math.floor(expiresAt.getTime() / 1000)}:R>`, inline: true },
       { name: 'Referencia', value: `\`${safeText(payment.reference, 100)}\``, inline: false }
     ],
     image: false
@@ -1045,6 +1049,7 @@ async function createTicket(interaction, type, planId = null) {
     guildConfig = await saveGuildConfig(interaction.guildId, { supportCategoryId: category.id });
   }
   const me = interaction.guild.members.me;
+  const isPurchaseTicket = type === 'purchase' && Boolean(planId);
   const channel = await interaction.guild.channels.create({
     name: ticketSlug(interaction.user),
     type: ChannelType.GuildText,
@@ -1054,7 +1059,12 @@ async function createTicket(interaction, type, planId = null) {
       { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
       {
         id: interaction.user.id,
-        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles]
+        allow: isPurchaseTicket
+          ? [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory]
+          : [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.AttachFiles],
+        ...(isPurchaseTicket ? {
+          deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AttachFiles]
+        } : {})
       },
       ...(me ? [{
         id: me.id,
@@ -1067,12 +1077,20 @@ async function createTicket(interaction, type, planId = null) {
   const selectedPlan = plans.find((plan) => plan.id === planId);
   const ticketEmbed = await brandEmbed(interaction, {
     title: `Ticket • ${SUPPORT_TYPES[type] || 'Suporte'}`,
-    description: [
-      `${interaction.user}, descreva sua solicitação com todos os detalhes.`,
-      selectedPlan ? `\n**Plano selecionado:** ${selectedPlan.name} • ${formatPrice(selectedPlan.priceCents)}` : '',
-      '',
-      'A equipe responderá por este canal. Não envie senhas ou tokens.'
-    ].join('\n'),
+    description: isPurchaseTicket
+      ? [
+          `${interaction.user}, este canal é exclusivo para o pagamento.`,
+          selectedPlan ? `\n**Plano selecionado:** ${selectedPlan.name} • ${formatPrice(selectedPlan.priceCents)}` : '',
+          '',
+          'O envio de mensagens fica bloqueado. Use o QR Code abaixo.',
+          '**O pagamento é verificado automaticamente.** Se não for pago em 20 minutos, o ticket será fechado.'
+        ].join('\n')
+      : [
+          `${interaction.user}, descreva sua solicitação com todos os detalhes.`,
+          selectedPlan ? `\n**Plano selecionado:** ${selectedPlan.name} • ${formatPrice(selectedPlan.priceCents)}` : '',
+          '',
+          'A equipe responderá por este canal. Não envie senhas ou tokens.'
+        ].join('\n'),
     fields: [{ name: 'Protocolo', value: `\`${channel.id}\`` }]
   });
   await channel.send({
@@ -1087,16 +1105,6 @@ async function createTicket(interaction, type, planId = null) {
     try {
       await publishTicketPixCheckout(interaction, channel, selectedPlan);
     } catch (error) {
-      const paymentErrorEmbed = await brandEmbed(interaction, {
-        title: 'Pagamento temporariamente indisponivel',
-        description: [
-          'O ticket foi criado, mas nao foi possivel gerar o QR Code agora.',
-          `**Motivo:** ${safeText(error?.message || 'erro inesperado', 500)}`,
-          'A equipe pode tentar novamente pelo comando `/pix valor`.'
-        ].join('\n'),
-        image: false
-      });
-      await channel.send({ embeds: [paymentErrorEmbed], allowedMentions: { parse: [] } }).catch(() => {});
       await logAudit({
         actorDiscordId: interaction.user.id,
         action: 'generator_bot.ticket_pix_failed',
@@ -1107,6 +1115,10 @@ async function createTicket(interaction, type, planId = null) {
           errorCode: cleanText(error?.code || 'LIVEPIX_UNKNOWN_ERROR')
         }
       }).catch(() => {});
+      await channel.delete('Ticket Nexus removido: nao foi possivel gerar o Pix.').catch(() => {});
+      return interaction.editReply(
+        `Nao foi possivel gerar o QR Code agora: ${safeText(error?.message || 'erro inesperado', 400)}. Tente novamente em instantes.`
+      );
     }
   }
   await logAudit({

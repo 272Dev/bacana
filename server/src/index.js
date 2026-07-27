@@ -56,6 +56,7 @@ import {
 import {
   applyDiscordBotProfile,
   configureDiscordProtection,
+  closeExpiredLivePixPurchaseTicket,
   getDiscordProtectionCatalog,
   getDiscordProtectionStats,
   getDiscordRuntimeState,
@@ -92,7 +93,9 @@ import { ensureLivePixWebhook, isLivePixConfigured } from './livePix.js';
 import {
   listPendingLivePixFulfillments,
   listPendingLivePixPayments,
+  listRecentExpiredLivePixPayments,
   listUnnotifiedPaidLivePixPayments,
+  markLivePixPurchaseTicketExpired,
   markLivePixPaymentNotified,
   processLivePixWebhook,
   syncLivePixPaymentIntent
@@ -197,6 +200,7 @@ const livePixWebhookLimiter = rateLimit({
   legacyHeaders: false
 });
 let livePixWebhookReady = false;
+const PURCHASE_TICKET_TTL_MS = 20 * 60 * 1000;
 
 async function notifyPaidLivePixIntent(intent) {
   if (!intent?.reference || intent.status !== 'paid') return false;
@@ -223,6 +227,63 @@ async function reconcileLivePixPaymentNotifications() {
 async function pollPendingLivePixPayments() {
   const intents = await listPendingLivePixPayments(25);
   let confirmed = 0;
+  let expiredTickets = 0;
+  for (const intent of intents) {
+    try {
+      const result = await syncLivePixPaymentIntent(intent.reference);
+      if (result.paid) {
+        confirmed += 1;
+        await notifyPaidLivePixIntent(result.intent);
+        continue;
+      }
+      const createdAt = Date.parse(intent.createdAt || '');
+      const configuredExpiration = Date.parse(intent.metadata?.expiresAt || '');
+      const expiresAt = Number.isFinite(configuredExpiration)
+        ? configuredExpiration
+        : createdAt + PURCHASE_TICKET_TTL_MS;
+      const shouldExpireTicket = intent.productType === 'generator_plan'
+        && intent.metadata?.source === 'discord_purchase_ticket'
+        && !intent.metadata?.ticketExpiredAt
+        && Number.isFinite(expiresAt)
+        && Date.now() >= expiresAt;
+      if (!shouldExpireTicket) continue;
+      const closed = await closeExpiredLivePixPurchaseTicket(intent);
+      if (!closed) {
+        console.warn(`[nexus] Nao foi possivel fechar o ticket Pix ${intent.reference}.`);
+        continue;
+      }
+      const expiredIntent = await markLivePixPurchaseTicketExpired(intent.reference);
+      if (
+        !expiredIntent
+        || expiredIntent.status !== 'expired'
+        || !expiredIntent.metadata?.ticketExpiredAt
+      ) {
+        continue;
+      }
+      expiredTickets += 1;
+      await logAudit({
+        actorDiscordId: expiredIntent.buyerDiscordId,
+        action: 'generator_bot.ticket_pix_expired',
+        targetType: 'livepix_payment',
+        targetId: expiredIntent.reference,
+        metadata: {
+          guildId: expiredIntent.guildId,
+          channelId: expiredIntent.metadata?.ticketOriginalChannelId || null,
+          amountCents: expiredIntent.amountCents,
+          currency: expiredIntent.currency
+        }
+      }).catch(() => {});
+    } catch (error) {
+      if (['LIVEPIX_RATE_LIMITED', 'LIVEPIX_TOKEN_BACKOFF'].includes(error?.code)) break;
+      console.warn(`[nexus] Falha ao consultar Pix ${intent.reference}: ${error.message}`);
+    }
+  }
+  return { checked: intents.length, confirmed, expiredTickets };
+}
+
+async function pollRecentlyExpiredLivePixPayments() {
+  const intents = await listRecentExpiredLivePixPayments(25, 24);
+  let confirmed = 0;
   for (const intent of intents) {
     try {
       const result = await syncLivePixPaymentIntent(intent.reference);
@@ -231,7 +292,7 @@ async function pollPendingLivePixPayments() {
       await notifyPaidLivePixIntent(result.intent);
     } catch (error) {
       if (['LIVEPIX_RATE_LIMITED', 'LIVEPIX_TOKEN_BACKOFF'].includes(error?.code)) break;
-      console.warn(`[nexus] Falha ao consultar Pix ${intent.reference}: ${error.message}`);
+      console.warn(`[nexus] Falha ao consultar Pix expirado ${intent.reference}: ${error.message}`);
     }
   }
   return { checked: intents.length, confirmed };
@@ -2279,6 +2340,14 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
         });
     }, 30_000);
     livePixReconciliationTimer.unref?.();
+    const expiredLivePixTimer = setInterval(() => {
+      void pollRecentlyExpiredLivePixPayments()
+        .then(() => reconcileLivePixPaymentNotifications())
+        .catch((error) => {
+          console.warn(`[nexus] Falha ao reconciliar pagamentos Pix expirados: ${error.message}`);
+        });
+    }, 5 * 60_000);
+    expiredLivePixTimer.unref?.();
     const livePixWebhookTimer = setInterval(() => {
       if (!isLivePixConfigured() || livePixWebhookReady) return;
       void ensureLivePixWebhook()

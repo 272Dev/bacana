@@ -156,6 +156,40 @@ export async function listPendingLivePixPayments(limit = 25) {
   return rows.map(mapIntent);
 }
 
+export async function markLivePixPurchaseTicketExpired(reference) {
+  const intent = await getLivePixPaymentIntent(reference);
+  if (!intent || intent.status !== 'pending') return intent;
+  const expiredAt = nowIso();
+  const metadata = {
+    ...intent.metadata,
+    ticketExpiredAt: expiredAt,
+    ticketOriginalChannelId: intent.channelId || intent.metadata?.ticketOriginalChannelId || null
+  };
+  await db.prepare(`
+    UPDATE livepix_payment_intents
+    SET channel_id = NULL, message_id = NULL, metadata_json = ?, status = 'expired', updated_at = ?
+    WHERE reference = ? AND status = 'pending'
+  `).run(
+    JSON.stringify(metadata),
+    expiredAt,
+    cleanText(reference, 200)
+  );
+  return getLivePixPaymentIntent(reference);
+}
+
+export async function listRecentExpiredLivePixPayments(limit = 25, lookbackHours = 24) {
+  const normalizedLimit = Math.max(1, Math.min(100, Number(limit) || 25));
+  const normalizedHours = Math.max(1, Math.min(168, Number(lookbackHours) || 24));
+  const cutoff = new Date(Date.now() - normalizedHours * 60 * 60 * 1000).toISOString();
+  const rows = await db.prepare(`
+    SELECT * FROM livepix_payment_intents
+    WHERE status = 'expired' AND updated_at >= ?
+    ORDER BY updated_at ASC
+    LIMIT ${normalizedLimit}
+  `).all(cutoff);
+  return rows.map(mapIntent);
+}
+
 export async function listPendingLivePixFulfillments(limit = 50) {
   const normalizedLimit = Math.max(1, Math.min(200, Number(limit) || 50));
   const retryBefore = new Date(Date.now() - 90_000).toISOString();
@@ -255,7 +289,7 @@ async function persistPaidIntent(intent, payment) {
     UPDATE livepix_payment_intents
     SET provider_payment_id = ?, proof = ?, provider_created_at = ?,
         status = 'paid', paid_at = COALESCE(paid_at, ?), updated_at = ?
-    WHERE reference = ? AND status = 'pending'
+    WHERE reference = ? AND status IN ('pending', 'expired')
   `).run(
     payment.id,
     payment.proof,
@@ -273,7 +307,7 @@ export async function syncLivePixPaymentIntent(reference, { providerPaymentId = 
   if (intent.status === 'paid') {
     return { found: true, paid: true, reason: 'already_paid', intent };
   }
-  if (intent.status !== 'pending') {
+  if (!['pending', 'expired'].includes(intent.status)) {
     return { found: true, paid: false, reason: intent.status, intent };
   }
 
