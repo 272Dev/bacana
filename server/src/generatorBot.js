@@ -336,13 +336,7 @@ async function createPixCharge(interaction) {
   try {
     const matchingPlans = (await listGeneratorPlans({ activeOnly: true }))
       .filter((candidate) => candidate.priceCents > 0 && candidate.priceCents === amountCents);
-    if (!matchingPlans.length) {
-      throw new Error(`Nenhum plano ativo possui o valor ${formatPrice(amountCents)}.`);
-    }
-    if (matchingPlans.length > 1) {
-      throw new Error('Mais de um plano possui este valor. Peça para a equipe corrigir os preços dos planos.');
-    }
-    const [plan] = matchingPlans;
+    const plan = matchingPlans.length === 1 ? matchingPlans[0] : null;
 
     const payment = await createLivePixPayment(amountCents);
     await createLivePixPaymentIntent({
@@ -354,13 +348,15 @@ async function createPixCharge(interaction) {
       channelId: interaction.channelId,
       createdByDiscordId: interaction.user.id,
       buyerDiscordId: buyer.id,
-      productType: 'generator_plan',
-      productId: plan.id,
+      productType: plan ? 'generator_plan' : 'manual',
+      productId: plan?.id || null,
       metadata: {
         source: 'discord_slash_command',
         command: 'pix',
-        planName: plan.name,
-        planPriceCents: plan.priceCents
+        ...(plan ? {
+          planName: plan.name,
+          planPriceCents: plan.priceCents
+        } : {})
       }
     });
     const qrCode = await createLivePixQrCode(payment.checkoutUrl);
@@ -377,7 +373,7 @@ async function createPixCharge(interaction) {
       ].join('\n'),
       fields: [
         { name: 'Valor', value: formatPrice(payment.amountCents), inline: true },
-        { name: 'Plano', value: safeText(plan.name, 80), inline: true },
+        ...(plan ? [{ name: 'Plano', value: safeText(plan.name, 80), inline: true }] : []),
         { name: 'Comprador', value: `<@${buyer.id}>`, inline: true },
         { name: 'Status', value: 'Aguardando pagamento', inline: true },
         { name: 'Referencia', value: `\`${safeText(payment.reference, 100)}\``, inline: false }
@@ -426,7 +422,7 @@ async function createPixCharge(interaction) {
         amountCents: payment.amountCents,
         currency: payment.currency,
         buyerDiscordId: buyer.id,
-        planId: plan.id
+        planId: plan?.id || null
       }
     }).catch(() => {});
 
@@ -435,7 +431,7 @@ async function createPixCharge(interaction) {
       description: `Cobranca criada por <@${interaction.user.id}>.`,
       fields: [
         { name: 'Valor', value: formatPrice(payment.amountCents), inline: true },
-        { name: 'Plano', value: safeText(plan.name, 80), inline: true },
+        ...(plan ? [{ name: 'Plano', value: safeText(plan.name, 80), inline: true }] : []),
         { name: 'Comprador', value: `<@${buyer.id}>`, inline: true },
         { name: 'Referencia', value: safeText(payment.reference, 100), inline: true },
         { name: 'Canal', value: `<#${interaction.channelId}>`, inline: true }
@@ -753,6 +749,7 @@ async function confirmGeneration(interaction) {
 
 async function showPlans(interaction) {
   const plans = await listGeneratorPlans({ activeOnly: true });
+  const purchasablePlans = plans.filter((plan) => plan.priceCents > 0);
   const embed = await brandEmbed(interaction, {
     title: 'Planos Nexus',
     description: [
@@ -771,12 +768,12 @@ async function showPlans(interaction) {
     }))
   });
   const components = [];
-  if (plans.length) {
+  if (purchasablePlans.length) {
     components.push(new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId('nexus:buy')
         .setPlaceholder('Selecionar plano para comprar')
-        .addOptions(plans.slice(0, 25).map((plan) => ({
+        .addOptions(purchasablePlans.slice(0, 25).map((plan) => ({
           label: plan.name.slice(0, 100),
           description: `${formatPrice(plan.priceCents)} • ${formatDuration(plan.durationDays)}`.slice(0, 100),
           value: plan.id,
@@ -945,6 +942,91 @@ function ticketSlug(user) {
   return `ticket-${base}-${user.id.slice(-4)}`;
 }
 
+async function publishTicketPixCheckout(interaction, channel, plan) {
+  if (!plan?.active || plan.priceCents <= 0) {
+    throw new Error('Este plano nao esta disponivel para pagamento automatico.');
+  }
+  const payment = await createLivePixPayment(plan.priceCents);
+  await createLivePixPaymentIntent({
+    reference: payment.reference,
+    checkoutUrl: payment.checkoutUrl,
+    amountCents: payment.amountCents,
+    currency: payment.currency,
+    guildId: interaction.guildId,
+    channelId: channel.id,
+    createdByDiscordId: interaction.user.id,
+    buyerDiscordId: interaction.user.id,
+    productType: 'generator_plan',
+    productId: plan.id,
+    metadata: {
+      source: 'discord_purchase_ticket',
+      ticketChannelId: channel.id,
+      planName: plan.name,
+      planPriceCents: plan.priceCents
+    }
+  });
+
+  const qrCode = await createLivePixQrCode(payment.checkoutUrl);
+  const qrCodeName = 'nexus-ticket-pix.png';
+  const paymentEmbed = await brandEmbed(interaction, {
+    title: `Comprar ${plan.name} com Pix`,
+    description: [
+      '**Seu pagamento ja esta pronto.**',
+      'Escaneie o QR Code ou abra o checkout pelo botao.',
+      'A confirmacao e automatica. Depois do pagamento, sua key sera enviada no privado.',
+      '',
+      '━━━━━━━━━━━━━━━━━━━━'
+    ].join('\n'),
+    fields: [
+      { name: 'Plano', value: safeText(plan.name, 80), inline: true },
+      { name: 'Valor', value: formatPrice(payment.amountCents), inline: true },
+      { name: 'Status', value: 'Aguardando pagamento', inline: true },
+      { name: 'Comprador', value: `<@${interaction.user.id}>`, inline: true },
+      { name: 'Referencia', value: `\`${safeText(payment.reference, 100)}\``, inline: false }
+    ],
+    image: false
+  });
+  paymentEmbed.setImage(`attachment://${qrCodeName}`);
+  const paymentRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel('Pagar com Pix')
+      .setEmoji('💠')
+      .setStyle(ButtonStyle.Link)
+      .setURL(payment.checkoutUrl),
+    new ButtonBuilder()
+      .setCustomId(`nexus:pix:status:${payment.reference}`)
+      .setLabel('Verificar pagamento')
+      .setStyle(ButtonStyle.Secondary)
+  );
+  const posted = await channel.send({
+    embeds: [paymentEmbed],
+    components: [paymentRow],
+    files: [{ attachment: qrCode, name: qrCodeName }],
+    allowedMentions: { parse: [] }
+  });
+  await attachLivePixDiscordMessage(payment.reference, {
+    guildId: interaction.guildId,
+    channelId: channel.id,
+    messageId: posted.id
+  });
+  await logAudit({
+    actorDiscordId: interaction.user.id,
+    action: 'generator_bot.ticket_pix_created',
+    targetType: 'livepix_payment',
+    targetId: payment.reference,
+    metadata: {
+      guildId: interaction.guildId,
+      channelId: channel.id,
+      messageId: posted.id,
+      buyerDiscordId: interaction.user.id,
+      planId: plan.id,
+      amountCents: payment.amountCents,
+      currency: payment.currency
+    }
+  }).catch(() => {});
+  return { payment, message: posted };
+}
+
 async function createTicket(interaction, type, planId = null) {
   if (!interaction.guild) throw new Error('Abra o ticket dentro do servidor.');
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -981,7 +1063,7 @@ async function createTicket(interaction, type, planId = null) {
     ],
     reason: `Ticket Nexus de ${interaction.user.tag}`
   });
-  const plans = planId ? await listGeneratorPlans() : [];
+  const plans = planId ? await listGeneratorPlans({ activeOnly: true }) : [];
   const selectedPlan = plans.find((plan) => plan.id === planId);
   const ticketEmbed = await brandEmbed(interaction, {
     title: `Ticket • ${SUPPORT_TYPES[type] || 'Suporte'}`,
@@ -1001,6 +1083,32 @@ async function createTicket(interaction, type, planId = null) {
     )],
     allowedMentions: { users: [interaction.user.id] }
   });
+  if (type === 'purchase' && planId) {
+    try {
+      await publishTicketPixCheckout(interaction, channel, selectedPlan);
+    } catch (error) {
+      const paymentErrorEmbed = await brandEmbed(interaction, {
+        title: 'Pagamento temporariamente indisponivel',
+        description: [
+          'O ticket foi criado, mas nao foi possivel gerar o QR Code agora.',
+          `**Motivo:** ${safeText(error?.message || 'erro inesperado', 500)}`,
+          'A equipe pode tentar novamente pelo comando `/pix valor`.'
+        ].join('\n'),
+        image: false
+      });
+      await channel.send({ embeds: [paymentErrorEmbed], allowedMentions: { parse: [] } }).catch(() => {});
+      await logAudit({
+        actorDiscordId: interaction.user.id,
+        action: 'generator_bot.ticket_pix_failed',
+        targetType: 'discord_channel',
+        targetId: channel.id,
+        metadata: {
+          planId,
+          errorCode: cleanText(error?.code || 'LIVEPIX_UNKNOWN_ERROR')
+        }
+      }).catch(() => {});
+    }
+  }
   await logAudit({
     actorDiscordId: interaction.user.id,
     action: 'generator_bot.ticket_created',
@@ -1045,8 +1153,8 @@ async function showHow(interaction) {
     title: 'Como funciona',
     description: [
       '**1.** Escolha um plano e conclua a compra pelo ticket.',
-      '**2.** A equipe entrega uma key única.',
-      '**3.** Use **Resgatar key** para ativar seu plano.',
+      '**2.** O ticket mostra o QR Code com o valor automaticamente.',
+      '**3.** Após a confirmação, sua key chega no privado para ativação.',
       '**4.** Abra **Gerar conta**, confira limite, validade e cooldown.',
       '**5.** Confirme; os dados chegam somente no seu privado.',
       '',
@@ -1343,7 +1451,7 @@ export function generatorCommandDefinitions() {
     },
     {
       name: 'pix',
-      description: 'Comprar um plano Nexus com Pix',
+      description: 'Gerar uma cobranca Pix com QR Code',
       dmPermission: false,
       options: [
         {
