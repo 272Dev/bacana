@@ -179,6 +179,64 @@ const schemaSql = `
     updated_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS generator_plans (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    duration_days INTEGER,
+    generation_limit INTEGER NOT NULL DEFAULT 1,
+    cooldown_seconds INTEGER NOT NULL DEFAULT 60,
+    price_cents INTEGER NOT NULL DEFAULT 0,
+    benefits_json TEXT NOT NULL DEFAULT '[]',
+    featured INTEGER NOT NULL DEFAULT 0,
+    vip INTEGER NOT NULL DEFAULT 0,
+    active INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS generator_keys (
+    id TEXT PRIMARY KEY,
+    key_hash TEXT NOT NULL UNIQUE,
+    key_encrypted TEXT NOT NULL,
+    key_preview TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'redeemed', 'revoked')),
+    redeemed_by TEXT,
+    redeemed_at TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (plan_id) REFERENCES generator_plans(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS generator_subscriptions (
+    discord_id TEXT PRIMARY KEY,
+    plan_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'expired', 'suspended')),
+    generations_used INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL,
+    expires_at TEXT,
+    key_id TEXT,
+    customer_since TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (plan_id) REFERENCES generator_plans(id),
+    FOREIGN KEY (key_id) REFERENCES generator_keys(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS generator_guild_configs (
+    guild_id TEXT PRIMARY KEY,
+    panel_channel_id TEXT,
+    support_category_id TEXT,
+    logs_json TEXT NOT NULL DEFAULT '{}',
+    vip_role_id TEXT,
+    banner_url TEXT,
+    footer_text TEXT NOT NULL DEFAULT 'Nexus - Gerador premium',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS temp_email_inboxes (
     id TEXT PRIMARY KEY,
     label TEXT,
@@ -336,6 +394,11 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_sales_deliveries_buyer ON sales_deliveries(buyer_discord_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_sales_deliveries_status ON sales_deliveries(status, created_at);
   CREATE INDEX IF NOT EXISTS idx_sales_deliveries_account ON sales_deliveries(account_id);
+  CREATE INDEX IF NOT EXISTS idx_generator_plans_active ON generator_plans(active, sort_order);
+  CREATE INDEX IF NOT EXISTS idx_generator_keys_status ON generator_keys(status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_generator_keys_plan ON generator_keys(plan_id);
+  CREATE INDEX IF NOT EXISTS idx_generator_subscriptions_status ON generator_subscriptions(status, expires_at);
+  CREATE INDEX IF NOT EXISTS idx_generator_subscriptions_plan ON generator_subscriptions(plan_id);
   CREATE INDEX IF NOT EXISTS idx_authenticators_label ON authenticators(label);
   CREATE INDEX IF NOT EXISTS idx_temp_email_address ON temp_email_inboxes(address);
   CREATE INDEX IF NOT EXISTS idx_license_users_discord ON license_users(discord_id);

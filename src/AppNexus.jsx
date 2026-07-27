@@ -1915,8 +1915,17 @@ function RobloxGeneratorPage({ user }) {
       delivered: 0,
       buyers: 0
     },
-    deliveries: []
+    deliveries: [],
+    commerce: {
+      plans: [],
+      keys: [],
+      subscriptions: []
+    }
   });
+  const [planDrafts, setPlanDrafts] = useState([]);
+  const [keyForm, setKeyForm] = useState({ planId: '', quantity: 1 });
+  const [generatedKeys, setGeneratedKeys] = useState([]);
+  const [commerceSaving, setCommerceSaving] = useState('');
   const [settingsDraft, setSettingsDraft] = useState({
     cooldownSeconds: 60,
     generatorEnabled: true,
@@ -1957,8 +1966,19 @@ function RobloxGeneratorPage({ user }) {
       setManagement({
         settings: nextSettings,
         stats: payload.stats || {},
-        deliveries: payload.deliveries || []
+        deliveries: payload.deliveries || [],
+        commerce: payload.commerce || { plans: [], keys: [], subscriptions: [] }
       });
+      setPlanDrafts((payload.commerce?.plans || []).map((plan) => ({
+        ...plan,
+        price: (Number(plan.priceCents || 0) / 100).toFixed(2),
+        durationDays: plan.durationDays ?? '',
+        benefitsText: (plan.benefits || []).join('\n')
+      })));
+      setKeyForm((current) => ({
+        ...current,
+        planId: current.planId || payload.commerce?.plans?.find((plan) => plan.active)?.id || ''
+      }));
       setSettingsDraft({
         cooldownSeconds: Number(nextSettings.cooldownSeconds ?? 60),
         generatorEnabled: nextSettings.generatorEnabled !== false,
@@ -2207,6 +2227,121 @@ function RobloxGeneratorPage({ user }) {
     }
   }
 
+  function updatePlanDraft(planId, field, value) {
+    setPlanDrafts((current) => current.map((plan) => (
+      plan.id === planId ? { ...plan, [field]: value } : plan
+    )));
+  }
+
+  function addPlanDraft() {
+    const id = `new-${Date.now()}`;
+    setPlanDrafts((current) => [
+      ...current,
+      {
+        id,
+        isNew: true,
+        name: 'Novo plano',
+        price: '29.90',
+        durationDays: 30,
+        generationLimit: 10,
+        cooldownSeconds: 60,
+        benefitsText: 'Acesso ao gerador\nSuporte padrão',
+        featured: false,
+        vip: false,
+        active: true,
+        sortOrder: (current.length + 1) * 10
+      }
+    ]);
+  }
+
+  async function savePlan(plan) {
+    if (!canConfigure || commerceSaving) return;
+    setCommerceSaving(plan.id);
+    setMessage('');
+    try {
+      const priceNumber = Number(String(plan.price).replace(',', '.'));
+      const body = {
+        name: String(plan.name || '').trim(),
+        durationDays: plan.durationDays === '' ? null : Math.max(1, Number(plan.durationDays) || 1),
+        generationLimit: Math.max(0, Number(plan.generationLimit) || 0),
+        cooldownSeconds: Math.max(0, Number(plan.cooldownSeconds) || 0),
+        priceCents: Math.max(0, Math.round((Number.isFinite(priceNumber) ? priceNumber : 0) * 100)),
+        benefits: String(plan.benefitsText || '').split('\n').map((item) => item.trim()).filter(Boolean).slice(0, 10),
+        featured: Boolean(plan.featured),
+        vip: Boolean(plan.vip),
+        active: Boolean(plan.active),
+        sortOrder: Math.max(0, Number(plan.sortOrder) || 0)
+      };
+      await api(plan.isNew ? '/roblox-generator/plans' : `/roblox-generator/plans/${plan.id}`, {
+        method: plan.isNew ? 'POST' : 'PATCH',
+        body
+      });
+      setMessage(`Plano ${body.name} salvo. O menu do bot já usa os novos valores.`);
+      await loadManagement({ silent: true });
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setCommerceSaving('');
+    }
+  }
+
+  async function deletePlan(plan) {
+    if (plan.isNew) {
+      setPlanDrafts((current) => current.filter((item) => item.id !== plan.id));
+      return;
+    }
+    if (!window.confirm(`Excluir o plano ${plan.name}? Planos com keys ou clientes devem ser apenas desativados.`)) return;
+    setCommerceSaving(plan.id);
+    setMessage('');
+    try {
+      await api(`/roblox-generator/plans/${plan.id}`, { method: 'DELETE' });
+      setMessage('Plano excluído.');
+      await loadManagement({ silent: true });
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setCommerceSaving('');
+    }
+  }
+
+  async function generatePlanKeys(event) {
+    event.preventDefault();
+    if (!canConfigure || commerceSaving || !keyForm.planId) return;
+    setCommerceSaving('keys');
+    setMessage('');
+    try {
+      const payload = await api('/roblox-generator/keys', {
+        method: 'POST',
+        body: {
+          planId: keyForm.planId,
+          quantity: Math.min(100, Math.max(1, Number(keyForm.quantity) || 1))
+        }
+      });
+      setGeneratedKeys(payload.keys || []);
+      setMessage(`${payload.keys?.length || 0} key(s) gerada(s). Copie agora e entregue somente ao comprador.`);
+      await loadManagement({ silent: true });
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setCommerceSaving('');
+    }
+  }
+
+  async function revokePlanKey(key) {
+    if (!canConfigure || commerceSaving || key.status !== 'active') return;
+    setCommerceSaving(key.id);
+    setMessage('');
+    try {
+      await api(`/roblox-generator/keys/${key.id}`, { method: 'DELETE' });
+      setMessage('Key revogada.');
+      await loadManagement({ silent: true });
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setCommerceSaving('');
+    }
+  }
+
   async function grantGeneratorPermission(event) {
     event.preventDefault();
     if (!canManagePermissions || permissionSavingId) return;
@@ -2407,6 +2542,208 @@ function RobloxGeneratorPage({ user }) {
             </span>
           </div>
         </section>
+
+        {canConfigure && (
+          <section className="panel generator-commerce-panel">
+            <div className="panel-title">
+              <div>
+                <small>MONETIZAÇÃO DO GERADOR</small>
+                <h3>Planos e benefícios</h3>
+                <p className="muted">Preços, limites e vantagens aparecem automaticamente no menu do bot.</p>
+              </div>
+              <button type="button" className="ghost-button" onClick={addPlanDraft} disabled={Boolean(commerceSaving)}>
+                <Plus size={16} />
+                Novo plano
+              </button>
+            </div>
+            <div className="generator-plan-grid">
+              {planDrafts.map((plan) => (
+                <article className={`generator-plan-card ${plan.featured ? 'is-featured' : ''}`} key={plan.id}>
+                  <div className="generator-plan-heading">
+                    <span className="generator-plan-icon">{plan.vip ? <Crown size={18} /> : <Boxes size={18} />}</span>
+                    <label>
+                      Nome do plano
+                      <input
+                        value={plan.name}
+                        maxLength={64}
+                        onChange={(event) => updatePlanDraft(plan.id, 'name', event.target.value)}
+                      />
+                    </label>
+                    {plan.featured && <span className="generator-best-seller">Mais vendido</span>}
+                  </div>
+                  <div className="generator-plan-fields">
+                    <label>
+                      Preço (R$)
+                      <input
+                        value={plan.price}
+                        inputMode="decimal"
+                        onChange={(event) => updatePlanDraft(plan.id, 'price', event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Validade em dias
+                      <input
+                        type="number"
+                        min="1"
+                        placeholder="Vazio = vitalício"
+                        value={plan.durationDays}
+                        onChange={(event) => updatePlanDraft(plan.id, 'durationDays', event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Gerações
+                      <input
+                        type="number"
+                        min="0"
+                        value={plan.generationLimit}
+                        onChange={(event) => updatePlanDraft(plan.id, 'generationLimit', event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Cooldown (segundos)
+                      <input
+                        type="number"
+                        min="0"
+                        value={plan.cooldownSeconds}
+                        onChange={(event) => updatePlanDraft(plan.id, 'cooldownSeconds', event.target.value)}
+                      />
+                    </label>
+                  </div>
+                  <label className="generator-plan-benefits">
+                    Benefícios (um por linha)
+                    <textarea
+                      rows="3"
+                      value={plan.benefitsText}
+                      onChange={(event) => updatePlanDraft(plan.id, 'benefitsText', event.target.value)}
+                    />
+                  </label>
+                  <div className="generator-plan-options">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(plan.active)}
+                        onChange={(event) => updatePlanDraft(plan.id, 'active', event.target.checked)}
+                      />
+                      Ativo
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(plan.featured)}
+                        onChange={(event) => updatePlanDraft(plan.id, 'featured', event.target.checked)}
+                      />
+                      Mais vendido
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={Boolean(plan.vip)}
+                        onChange={(event) => updatePlanDraft(plan.id, 'vip', event.target.checked)}
+                      />
+                      VIP
+                    </label>
+                  </div>
+                  <div className="card-actions generator-plan-actions">
+                    <button className="primary-button" onClick={() => savePlan(plan)} disabled={Boolean(commerceSaving)}>
+                      {commerceSaving === plan.id ? <RefreshCw className="spin" size={16} /> : <Save size={16} />}
+                      Salvar
+                    </button>
+                    <button className="ghost-button" onClick={() => deletePlan(plan)} disabled={Boolean(commerceSaving)}>
+                      <Trash2 size={16} />
+                      {plan.isNew ? 'Descartar' : 'Excluir'}
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {canConfigure && (
+          <section className="panel generator-keys-panel">
+            <div className="panel-title">
+              <div>
+                <small>ACESSO COMERCIAL</small>
+                <h3>Gerar keys por plano</h3>
+                <p className="muted">Cada key é única, resgatável uma vez e ativa o plano escolhido no Discord.</p>
+              </div>
+              <KeyRound size={19} />
+            </div>
+            <form className="generator-key-form" onSubmit={generatePlanKeys}>
+              <label>
+                Plano
+                <NexusSelect value={keyForm.planId} onChange={(event) => setKeyForm((current) => ({ ...current, planId: event.target.value }))}>
+                  <option value="">Selecionar plano</option>
+                  {management.commerce.plans.filter((plan) => plan.active).map((plan) => (
+                    <option value={plan.id} key={plan.id}>{plan.name}</option>
+                  ))}
+                </NexusSelect>
+              </label>
+              <label>
+                Quantidade
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={keyForm.quantity}
+                  onChange={(event) => setKeyForm((current) => ({ ...current, quantity: event.target.value }))}
+                />
+              </label>
+              <button className="primary-button" disabled={commerceSaving === 'keys' || !keyForm.planId}>
+                {commerceSaving === 'keys' ? <RefreshCw className="spin" size={16} /> : <KeyRound size={16} />}
+                Gerar keys
+              </button>
+            </form>
+            {generatedKeys.length > 0 && (
+              <div className="generator-key-result">
+                <div>
+                  <span>
+                    <strong>Keys recém-geradas</strong>
+                    <small>Esta lista fica visível até você recarregar a página.</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => copyText(generatedKeys.map((entry) => entry.key).join('\n')).then(() => setMessage('Todas as keys foram copiadas.'))}
+                  >
+                    <Copy size={16} />
+                    Copiar todas
+                  </button>
+                </div>
+                <pre>{generatedKeys.map((entry) => entry.key).join('\n')}</pre>
+              </div>
+            )}
+            <div className="generator-key-list">
+              {management.commerce.keys.slice(0, 30).map((entry) => (
+                <article className="generator-key-row" key={entry.id}>
+                  <span className={`generator-key-state is-${entry.status}`}>
+                    {entry.status === 'active' ? <KeyRound size={15} /> : entry.status === 'redeemed' ? <Check size={15} /> : <X size={15} />}
+                  </span>
+                  <span>
+                    <strong>{entry.keyPreview}</strong>
+                    <small>{entry.planName} · {entry.status === 'active' ? 'Disponível' : entry.status === 'redeemed' ? `Resgatada por ${entry.redeemedBy}` : 'Revogada'}</small>
+                  </span>
+                  <span>
+                    <strong>{formatDate(entry.redeemedAt || entry.createdAt)}</strong>
+                    <small>{entry.status === 'redeemed' ? 'Resgatada' : 'Criada'}</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    title={entry.status === 'active' ? 'Revogar key' : 'Key indisponível'}
+                    onClick={() => revokePlanKey(entry)}
+                    disabled={entry.status !== 'active' || Boolean(commerceSaving)}
+                  >
+                    {commerceSaving === entry.id ? <RefreshCw className="spin" size={15} /> : <Trash2 size={15} />}
+                  </button>
+                </article>
+              ))}
+              {!managementLoading && management.commerce.keys.length === 0 && (
+                <p className="muted generator-permission-empty">Nenhuma key gerada ainda.</p>
+              )}
+            </div>
+          </section>
+        )}
 
         {canManagePermissions && (
           <section className="panel generator-permissions-panel">

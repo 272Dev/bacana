@@ -20,14 +20,14 @@ import {
 } from '@discordjs/voice';
 import { config, missingEnv } from './config.js';
 import { decryptSecret, encryptSecret } from './crypto.js';
-import { db, getAuthorizedUser, nowIso } from './db.js';
+import { db, nowIso } from './db.js';
 import { logAudit } from './audit.js';
-import { hasPermission, PERMISSIONS } from './permissions.js';
 import {
-  completeRobloxSalesDelivery,
-  releaseRobloxSalesDelivery,
-  reserveRandomRobloxSalesAccount
-} from './robloxGenerator.js';
+  generatorCommandDefinitions,
+  generatorCommandNames,
+  handleGeneratorInteraction,
+  isGeneratorInteraction
+} from './generatorBot.js';
 import {
   detectorCatalogResponse,
   detectorConfig,
@@ -53,10 +53,8 @@ const recentAuditTargets = new Map();
 const messageHistories = new Map();
 const resourceSnapshots = new Map();
 const inviteSnapshots = new Map();
-const salesRequestsInFlight = new Set();
 const commandPolicies = new Map();
 const commandCooldowns = new Map();
-const SALES_COMMAND_NAME = 'conta';
 
 const DASHBOARD_COMMAND_DEFINITIONS = [
   {
@@ -190,18 +188,6 @@ function isDefaultBotToken(token) {
     && token === config.discordBot.token;
 }
 
-function safeCredential(value, max = 1000) {
-  return String(value || '').replace(/`/g, 'ˋ').slice(0, max);
-}
-
-function salesCommandDefinition() {
-  return {
-    name: SALES_COMMAND_NAME,
-    description: 'Receber uma conta do estoque Nexus no privado',
-    dmPermission: false
-  };
-}
-
 function commandPolicyKey(token, guildId = '') {
   return `${tokenFingerprint(token)}:${cleanText(guildId) || 'global'}`;
 }
@@ -229,12 +215,12 @@ async function upsertCommands(manager, definitions, removableNames = new Set()) 
   return manager.fetch();
 }
 
-async function registerSalesCommand(entry) {
+async function registerGeneratorCommands(entry) {
   if (!entry?.client?.isReady?.() || !isDefaultBotToken(entry.token)) return;
   const guildId = cleanText(config.discordBot.defaultGuildId);
   const manager = await commandManager(entry, guildId);
-  const definitions = [...DASHBOARD_COMMAND_DEFINITIONS, salesCommandDefinition()];
-  const commands = await upsertCommands(manager, definitions, new Set([...DASHBOARD_COMMAND_NAMES, SALES_COMMAND_NAME]));
+  const definitions = [...DASHBOARD_COMMAND_DEFINITIONS, ...generatorCommandDefinitions()];
+  const commands = await upsertCommands(manager, definitions, new Set([...DASHBOARD_COMMAND_NAMES, ...generatorCommandNames]));
   commandPolicies.set(commandPolicyKey(entry.token, guildId), {
     guildId,
     globalCooldown: 5,
@@ -243,71 +229,6 @@ async function registerSalesCommand(entry) {
     commands: Object.fromEntries(DASHBOARD_COMMAND_DEFINITIONS.map((command) => [command.name, { enabled: true, cooldown: 5 }]))
   });
   return commands;
-}
-
-async function handleSalesInteraction(entry, interaction) {
-  if (!interaction.isChatInputCommand?.() || interaction.commandName !== SALES_COMMAND_NAME) return;
-  if (!isDefaultBotToken(entry.token)) return;
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-  const authorized = await getAuthorizedUser(interaction.user.id);
-  if (!authorized || !hasPermission(authorized, PERMISSIONS.SALES_USE)) {
-    await interaction.editReply('Voce nao esta autorizado a usar o bot de vendas Nexus.');
-    return;
-  }
-
-  if (salesRequestsInFlight.has(interaction.user.id)) {
-    await interaction.editReply('Sua solicitacao anterior ainda esta sendo processada.');
-    return;
-  }
-  salesRequestsInFlight.add(interaction.user.id);
-
-  let reservation = null;
-  let dmSent = false;
-  try {
-    reservation = await reserveRandomRobloxSalesAccount({
-      buyerDiscordId: interaction.user.id,
-      channel: 'discord-command'
-    });
-    const { account, deliveryId } = reservation;
-    const embed = new EmbedBuilder()
-      .setColor(0x0A0A0A)
-      .setTitle('Sua conta Nexus')
-      .setDescription('Entrega privada autorizada. Nao compartilhe estes dados.')
-      .addFields(
-        { name: 'Usuario', value: `\`${safeCredential(account.username)}\`` },
-        { name: 'Senha', value: `\`${safeCredential(account.password)}\`` },
-        { name: 'Perfil', value: account.profileUrl ? safeCredential(account.profileUrl) : 'Nao vinculado' },
-        { name: 'Entrega', value: `\`${deliveryId.slice(0, 8).toUpperCase()}\`` }
-      )
-      .setFooter({ text: 'Nexus • entrega manual protegida' })
-      .setTimestamp();
-
-    await interaction.user.send({ embeds: [embed], allowedMentions: { parse: [] } });
-    dmSent = true;
-    await completeRobloxSalesDelivery({ deliveryId, buyerDiscordId: interaction.user.id });
-    await logAudit({
-      actorDiscordId: interaction.user.id,
-      action: 'sales_bot.account_delivered',
-      targetType: 'roblox_generator_account',
-      targetId: account.id,
-      metadata: { deliveryId, channel: 'discord-dm' }
-    });
-    await interaction.editReply('Conta entregue no seu privado. Confira suas mensagens diretas.');
-  } catch (error) {
-    if (reservation?.deliveryId && !dmSent) {
-      await releaseRobloxSalesDelivery({
-        deliveryId: reservation.deliveryId,
-        buyerDiscordId: interaction.user.id
-      }).catch(() => {});
-    }
-    const message = error?.code === 50007
-      ? 'Nao consegui enviar a DM. Ative mensagens privadas deste servidor e tente novamente.'
-      : error?.message || 'Nao foi possivel entregar uma conta agora.';
-    await interaction.editReply(message.slice(0, 1900)).catch(() => {});
-  } finally {
-    salesRequestsInFlight.delete(interaction.user.id);
-  }
 }
 
 async function replyCommandError(interaction, message) {
@@ -1378,8 +1299,8 @@ function attachProtectionHandlers(entry) {
   const client = entry.client;
 
   client.on(Events.InteractionCreate, (interaction) => {
-    const handler = interaction.commandName === SALES_COMMAND_NAME
-      ? handleSalesInteraction(entry, interaction)
+    const handler = isGeneratorInteraction(interaction)
+      ? handleGeneratorInteraction(entry, interaction)
       : handleDashboardInteraction(entry, interaction);
     void handler.catch((error) => {
       console.warn(`[nexus] Falha no comando /${interaction.commandName || 'desconhecido'}: ${error.message}`);
@@ -1635,8 +1556,8 @@ async function ensureClient({ botToken, status, activityType, activityMessage } 
         console.warn(`[nexus] Discord client error: ${error.message}`);
         if (!client.isReady()) scheduleGatewayRecovery(token, entry.desiredStatus, 'erro do cliente', entry);
       });
-      void registerSalesCommand(entry).catch((error) => {
-        console.warn(`[nexus] Comando de vendas nao registrado: ${error.message}`);
+      void registerGeneratorCommands(entry).catch((error) => {
+        console.warn(`[nexus] Comandos do gerador nao registrados: ${error.message}`);
       });
       entry.readyPromise = null;
       resolve(entry);
@@ -1683,12 +1604,12 @@ export async function syncDiscordCommands({
   const enabledDefinitions = DASHBOARD_COMMAND_DEFINITIONS.filter((definition) => (
     hasExplicitConfiguration ? requested.get(definition.name)?.enabled === true : true
   ));
-  if (isDefaultBotToken(entry.token)) enabledDefinitions.push(salesCommandDefinition());
+  if (isDefaultBotToken(entry.token)) enabledDefinitions.push(...generatorCommandDefinitions());
 
   const synced = await upsertCommands(
     manager,
     enabledDefinitions,
-    new Set([...DASHBOARD_COMMAND_NAMES, SALES_COMMAND_NAME])
+    new Set([...DASHBOARD_COMMAND_NAMES, ...generatorCommandNames])
   );
   const normalizedPolicy = Object.fromEntries(DASHBOARD_COMMAND_DEFINITIONS.map((definition) => {
     const configured = requested.get(definition.name);

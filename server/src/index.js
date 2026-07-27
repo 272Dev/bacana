@@ -77,6 +77,16 @@ import {
   selectRobloxGeneratorAccount,
   updateRobloxGeneratorSettings
 } from './robloxGenerator.js';
+import {
+  createGeneratorPlan,
+  deleteGeneratorPlan,
+  generateGeneratorKeys,
+  generatorCommerceSchemas,
+  getGeneratorCommerceManagement,
+  revokeGeneratorKey,
+  seedGeneratorPlans,
+  updateGeneratorPlan
+} from './generatorCommerce.js';
 import { registerLicensingRoutes, seedLicensePlans } from './licensing.js';
 import { registerLoaderRoutes } from './loader.js';
 import { registerNameTagRoutes } from './nameTags.js';
@@ -104,6 +114,7 @@ requireRuntimeConfig();
 await initDatabase();
 await seedAuthorizedUsers();
 await seedLicensePlans();
+await seedGeneratorPlans();
 await importRobloxGeneratorFile({ consume: config.nodeEnv === 'production' })
   .then((result) => {
     if (!result) return;
@@ -1119,10 +1130,79 @@ app.get('/api/roblox-generator/accounts', requireAuth, requirePermission(PERMISS
 });
 
 app.get('/api/roblox-generator/management', requireAuth, requirePermission(PERMISSIONS.SALES_MANAGE), async (req, res) => {
-  const management = await getRobloxGeneratorManagement({
-    deliveryLimit: req.query.deliveryLimit
+  const [management, commerce] = await Promise.all([
+    getRobloxGeneratorManagement({ deliveryLimit: req.query.deliveryLimit }),
+    getGeneratorCommerceManagement()
+  ]);
+  res.json({ ...management, commerce });
+});
+
+app.post('/api/roblox-generator/plans', requireAuth, requireAdmin, async (req, res) => {
+  const plan = await createGeneratorPlan(generatorCommerceSchemas.plan.parse(req.body));
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'roblox_generator.plan_created',
+    targetType: 'generator_plan',
+    targetId: plan.id,
+    metadata: { name: plan.name, priceCents: plan.priceCents },
+    ip: req.ip
   });
-  res.json(management);
+  res.status(201).json({ plan });
+});
+
+app.patch('/api/roblox-generator/plans/:id', requireAuth, requireAdmin, async (req, res) => {
+  const plan = await updateGeneratorPlan(
+    req.params.id,
+    generatorCommerceSchemas.planUpdate.parse(req.body)
+  );
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'roblox_generator.plan_updated',
+    targetType: 'generator_plan',
+    targetId: plan.id,
+    metadata: { name: plan.name, priceCents: plan.priceCents, active: plan.active },
+    ip: req.ip
+  });
+  res.json({ plan });
+});
+
+app.delete('/api/roblox-generator/plans/:id', requireAuth, requireAdmin, async (req, res) => {
+  await deleteGeneratorPlan(req.params.id);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'roblox_generator.plan_deleted',
+    targetType: 'generator_plan',
+    targetId: req.params.id,
+    ip: req.ip
+  });
+  res.json({ ok: true });
+});
+
+app.post('/api/roblox-generator/keys', requireAuth, requireAdmin, async (req, res) => {
+  const keys = await generateGeneratorKeys(
+    generatorCommerceSchemas.keyBatch.parse(req.body),
+    req.user.discordId
+  );
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'roblox_generator.keys_generated',
+    targetType: 'generator_key',
+    metadata: { quantity: keys.length, planId: req.body?.planId },
+    ip: req.ip
+  });
+  res.status(201).json({ keys });
+});
+
+app.delete('/api/roblox-generator/keys/:id', requireAuth, requireAdmin, async (req, res) => {
+  await revokeGeneratorKey(req.params.id);
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'roblox_generator.key_revoked',
+    targetType: 'generator_key',
+    targetId: req.params.id,
+    ip: req.ip
+  });
+  res.json({ ok: true });
 });
 
 app.patch('/api/roblox-generator/settings', requireAuth, requireAdmin, async (req, res, next) => {
