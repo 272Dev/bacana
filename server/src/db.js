@@ -169,6 +169,16 @@ const schemaSql = `
     FOREIGN KEY (account_id) REFERENCES roblox_generator_accounts(id) ON DELETE RESTRICT
   );
 
+  CREATE TABLE IF NOT EXISTS roblox_generator_settings (
+    id TEXT PRIMARY KEY,
+    cooldown_seconds INTEGER NOT NULL DEFAULT 60,
+    generator_enabled INTEGER NOT NULL DEFAULT 1,
+    max_deliveries_per_user INTEGER NOT NULL DEFAULT 0,
+    updated_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS temp_email_inboxes (
     id TEXT PRIMARY KEY,
     label TEXT,
@@ -325,6 +335,7 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_roblox_generator_username ON roblox_generator_accounts(username);
   CREATE INDEX IF NOT EXISTS idx_sales_deliveries_buyer ON sales_deliveries(buyer_discord_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_sales_deliveries_status ON sales_deliveries(status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_sales_deliveries_account ON sales_deliveries(account_id);
   CREATE INDEX IF NOT EXISTS idx_authenticators_label ON authenticators(label);
   CREATE INDEX IF NOT EXISTS idx_temp_email_address ON temp_email_inboxes(address);
   CREATE INDEX IF NOT EXISTS idx_license_users_discord ON license_users(discord_id);

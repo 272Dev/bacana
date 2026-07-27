@@ -53,11 +53,10 @@ const recentAuditTargets = new Map();
 const messageHistories = new Map();
 const resourceSnapshots = new Map();
 const inviteSnapshots = new Map();
-const salesCooldowns = new Map();
+const salesRequestsInFlight = new Set();
 const commandPolicies = new Map();
 const commandCooldowns = new Map();
 const SALES_COMMAND_NAME = 'conta';
-const SALES_COOLDOWN_MS = 60_000;
 
 const DASHBOARD_COMMAND_DEFINITIONS = [
   {
@@ -257,13 +256,11 @@ async function handleSalesInteraction(entry, interaction) {
     return;
   }
 
-  const lastUse = salesCooldowns.get(interaction.user.id) || 0;
-  const retryAfter = SALES_COOLDOWN_MS - (Date.now() - lastUse);
-  if (retryAfter > 0) {
-    await interaction.editReply(`Aguarde ${Math.ceil(retryAfter / 1000)} segundos antes de solicitar outra conta.`);
+  if (salesRequestsInFlight.has(interaction.user.id)) {
+    await interaction.editReply('Sua solicitacao anterior ainda esta sendo processada.');
     return;
   }
-  salesCooldowns.set(interaction.user.id, Date.now());
+  salesRequestsInFlight.add(interaction.user.id);
 
   let reservation = null;
   let dmSent = false;
@@ -304,11 +301,12 @@ async function handleSalesInteraction(entry, interaction) {
         buyerDiscordId: interaction.user.id
       }).catch(() => {});
     }
-    salesCooldowns.delete(interaction.user.id);
     const message = error?.code === 50007
       ? 'Nao consegui enviar a DM. Ative mensagens privadas deste servidor e tente novamente.'
       : error?.message || 'Nao foi possivel entregar uma conta agora.';
     await interaction.editReply(message.slice(0, 1900)).catch(() => {});
+  } finally {
+    salesRequestsInFlight.delete(interaction.user.id);
   }
 }
 

@@ -69,11 +69,13 @@ import {
 import { lookupRobloxUsername } from './roblox.js';
 import {
   getRobloxGeneratorAccount,
+  getRobloxGeneratorManagement,
   importRobloxGeneratorFile,
   importRobloxGeneratorText,
   listRobloxGeneratorAccounts,
   selectRandomRobloxGeneratorAccount,
-  selectRobloxGeneratorAccount
+  selectRobloxGeneratorAccount,
+  updateRobloxGeneratorSettings
 } from './robloxGenerator.js';
 import { registerLicensingRoutes, seedLicensePlans } from './licensing.js';
 import { registerLoaderRoutes } from './loader.js';
@@ -102,11 +104,20 @@ requireRuntimeConfig();
 await initDatabase();
 await seedAuthorizedUsers();
 await seedLicensePlans();
-await importRobloxGeneratorFile().catch((error) => {
-  if (config.nodeEnv !== 'production') {
+await importRobloxGeneratorFile({ consume: config.nodeEnv === 'production' })
+  .then((result) => {
+    if (!result) return;
+    console.log(
+      `[nexus] Estoque Roblox importado: ${result.imported} conta(s), `
+      + `${result.created} nova(s), ${result.updated} atualizada(s).`
+    );
+    if (config.nodeEnv === 'production' && !result.sourceConsumed) {
+      console.warn('[nexus] O arquivo temporario do estoque nao pode ser removido apos a importacao.');
+    }
+  })
+  .catch((error) => {
     console.warn('[nexus] Importacao automatica Roblox falhou:', error.message);
-  }
-});
+  });
 
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -370,6 +381,12 @@ const uploadImageSchema = z.object({
 const robloxGeneratorImportSchema = z.object({
   text: z.string().min(3).max(2_000_000),
   sourceLabel: z.string().trim().max(120).optional().or(z.literal(''))
+});
+
+const robloxGeneratorSettingsSchema = z.object({
+  cooldownSeconds: z.coerce.number().int().min(0).max(604_800),
+  generatorEnabled: z.boolean(),
+  maxDeliveriesPerUser: z.coerce.number().int().min(0).max(100_000)
 });
 
 const authenticatorCreateSchema = z.object({
@@ -1099,6 +1116,34 @@ app.get('/api/roblox-generator/accounts', requireAuth, requirePermission(PERMISS
     offset: req.query.offset
   });
   res.json(result);
+});
+
+app.get('/api/roblox-generator/management', requireAuth, requirePermission(PERMISSIONS.SALES_MANAGE), async (req, res) => {
+  const management = await getRobloxGeneratorManagement({
+    deliveryLimit: req.query.deliveryLimit
+  });
+  res.json(management);
+});
+
+app.patch('/api/roblox-generator/settings', requireAuth, requireAdmin, async (req, res, next) => {
+  try {
+    const payload = robloxGeneratorSettingsSchema.parse(req.body);
+    const settings = await updateRobloxGeneratorSettings({
+      ...payload,
+      actorDiscordId: req.user.discordId
+    });
+    await logAudit({
+      actorDiscordId: req.user.discordId,
+      action: 'roblox_generator.settings_updated',
+      targetType: 'roblox_generator',
+      targetId: 'default',
+      metadata: settings,
+      ip: req.ip
+    });
+    res.json({ settings });
+  } catch (error) {
+    next(error);
+  }
 });
 
 app.post('/api/roblox-generator/import', requireAuth, requirePermission(PERMISSIONS.SALES_MANAGE), async (req, res, next) => {

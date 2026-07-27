@@ -1897,17 +1897,60 @@ function RobloxGeneratorPage({ user }) {
   const [accounts, setAccounts] = useState([]);
   const [filters, setFilters] = useState({ search: '', status: '' });
   const [selectedAccount, setSelectedAccount] = useState(null);
+  const [management, setManagement] = useState({
+    settings: {
+      cooldownSeconds: 60,
+      generatorEnabled: true,
+      maxDeliveriesPerUser: 0
+    },
+    stats: {
+      totalAccounts: 0,
+      availableForDelivery: 0,
+      reserved: 0,
+      delivered: 0,
+      buyers: 0
+    },
+    deliveries: []
+  });
+  const [settingsDraft, setSettingsDraft] = useState({
+    cooldownSeconds: 60,
+    generatorEnabled: true,
+    maxDeliveriesPerUser: 0
+  });
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [listLoading, setListLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [pagination, setPagination] = useState({ nextOffset: 0, hasMore: true, total: null });
   const [importing, setImporting] = useState(false);
+  const [managementLoading, setManagementLoading] = useState(true);
+  const [settingsSaving, setSettingsSaving] = useState(false);
   const debouncedFilters = useDebouncedValue(filters, 240);
   const requestIdRef = useRef(0);
   const loadMoreRef = useRef(null);
   const loadingMoreRef = useRef(false);
   const canImport = ['owner', 'admin'].includes(user.role);
+  const canConfigure = ['owner', 'admin'].includes(user.role);
+
+  const loadManagement = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setManagementLoading(true);
+    try {
+      const payload = await api('/roblox-generator/management?deliveryLimit=30');
+      const nextSettings = payload.settings || {};
+      setManagement({
+        settings: nextSettings,
+        stats: payload.stats || {},
+        deliveries: payload.deliveries || []
+      });
+      setSettingsDraft({
+        cooldownSeconds: Number(nextSettings.cooldownSeconds ?? 60),
+        generatorEnabled: nextSettings.generatorEnabled !== false,
+        maxDeliveriesPerUser: Number(nextSettings.maxDeliveriesPerUser || 0)
+      });
+    } finally {
+      setManagementLoading(false);
+    }
+  }, []);
 
   const loadAccounts = useCallback(async ({
     offset = 0,
@@ -1967,6 +2010,10 @@ function RobloxGeneratorPage({ user }) {
     loadAccounts({ offset: 0, mode: 'replace' }).catch((error) => setMessage(error.message));
   }, [loadAccounts]);
 
+  useEffect(() => {
+    loadManagement().catch((error) => setMessage(error.message));
+  }, [loadManagement]);
+
   const refreshVisibleAccounts = useCallback(async () => {
     const visibleLimit = Math.min(80, Math.max(ROBLOX_GENERATOR_PAGE_SIZE, accounts.length || ROBLOX_GENERATOR_PAGE_SIZE));
     await loadAccounts({ offset: 0, mode: 'replace', silent: true, limit: visibleLimit });
@@ -2014,7 +2061,10 @@ function RobloxGeneratorPage({ user }) {
       const result = payload.result;
       setMessage(`${result.imported} conta(s) importada(s). ${result.created} nova(s), ${result.updated} atualizada(s).`);
       setAccounts([]);
-      await loadAccounts({ offset: 0, mode: 'replace', silent: true });
+      await Promise.all([
+        loadAccounts({ offset: 0, mode: 'replace', silent: true }),
+        loadManagement({ silent: true })
+      ]);
     } catch (error) {
       setMessage(error.message);
     } finally {
@@ -2098,11 +2148,41 @@ function RobloxGeneratorPage({ user }) {
       if (selectedAccount?.id === account.id) setSelectedAccount(null);
       setMessage('Conta removida do gerador.');
       setAccounts((current) => current.filter((item) => item.id !== account.id));
-      await refreshVisibleAccounts();
+      await Promise.all([
+        refreshVisibleAccounts(),
+        loadManagement({ silent: true })
+      ]);
     } catch (error) {
       setMessage(error.message);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function saveGeneratorSettings() {
+    if (!canConfigure) return;
+    setSettingsSaving(true);
+    setMessage('');
+    try {
+      const payload = await api('/roblox-generator/settings', {
+        method: 'PATCH',
+        body: {
+          cooldownSeconds: Math.max(0, Number(settingsDraft.cooldownSeconds) || 0),
+          generatorEnabled: Boolean(settingsDraft.generatorEnabled),
+          maxDeliveriesPerUser: Math.max(0, Number(settingsDraft.maxDeliveriesPerUser) || 0)
+        }
+      });
+      setManagement((current) => ({ ...current, settings: payload.settings }));
+      setSettingsDraft({
+        cooldownSeconds: Number(payload.settings.cooldownSeconds || 0),
+        generatorEnabled: payload.settings.generatorEnabled !== false,
+        maxDeliveriesPerUser: Number(payload.settings.maxDeliveriesPerUser || 0)
+      });
+      setMessage('Configuracoes do gerador salvas. O bot ja esta usando o novo delay.');
+    } catch (error) {
+      setMessage(error.message);
+    } finally {
+      setSettingsSaving(false);
     }
   }
 
@@ -2133,6 +2213,135 @@ function RobloxGeneratorPage({ user }) {
         }
       />
       {message && <div className="notice">{message}</div>}
+      <div className="generator-management-grid">
+        <section className="panel generator-settings-panel">
+          <div className="panel-title">
+            <div>
+              <small>CONTROLE DO BOT</small>
+              <h3>Geracao e limite</h3>
+            </div>
+            <Settings size={18} />
+          </div>
+          <button
+            type="button"
+            className={`generator-power-control ${settingsDraft.generatorEnabled ? 'is-active' : ''}`}
+            onClick={() => canConfigure && setSettingsDraft((current) => ({
+              ...current,
+              generatorEnabled: !current.generatorEnabled
+            }))}
+            disabled={!canConfigure || settingsSaving}
+          >
+            {settingsDraft.generatorEnabled ? <ToggleRight size={23} /> : <ToggleLeft size={23} />}
+            <span>
+              <strong>{settingsDraft.generatorEnabled ? 'Gerador liberado' : 'Gerador pausado'}</strong>
+              <small>Controla o comando /conta imediatamente</small>
+            </span>
+          </button>
+          <div className="generator-settings-fields">
+            <label>
+              Delay por usuario
+              <div className="generator-number-field">
+                <Clock3 size={16} />
+                <input
+                  type="number"
+                  min="0"
+                  max="604800"
+                  value={settingsDraft.cooldownSeconds}
+                  disabled={!canConfigure || settingsSaving}
+                  onChange={(event) => setSettingsDraft((current) => ({
+                    ...current,
+                    cooldownSeconds: event.target.value
+                  }))}
+                />
+                <span>segundos</span>
+              </div>
+              <small>Use 0 para permitir novas geracoes sem espera.</small>
+            </label>
+            <label>
+              Limite total por usuario
+              <div className="generator-number-field">
+                <Users size={16} />
+                <input
+                  type="number"
+                  min="0"
+                  max="100000"
+                  value={settingsDraft.maxDeliveriesPerUser}
+                  disabled={!canConfigure || settingsSaving}
+                  onChange={(event) => setSettingsDraft((current) => ({
+                    ...current,
+                    maxDeliveriesPerUser: event.target.value
+                  }))}
+                />
+                <span>contas</span>
+              </div>
+              <small>Use 0 para deixar sem limite total.</small>
+            </label>
+          </div>
+          {canConfigure && (
+            <button className="primary-button generator-save-settings" onClick={saveGeneratorSettings} disabled={settingsSaving}>
+              <Save size={17} />
+              {settingsSaving ? 'Salvando' : 'Salvar configuracoes'}
+            </button>
+          )}
+        </section>
+
+        <section className="panel generator-overview-panel">
+          <div className="panel-title">
+            <div>
+              <small>ESTOQUE EM TEMPO REAL</small>
+              <h3>Resumo do gerador</h3>
+            </div>
+            <DatabaseBackup size={18} />
+          </div>
+          <div className={`generator-stat-grid ${managementLoading ? 'is-loading' : ''}`}>
+            <span><strong>{management.stats.totalAccounts || 0}</strong><small>Total no estoque</small></span>
+            <span><strong>{management.stats.availableForDelivery || 0}</strong><small>Prontas para entrega</small></span>
+            <span><strong>{management.stats.delivered || 0}</strong><small>Entregues</small></span>
+            <span><strong>{management.stats.buyers || 0}</strong><small>Usuarios atendidos</small></span>
+          </div>
+          <div className="generator-policy-summary">
+            <Clock3 size={16} />
+            <span>
+              <strong>{management.settings.cooldownSeconds || 0}s de delay</strong>
+              <small>
+                {management.settings.maxDeliveriesPerUser
+                  ? `Limite de ${management.settings.maxDeliveriesPerUser} por usuario`
+                  : 'Sem limite total por usuario'}
+              </small>
+            </span>
+          </div>
+        </section>
+
+        <section className="panel generator-deliveries-panel">
+          <div className="panel-title">
+            <div>
+              <small>ULTIMAS ENTREGAS</small>
+              <h3>Historico seguro</h3>
+            </div>
+            <History size={18} />
+          </div>
+          <div className="generator-delivery-list">
+            {management.deliveries.slice(0, 8).map((delivery) => (
+              <div className="generator-delivery-row" key={delivery.id}>
+                <span className={`delivery-state ${delivery.status}`}>
+                  {delivery.status === 'delivered' ? <Check size={15} /> : <Clock3 size={15} />}
+                </span>
+                <span>
+                  <strong>{delivery.username}</strong>
+                  <small>Discord {delivery.buyerDiscordId}</small>
+                </span>
+                <span>
+                  <strong>{delivery.status === 'delivered' ? 'Entregue' : 'Reservada'}</strong>
+                  <small>{formatDate(delivery.deliveredAt || delivery.createdAt)}</small>
+                </span>
+              </div>
+            ))}
+            {!managementLoading && management.deliveries.length === 0 && (
+              <p className="muted">Nenhuma conta foi entregue pelo bot ainda.</p>
+            )}
+          </div>
+        </section>
+      </div>
       <div className="toolbar">
         <label className="search-box">
           <Search size={18} />
