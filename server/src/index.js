@@ -90,9 +90,11 @@ import {
 } from './generatorCommerce.js';
 import { ensureLivePixWebhook, isLivePixConfigured } from './livePix.js';
 import {
+  listPendingLivePixPayments,
   listUnnotifiedPaidLivePixPayments,
   markLivePixPaymentNotified,
-  processLivePixWebhook
+  processLivePixWebhook,
+  syncLivePixPaymentIntent
 } from './livePixPayments.js';
 import { registerLicensingRoutes, seedLicensePlans } from './licensing.js';
 import { registerLoaderRoutes } from './loader.js';
@@ -209,6 +211,23 @@ async function reconcileLivePixPaymentNotifications() {
     if (await notifyPaidLivePixIntent(intent)) notified += 1;
   }
   return { checked: intents.length, notified };
+}
+
+async function pollPendingLivePixPayments() {
+  const intents = await listPendingLivePixPayments(25);
+  let confirmed = 0;
+  for (const intent of intents) {
+    try {
+      const result = await syncLivePixPaymentIntent(intent.reference);
+      if (!result.paid) continue;
+      confirmed += 1;
+      await notifyPaidLivePixIntent(result.intent);
+    } catch (error) {
+      if (['LIVEPIX_RATE_LIMITED', 'LIVEPIX_TOKEN_BACKOFF'].includes(error?.code)) break;
+      console.warn(`[nexus] Falha ao consultar Pix ${intent.reference}: ${error.message}`);
+    }
+  }
+  return { checked: intents.length, confirmed };
 }
 
 app.post('/api/webhooks/livepix', livePixWebhookLimiter, async (req, res) => {
@@ -2246,9 +2265,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
       });
     });
     const livePixReconciliationTimer = setInterval(() => {
-      void reconcileLivePixPaymentNotifications().catch((error) => {
-        console.warn(`[nexus] Falha ao reconciliar pagamentos LivePix: ${error.message}`);
-      });
+      void pollPendingLivePixPayments()
+        .then(() => reconcileLivePixPaymentNotifications())
+        .catch((error) => {
+          console.warn(`[nexus] Falha ao reconciliar pagamentos LivePix: ${error.message}`);
+        });
     }, 30_000);
     livePixReconciliationTimer.unref?.();
     const livePixWebhookTimer = setInterval(() => {

@@ -140,6 +140,17 @@ export async function listUnnotifiedPaidLivePixPayments(limit = 50) {
   return rows.map(mapIntent);
 }
 
+export async function listPendingLivePixPayments(limit = 25) {
+  const normalizedLimit = Math.max(1, Math.min(100, Number(limit) || 25));
+  const rows = await db.prepare(`
+    SELECT * FROM livepix_payment_intents
+    WHERE status = 'pending'
+    ORDER BY created_at ASC
+    LIMIT ${normalizedLimit}
+  `).all();
+  return rows.map(mapIntent);
+}
+
 export async function markLivePixPaymentNotified(reference) {
   await db.prepare(`
     UPDATE livepix_payment_intents
@@ -251,4 +262,3 @@ export async function processLivePixWebhook(payload) {
     payment: result.payment
   };
 }
-

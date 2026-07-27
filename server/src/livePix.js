@@ -6,6 +6,8 @@ const TOKEN_REFRESH_MARGIN_MS = 60_000;
 const REQUIRED_SCOPES = ['payments:read', 'payments:write', 'webhooks'];
 let cachedToken = null;
 let tokenRequest = null;
+let tokenRetryAt = 0;
+let tokenRetryDelayMs = 5 * 60_000;
 
 function cleanText(value) {
   return String(value || '').trim();
@@ -71,11 +73,17 @@ function providerError(response, payload, operation = 'processar esta operacao')
     return makeError('Pagamento nao encontrado na LivePix.', 'LIVEPIX_PAYMENT_NOT_FOUND', 404);
   }
   if (response.status === 429) {
-    return makeError(
+    const retryAfterHeader = Number(response.headers.get('retry-after'));
+    const retryAfterMs = Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+      ? retryAfterHeader * 1000
+      : 0;
+    const error = makeError(
       'O limite de requisicoes da LivePix foi atingido. Aguarde um minuto.',
       'LIVEPIX_RATE_LIMITED',
       429
     );
+    error.retryAfterMs = retryAfterMs;
+    return error;
   }
   if (response.status === 422) {
     return makeError(
@@ -109,6 +117,15 @@ async function timedFetch(url, options) {
 async function requestAccessToken() {
   const missing = configurationError();
   if (missing) throw missing;
+  if (Date.now() < tokenRetryAt) {
+    const error = makeError(
+      'A autenticacao LivePix esta aguardando o limite de requisicoes resetar.',
+      'LIVEPIX_TOKEN_BACKOFF',
+      429
+    );
+    error.retryAfterMs = tokenRetryAt - Date.now();
+    throw error;
+  }
 
   const scopes = new Set(cleanText(config.livePix.scope).split(/\s+/).filter(Boolean));
   for (const scope of REQUIRED_SCOPES) scopes.add(scope);
@@ -127,7 +144,15 @@ async function requestAccessToken() {
     body: form.toString()
   });
   const payload = await parseJson(response);
-  if (!response.ok) throw providerError(response, payload, 'autenticar');
+  if (!response.ok) {
+    const error = providerError(response, payload, 'autenticar');
+    if (error.code === 'LIVEPIX_RATE_LIMITED') {
+      const delay = Math.max(error.retryAfterMs || 0, tokenRetryDelayMs);
+      tokenRetryAt = Date.now() + delay;
+      tokenRetryDelayMs = Math.min(30 * 60_000, tokenRetryDelayMs * 2);
+    }
+    throw error;
+  }
 
   const accessToken = cleanText(payload.access_token);
   const expiresIn = Number(payload.expires_in || 3600);
@@ -139,6 +164,8 @@ async function requestAccessToken() {
     value: accessToken,
     expiresAt: Date.now() + Math.max(60, expiresIn) * 1000
   };
+  tokenRetryAt = 0;
+  tokenRetryDelayMs = 5 * 60_000;
   return cachedToken.value;
 }
 
