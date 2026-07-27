@@ -258,6 +258,11 @@ const schemaSql = `
     paid_at TEXT,
     fulfilled_at TEXT,
     fulfillment_status TEXT NOT NULL DEFAULT 'not_required' CHECK (fulfillment_status IN ('not_required', 'pending', 'completed', 'failed')),
+    fulfillment_attempts INTEGER NOT NULL DEFAULT 0,
+    fulfillment_last_attempt_at TEXT,
+    fulfillment_error TEXT,
+    fulfillment_resource_id TEXT,
+    delivery_message_id TEXT,
     notified_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -523,6 +528,11 @@ export async function initDatabase() {
     });
     await db.exec(schemaSql);
     await db.exec("ALTER TABLE authorized_users ADD COLUMN IF NOT EXISTS permissions_json TEXT NOT NULL DEFAULT '[]'");
+    await db.exec("ALTER TABLE livepix_payment_intents ADD COLUMN IF NOT EXISTS fulfillment_attempts INTEGER NOT NULL DEFAULT 0");
+    await db.exec("ALTER TABLE livepix_payment_intents ADD COLUMN IF NOT EXISTS fulfillment_last_attempt_at TEXT");
+    await db.exec("ALTER TABLE livepix_payment_intents ADD COLUMN IF NOT EXISTS fulfillment_error TEXT");
+    await db.exec("ALTER TABLE livepix_payment_intents ADD COLUMN IF NOT EXISTS fulfillment_resource_id TEXT");
+    await db.exec("ALTER TABLE livepix_payment_intents ADD COLUMN IF NOT EXISTS delivery_message_id TEXT");
     return;
   }
 
@@ -537,6 +547,20 @@ export async function initDatabase() {
     await db.exec("ALTER TABLE authorized_users ADD COLUMN permissions_json TEXT NOT NULL DEFAULT '[]'");
   } catch (error) {
     if (!String(error?.message || '').toLowerCase().includes('duplicate column')) throw error;
+  }
+  const livePixMigrations = [
+    "ALTER TABLE livepix_payment_intents ADD COLUMN fulfillment_attempts INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE livepix_payment_intents ADD COLUMN fulfillment_last_attempt_at TEXT",
+    "ALTER TABLE livepix_payment_intents ADD COLUMN fulfillment_error TEXT",
+    "ALTER TABLE livepix_payment_intents ADD COLUMN fulfillment_resource_id TEXT",
+    "ALTER TABLE livepix_payment_intents ADD COLUMN delivery_message_id TEXT"
+  ];
+  for (const migration of livePixMigrations) {
+    try {
+      await db.exec(migration);
+    } catch (error) {
+      if (!String(error?.message || '').toLowerCase().includes('duplicate column')) throw error;
+    }
   }
 }
 

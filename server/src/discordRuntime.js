@@ -25,6 +25,7 @@ import { logAudit } from './audit.js';
 import {
   generatorCommandDefinitions,
   generatorCommandNames,
+  fulfillLivePixPaymentIntent,
   handleGeneratorInteraction,
   isGeneratorInteraction,
   updateLivePixPaymentMessage
@@ -2106,7 +2107,8 @@ export async function notifyLivePixPaymentIntent(intent) {
   if (!config.discordBot.token || missingEnv(config.discordBot.token)) return false;
   const entry = clients.get(config.discordBot.token);
   if (!entry?.client?.isReady?.()) return false;
-  return updateLivePixPaymentMessage(entry.client, intent);
+  const fulfilledIntent = await fulfillLivePixPaymentIntent(entry.client, intent);
+  return updateLivePixPaymentMessage(entry.client, fulfilledIntent);
 }
 
 // Pequena superficie interna para testes de regressao; nao e exposta por HTTP.

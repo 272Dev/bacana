@@ -90,6 +90,7 @@ import {
 } from './generatorCommerce.js';
 import { ensureLivePixWebhook, isLivePixConfigured } from './livePix.js';
 import {
+  listPendingLivePixFulfillments,
   listPendingLivePixPayments,
   listUnnotifiedPaidLivePixPayments,
   markLivePixPaymentNotified,
@@ -205,7 +206,13 @@ async function notifyPaidLivePixIntent(intent) {
 }
 
 async function reconcileLivePixPaymentNotifications() {
-  const intents = await listUnnotifiedPaidLivePixPayments(50);
+  const [unnotified, pendingFulfillments] = await Promise.all([
+    listUnnotifiedPaidLivePixPayments(50),
+    listPendingLivePixFulfillments(50)
+  ]);
+  const intents = [...new Map(
+    [...unnotified, ...pendingFulfillments].map((intent) => [intent.reference, intent])
+  ).values()];
   let notified = 0;
   for (const intent of intents) {
     if (await notifyPaidLivePixIntent(intent)) notified += 1;

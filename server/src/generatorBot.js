@@ -17,7 +17,11 @@ import { logAudit } from './audit.js';
 import { createLivePixPayment, createLivePixQrCode } from './livePix.js';
 import {
   attachLivePixDiscordMessage,
+  claimLivePixPaymentFulfillment,
+  completeLivePixPaymentFulfillment,
   createLivePixPaymentIntent,
+  failLivePixPaymentFulfillment,
+  getLivePixPaymentIntent,
   markLivePixPaymentNotified,
   syncLivePixPaymentIntent
 } from './livePixPayments.js';
@@ -27,6 +31,7 @@ import {
   getGeneratorHistory,
   getGeneratorProfile,
   generateGeneratorKeys,
+  generateGeneratorPaymentKey,
   listGeneratorPlans,
   recordGeneratorUse,
   redeemGeneratorKey
@@ -87,6 +92,22 @@ function formatDuration(days) {
 
 function planLimit(plan) {
   return Number(plan?.generationLimit || 0) === 0 ? 'Ilimitadas' : String(plan.generationLimit);
+}
+
+function normalizedPlanLookup(value) {
+  return cleanText(value)
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+async function findGeneratorPlan(value, { activeOnly = true } = {}) {
+  const requested = normalizedPlanLookup(value);
+  const plans = await listGeneratorPlans({ activeOnly });
+  return plans.find((plan) => (
+    normalizedPlanLookup(plan.id) === requested
+    || normalizedPlanLookup(plan.name) === requested
+  )) || null;
 }
 
 function bannerUrl() {
@@ -307,11 +328,22 @@ async function createPixCharge(interaction) {
   }
 
   const value = interaction.options.getNumber('valor', true);
+  const buyer = interaction.options.getUser('usuario', true);
+  const requestedPlan = interaction.options.getString('plano', true);
   const amountCents = Math.round(value * 100);
   pixRequestsInFlight.add(interaction.user.id);
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   try {
+    const plan = await findGeneratorPlan(requestedPlan);
+    if (!plan || plan.priceCents <= 0) {
+      throw new Error('Plano invalido, gratuito ou indisponivel para venda.');
+    }
+    if (buyer.bot) throw new Error('Selecione uma pessoa, nao um bot.');
+    if (amountCents !== plan.priceCents) {
+      throw new Error(`O valor do plano ${plan.name} deve ser exatamente ${formatPrice(plan.priceCents)}.`);
+    }
+
     const payment = await createLivePixPayment(amountCents);
     await createLivePixPaymentIntent({
       reference: payment.reference,
@@ -321,10 +353,14 @@ async function createPixCharge(interaction) {
       guildId: interaction.guildId,
       channelId: interaction.channelId,
       createdByDiscordId: interaction.user.id,
-      productType: 'manual',
+      buyerDiscordId: buyer.id,
+      productType: 'generator_plan',
+      productId: plan.id,
       metadata: {
         source: 'discord_slash_command',
-        command: 'pix'
+        command: 'pix',
+        planName: plan.name,
+        planPriceCents: plan.priceCents
       }
     });
     const qrCode = await createLivePixQrCode(payment.checkoutUrl);
@@ -341,6 +377,8 @@ async function createPixCharge(interaction) {
       ].join('\n'),
       fields: [
         { name: 'Valor', value: formatPrice(payment.amountCents), inline: true },
+        { name: 'Plano', value: safeText(plan.name, 80), inline: true },
+        { name: 'Comprador', value: `<@${buyer.id}>`, inline: true },
         { name: 'Status', value: 'Aguardando pagamento', inline: true },
         { name: 'Referencia', value: `\`${safeText(payment.reference, 100)}\``, inline: false }
       ],
@@ -386,7 +424,9 @@ async function createPixCharge(interaction) {
         channelId: interaction.channelId,
         messageId: posted?.id || null,
         amountCents: payment.amountCents,
-        currency: payment.currency
+        currency: payment.currency,
+        buyerDiscordId: buyer.id,
+        planId: plan.id
       }
     }).catch(() => {});
 
@@ -395,6 +435,8 @@ async function createPixCharge(interaction) {
       description: `Cobranca criada por <@${interaction.user.id}>.`,
       fields: [
         { name: 'Valor', value: formatPrice(payment.amountCents), inline: true },
+        { name: 'Plano', value: safeText(plan.name, 80), inline: true },
+        { name: 'Comprador', value: `<@${buyer.id}>`, inline: true },
         { name: 'Referencia', value: safeText(payment.reference, 100), inline: true },
         { name: 'Canal', value: `<#${interaction.channelId}>`, inline: true }
       ],
@@ -434,6 +476,96 @@ async function createPixCharge(interaction) {
   }
 }
 
+export async function fulfillLivePixPaymentIntent(client, intent) {
+  if (!intent?.reference || intent.status !== 'paid') return intent;
+  if (intent.productType === 'manual' || intent.fulfillmentStatus === 'not_required') return intent;
+  if (intent.fulfillmentStatus === 'completed') return intent;
+
+  const claimed = await claimLivePixPaymentFulfillment(intent.reference);
+  if (!claimed) return getLivePixPaymentIntent(intent.reference);
+
+  try {
+    if (claimed.productType !== 'generator_plan') {
+      throw new Error(`Produto automatico nao suportado: ${claimed.productType}`);
+    }
+    if (!claimed.buyerDiscordId || !claimed.productId) {
+      throw new Error('Pagamento sem comprador ou plano vinculado.');
+    }
+
+    const plan = await findGeneratorPlan(claimed.productId, { activeOnly: false });
+    if (!plan) throw new Error('O plano vinculado ao pagamento nao foi encontrado.');
+    const agreedPrice = Number(claimed.metadata?.planPriceCents);
+    if (
+      claimed.currency !== 'BRL'
+      || !Number.isSafeInteger(agreedPrice)
+      || claimed.amountCents !== agreedPrice
+    ) {
+      throw new Error('O valor confirmado nao corresponde ao preco contratado.');
+    }
+
+    const generated = await generateGeneratorPaymentKey({
+      planId: plan.id,
+      paymentReference: claimed.reference,
+      createdByDiscordId: claimed.createdByDiscordId
+    });
+    const buyer = await client.users.fetch(claimed.buyerDiscordId);
+    const deliveryEmbed = new EmbedBuilder()
+      .setColor(BRAND_COLOR)
+      .setTitle('Pagamento confirmado • Sua key Nexus')
+      .setDescription([
+        'Seu pagamento foi confirmado automaticamente pela LivePix.',
+        'Use o botao abaixo para ativar seu plano.',
+        '',
+        '━━━━━━━━━━━━━━━━━━━━'
+      ].join('\n'))
+      .addFields(
+        { name: 'Key', value: `\`${generated.key}\`` },
+        { name: 'Plano', value: safeText(plan.name, 80), inline: true },
+        { name: 'Valor pago', value: formatPrice(claimed.amountCents), inline: true },
+        { name: 'Validade', value: formatDuration(plan.durationDays), inline: true },
+        { name: 'Referencia', value: `\`${safeText(claimed.reference, 100)}\`` }
+      )
+      .setFooter({ text: DEFAULT_FOOTER })
+      .setTimestamp();
+    const avatar = client.user?.displayAvatarURL?.({ size: 256 });
+    if (avatar) deliveryEmbed.setThumbnail(avatar);
+    const deliveryRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('nexus:key')
+        .setLabel('Ativar key')
+        .setEmoji('🔑')
+        .setStyle(ButtonStyle.Primary)
+    );
+    const delivery = await buyer.send({
+      embeds: [deliveryEmbed],
+      components: [deliveryRow],
+      allowedMentions: { parse: [] }
+    });
+    const completed = await completeLivePixPaymentFulfillment(claimed.reference, {
+      resourceId: generated.id,
+      deliveryMessageId: delivery.id
+    });
+    await logAudit({
+      actorDiscordId: claimed.createdByDiscordId,
+      action: 'generator_bot.pix_key_delivered',
+      targetType: 'livepix_payment',
+      targetId: claimed.reference,
+      metadata: {
+        buyerDiscordId: claimed.buyerDiscordId,
+        planId: plan.id,
+        generatorKeyId: generated.id,
+        amountCents: claimed.amountCents,
+        deliveryMessageId: delivery.id
+      }
+    }).catch(() => {});
+    return completed;
+  } catch (error) {
+    await failLivePixPaymentFulfillment(claimed.reference, error);
+    console.warn(`[nexus] Falha ao entregar compra Pix ${claimed.reference}: ${error.message}`);
+    return getLivePixPaymentIntent(claimed.reference);
+  }
+}
+
 export async function updateLivePixPaymentMessage(client, intent) {
   if (!client?.isReady?.() || !intent?.guildId || !intent?.channelId || !intent?.messageId) return false;
   const guild = client.guilds.cache.get(intent.guildId)
@@ -448,16 +580,36 @@ export async function updateLivePixPaymentMessage(client, intent) {
   const embed = current
     ? EmbedBuilder.from(current)
     : new EmbedBuilder().setTitle('Pagamento Pix').setColor(BRAND_COLOR);
+  const automaticDelivery = intent.productType === 'generator_plan';
+  const delivered = intent.fulfillmentStatus === 'completed';
+  const deliveryFailed = intent.fulfillmentStatus === 'failed';
+  const statusText = automaticDelivery
+    ? delivered
+      ? 'Confirmado • key enviada no privado'
+      : deliveryFailed
+        ? 'Confirmado • abra seu privado para receber'
+        : 'Confirmado • preparando sua key'
+    : 'Pagamento confirmado';
   embed
     .setDescription([
       '**Pagamento confirmado pela LivePix.**',
-      'A referencia, o valor e o comprovante foram validados diretamente na API.',
+      automaticDelivery
+        ? delivered
+          ? 'A key foi gerada e entregue automaticamente no privado do comprador.'
+          : 'A key esta segura. O bot tentara entrega-la novamente assim que o privado estiver aberto.'
+        : 'A referencia, o valor e o comprovante foram validados diretamente na API.',
       '',
       '━━━━━━━━━━━━━━━━━━━━'
     ].join('\n'))
     .setFields(
       { name: 'Valor', value: formatPrice(intent.amountCents), inline: true },
-      { name: 'Status', value: 'Pagamento confirmado', inline: true },
+      { name: 'Status', value: statusText, inline: true },
+      ...(automaticDelivery
+        ? [
+            { name: 'Plano', value: safeText(intent.metadata?.planName || intent.productId, 80), inline: true },
+            { name: 'Comprador', value: `<@${intent.buyerDiscordId}>`, inline: true }
+          ]
+        : []),
       { name: 'Referencia', value: `\`${safeText(intent.reference, 100)}\``, inline: false }
     )
     .setTimestamp();
@@ -465,7 +617,7 @@ export async function updateLivePixPaymentMessage(client, intent) {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`nexus:pix:paid:${intent.reference}`)
-      .setLabel('Pagamento confirmado')
+      .setLabel(delivered ? 'Key entregue' : 'Pagamento confirmado')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(true)
   );
@@ -492,9 +644,14 @@ async function checkPixPayment(interaction, reference) {
       );
     }
 
-    const updated = await updateLivePixPaymentMessage(interaction.client, result.intent).catch(() => false);
+    const fulfilledIntent = await fulfillLivePixPaymentIntent(interaction.client, result.intent);
+    const updated = await updateLivePixPaymentMessage(interaction.client, fulfilledIntent).catch(() => false);
     if (updated) await markLivePixPaymentNotified(result.intent.reference);
-    return interaction.editReply('Pagamento confirmado e validado com sucesso.');
+    return interaction.editReply(
+      fulfilledIntent.fulfillmentStatus === 'completed'
+        ? 'Pagamento confirmado. A key foi enviada automaticamente no privado do comprador.'
+        : 'Pagamento confirmado. A key esta guardada e o bot tentara envia-la no privado automaticamente.'
+    );
   } catch (error) {
     return interaction.editReply(
       `Nao foi possivel verificar agora: ${safeText(error?.message || 'erro inesperado', 400)}`
@@ -1197,6 +1354,20 @@ export function generatorCommandDefinitions() {
           required: true,
           min_value: 1,
           max_value: 100000
+        },
+        {
+          type: 6,
+          name: 'usuario',
+          description: 'Usuario que recebera a key automaticamente',
+          required: true
+        },
+        {
+          type: 3,
+          name: 'plano',
+          description: 'ID ou nome do plano (weekly, monthly, vip ou lifetime)',
+          required: true,
+          min_length: 2,
+          max_length: 64
         }
       ]
     }

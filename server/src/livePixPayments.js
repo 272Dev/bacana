@@ -46,6 +46,11 @@ function mapIntent(row) {
     paidAt: row.paid_at,
     fulfilledAt: row.fulfilled_at,
     fulfillmentStatus: row.fulfillment_status,
+    fulfillmentAttempts: Number(row.fulfillment_attempts || 0),
+    fulfillmentLastAttemptAt: row.fulfillment_last_attempt_at,
+    fulfillmentError: row.fulfillment_error,
+    fulfillmentResourceId: row.fulfillment_resource_id,
+    deliveryMessageId: row.delivery_message_id,
     notifiedAt: row.notified_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at
@@ -149,6 +154,79 @@ export async function listPendingLivePixPayments(limit = 25) {
     LIMIT ${normalizedLimit}
   `).all();
   return rows.map(mapIntent);
+}
+
+export async function listPendingLivePixFulfillments(limit = 50) {
+  const normalizedLimit = Math.max(1, Math.min(200, Number(limit) || 50));
+  const retryBefore = new Date(Date.now() - 90_000).toISOString();
+  const rows = await db.prepare(`
+    SELECT * FROM livepix_payment_intents
+    WHERE status = 'paid'
+      AND product_type <> 'manual'
+      AND fulfillment_status IN ('pending', 'failed')
+      AND (fulfillment_last_attempt_at IS NULL OR fulfillment_last_attempt_at < ?)
+    ORDER BY paid_at ASC
+    LIMIT ${normalizedLimit}
+  `).all(retryBefore);
+  return rows.map(mapIntent);
+}
+
+export async function claimLivePixPaymentFulfillment(reference) {
+  const normalizedReference = cleanText(reference, 200);
+  const timestamp = nowIso();
+  const retryBefore = new Date(Date.now() - 90_000).toISOString();
+  const claimed = await db.prepare(`
+    UPDATE livepix_payment_intents
+    SET fulfillment_status = 'pending',
+        fulfillment_attempts = fulfillment_attempts + 1,
+        fulfillment_last_attempt_at = ?,
+        fulfillment_error = NULL,
+        updated_at = ?
+    WHERE reference = ?
+      AND status = 'paid'
+      AND product_type <> 'manual'
+      AND fulfillment_status IN ('pending', 'failed')
+      AND (fulfillment_last_attempt_at IS NULL OR fulfillment_last_attempt_at < ?)
+  `).run(timestamp, timestamp, normalizedReference, retryBefore);
+  if (!Number(claimed.changes || 0)) return null;
+  return getLivePixPaymentIntent(normalizedReference);
+}
+
+export async function completeLivePixPaymentFulfillment(reference, {
+  resourceId = null,
+  deliveryMessageId = null
+} = {}) {
+  const timestamp = nowIso();
+  await db.prepare(`
+    UPDATE livepix_payment_intents
+    SET fulfillment_status = 'completed',
+        fulfilled_at = COALESCE(fulfilled_at, ?),
+        fulfillment_error = NULL,
+        fulfillment_resource_id = COALESCE(fulfillment_resource_id, ?),
+        delivery_message_id = COALESCE(delivery_message_id, ?),
+        updated_at = ?
+    WHERE reference = ? AND status = 'paid'
+  `).run(
+    timestamp,
+    cleanText(resourceId, 200) || null,
+    cleanText(deliveryMessageId, 80) || null,
+    timestamp,
+    cleanText(reference, 200)
+  );
+  return getLivePixPaymentIntent(reference);
+}
+
+export async function failLivePixPaymentFulfillment(reference, error) {
+  await db.prepare(`
+    UPDATE livepix_payment_intents
+    SET fulfillment_status = 'failed', fulfillment_error = ?, updated_at = ?
+    WHERE reference = ? AND status = 'paid' AND fulfillment_status <> 'completed'
+  `).run(
+    cleanText(error?.message || error || 'Falha ao entregar a compra.', 1000),
+    nowIso(),
+    cleanText(reference, 200)
+  );
+  return getLivePixPaymentIntent(reference);
 }
 
 export async function markLivePixPaymentNotified(reference) {
