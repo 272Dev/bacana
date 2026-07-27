@@ -59,6 +59,7 @@ import {
   getDiscordProtectionCatalog,
   getDiscordProtectionStats,
   getDiscordRuntimeState,
+  notifyLivePixPaymentIntent,
   restoreDiscordProtections,
   restoreDiscordVoiceConnections,
   runDiscordBotLifecycle,
@@ -87,6 +88,12 @@ import {
   seedGeneratorPlans,
   updateGeneratorPlan
 } from './generatorCommerce.js';
+import { ensureLivePixWebhook, isLivePixConfigured } from './livePix.js';
+import {
+  listUnnotifiedPaidLivePixPayments,
+  markLivePixPaymentNotified,
+  processLivePixWebhook
+} from './livePixPayments.js';
 import { registerLicensingRoutes, seedLicensePlans } from './licensing.js';
 import { registerLoaderRoutes } from './loader.js';
 import { registerNameTagRoutes } from './nameTags.js';
@@ -178,6 +185,88 @@ app.use((req, res, next) => {
     return res.status(403).json({ error: 'HTTPS obrigatorio.' });
   }
   next();
+});
+
+const livePixWebhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 240,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false
+});
+let livePixWebhookReady = false;
+
+async function notifyPaidLivePixIntent(intent) {
+  if (!intent?.reference || intent.status !== 'paid') return false;
+  const notified = await notifyLivePixPaymentIntent(intent).catch(() => false);
+  if (notified) await markLivePixPaymentNotified(intent.reference);
+  return notified;
+}
+
+async function reconcileLivePixPaymentNotifications() {
+  const intents = await listUnnotifiedPaidLivePixPayments(50);
+  let notified = 0;
+  for (const intent of intents) {
+    if (await notifyPaidLivePixIntent(intent)) notified += 1;
+  }
+  return { checked: intents.length, notified };
+}
+
+app.post('/api/webhooks/livepix', livePixWebhookLimiter, async (req, res) => {
+  try {
+    const result = await processLivePixWebhook(req.body);
+    if (result.paid && result.intent) {
+      await logAudit({
+        action: 'livepix.payment_confirmed',
+        targetType: 'livepix_payment',
+        targetId: result.intent.reference,
+        metadata: {
+          amountCents: result.intent.amountCents,
+          currency: result.intent.currency,
+          productType: result.intent.productType,
+          providerPaymentId: result.intent.providerPaymentId
+        },
+        ip: req.ip
+      }).catch(() => {});
+      await notifyPaidLivePixIntent(result.intent);
+    }
+    return res.status(200).json({
+      received: true,
+      paid: result.paid === true,
+      ignored: result.ignored === true,
+      reason: result.reason
+    });
+  } catch (error) {
+    console.warn(`[nexus] Falha ao validar webhook LivePix: ${error.message}`);
+    return res.status(503).json({ received: false, error: 'Falha temporaria ao validar pagamento.' });
+  }
+});
+
+app.get('/api/payments/livepix/return', (_req, res) => {
+  res.type('html').send(`<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Nexus | Pagamento enviado</title>
+  <style>
+    :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    *{box-sizing:border-box}
+    body{min-height:100vh;margin:0;display:grid;place-items:center;background:#050505;color:#f5f5f5;padding:24px}
+    main{width:min(480px,100%);padding:34px;border:1px solid #2c2c2c;border-radius:24px;background:#0d0d0d;box-shadow:0 24px 80px #000}
+    .mark{width:46px;height:46px;display:grid;place-items:center;border:1px solid #555;border-radius:15px;font-weight:900;margin-bottom:24px}
+    h1{font-size:24px;letter-spacing:-.03em;margin:0 0 12px}
+    p{color:#aaa;line-height:1.6;margin:0}
+    strong{color:#fff}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark">N</div>
+    <h1>Pagamento enviado para confirmacao</h1>
+    <p>Volte ao Discord. O Nexus atualiza a cobranca <strong>automaticamente</strong> depois que a LivePix confirmar o pagamento.</p>
+  </main>
+</body>
+</html>`);
 });
 
 const apiLimiter = rateLimit({
@@ -2126,8 +2215,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
     void Promise.allSettled([
       startDefaultDiscordBot(),
       restoreDiscordProtections(),
-      restoreDiscordVoiceConnections()
-    ]).then(([botResult, protectionResult, voiceResult]) => {
+      restoreDiscordVoiceConnections(),
+      isLivePixConfigured()
+        ? ensureLivePixWebhook()
+        : Promise.resolve({ configured: false, reason: 'missing_credentials' })
+    ]).then(async ([botResult, protectionResult, voiceResult, livePixResult]) => {
       if (botResult.status === 'fulfilled' && botResult.value) console.log('Discord bot conectado ao Gateway.');
       if (botResult.status === 'rejected') console.warn(`Discord bot nao conectou ao Gateway: ${botResult.reason.message}`);
       if (protectionResult.status === 'fulfilled') {
@@ -2140,7 +2232,38 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
       } else {
         console.warn(`Calls Discord nao foram restauradas: ${voiceResult.reason.message}`);
       }
+      if (livePixResult.status === 'fulfilled' && livePixResult.value.configured) {
+        livePixWebhookReady = true;
+        console.log(
+          `Webhook LivePix ${livePixResult.value.created ? 'criado' : 'ativo'}: `
+          + `${livePixResult.value.url}`
+        );
+      } else if (livePixResult.status === 'rejected') {
+        console.warn(`Webhook LivePix nao foi configurado: ${livePixResult.reason.message}`);
+      }
+      await reconcileLivePixPaymentNotifications().catch((error) => {
+        console.warn(`[nexus] Falha ao reconciliar pagamentos LivePix: ${error.message}`);
+      });
     });
+    const livePixReconciliationTimer = setInterval(() => {
+      void reconcileLivePixPaymentNotifications().catch((error) => {
+        console.warn(`[nexus] Falha ao reconciliar pagamentos LivePix: ${error.message}`);
+      });
+    }, 30_000);
+    livePixReconciliationTimer.unref?.();
+    const livePixWebhookTimer = setInterval(() => {
+      if (!isLivePixConfigured() || livePixWebhookReady) return;
+      void ensureLivePixWebhook()
+        .then((result) => {
+          if (!result.configured) return;
+          livePixWebhookReady = true;
+          console.log(`Webhook LivePix ${result.created ? 'criado' : 'ativo'}: ${result.url}`);
+        })
+        .catch((error) => {
+          console.warn(`Nova tentativa do webhook LivePix falhou: ${error.message}`);
+        });
+    }, 70_000);
+    livePixWebhookTimer.unref?.();
   });
 }
 

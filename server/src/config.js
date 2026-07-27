@@ -85,10 +85,11 @@ export const config = {
   livePix: {
     clientId: env('LIVEPIX_CLIENT_ID'),
     clientSecret: env('LIVEPIX_CLIENT_SECRET'),
-    scope: env('LIVEPIX_SCOPE', 'payments:write'),
+    scope: env('LIVEPIX_SCOPE', 'payments:read payments:write webhooks'),
     oauthUrl: env('LIVEPIX_OAUTH_URL', 'https://oauth.livepix.gg/oauth2/token'),
     apiUrl: env('LIVEPIX_API_URL', 'https://api.livepix.gg').replace(/\/+$/, ''),
-    redirectUrl: env('LIVEPIX_REDIRECT_URL', env('CLIENT_URL', 'http://localhost:5173'))
+    redirectUrl: env('LIVEPIX_REDIRECT_URL', env('CLIENT_URL', 'http://localhost:5173')),
+    webhookUrl: env('LIVEPIX_WEBHOOK_URL')
   },
   discord: {
     clientId: env('DISCORD_CLIENT_ID'),

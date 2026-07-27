@@ -11,10 +11,16 @@ import {
   TextInputBuilder,
   TextInputStyle
 } from 'discord.js';
-import { config, missingEnv } from './config.js';
+import { config } from './config.js';
 import { db, nowIso } from './db.js';
 import { logAudit } from './audit.js';
-import { createQrPng } from './qrCode.js';
+import { createLivePixPayment, createLivePixQrCode } from './livePix.js';
+import {
+  attachLivePixDiscordMessage,
+  createLivePixPaymentIntent,
+  markLivePixPaymentNotified,
+  syncLivePixPaymentIntent
+} from './livePixPayments.js';
 import {
   getGeneratorAccess,
   getGeneratorDeliveryForBuyer,
@@ -36,10 +42,6 @@ const GENERATOR_COMMAND_NAMES = new Set(['conta', 'nexus', 'pix']);
 const GENERATOR_PREFIX = 'nexus:';
 const requestsInFlight = new Set();
 const pixRequestsInFlight = new Set();
-const LIVEPIX_REQUEST_TIMEOUT_MS = 12_000;
-const LIVEPIX_TOKEN_REFRESH_MARGIN_MS = 60_000;
-let livePixCachedToken = null;
-let livePixTokenRequest = null;
 const BRAND_COLOR = 0x0A0A0A;
 const DEFAULT_FOOTER = 'Nexus • Gerador premium';
 const SUPPORT_TYPES = {
@@ -52,238 +54,6 @@ const SUPPORT_TYPES = {
 
 function cleanText(value) {
   return String(value || '').trim();
-}
-
-function makeLivePixError(message, code, status = 502) {
-  const error = new Error(message);
-  error.code = code;
-  error.status = status;
-  return error;
-}
-
-function livePixConfigurationError() {
-  const missing = [];
-  if (missingEnv(config.livePix.clientId)) missing.push('LIVEPIX_CLIENT_ID');
-  if (missingEnv(config.livePix.clientSecret)) missing.push('LIVEPIX_CLIENT_SECRET');
-  if (missing.length === 0) return null;
-  return makeLivePixError(
-    `LivePix ainda nao configurada: ${missing.join(' e ')}.`,
-    'LIVEPIX_NOT_CONFIGURED',
-    503
-  );
-}
-
-async function parseLivePixJson(response) {
-  const text = await response.text();
-  if (!text) return {};
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw makeLivePixError('A LivePix retornou uma resposta invalida.', 'LIVEPIX_INVALID_RESPONSE');
-  }
-}
-
-function livePixProviderError(response, payload) {
-  const providerMessage = cleanText(payload?.message || payload?.error_description || payload?.error);
-  if (response.status === 400 && /scope/i.test(providerMessage)) {
-    return makeLivePixError(
-      'A aplicacao LivePix precisa da permissao payments:write.',
-      'LIVEPIX_INVALID_SCOPE',
-      503
-    );
-  }
-  if (response.status === 401) {
-    return makeLivePixError(
-      'As credenciais da LivePix sao invalidas ou foram revogadas.',
-      'LIVEPIX_INVALID_CREDENTIALS',
-      503
-    );
-  }
-  if (response.status === 403) {
-    return makeLivePixError(
-      'A aplicacao LivePix nao possui permissao para criar pagamentos.',
-      'LIVEPIX_FORBIDDEN',
-      503
-    );
-  }
-  if (response.status === 429) {
-    return makeLivePixError(
-      'O limite de cobrancas da LivePix foi atingido. Aguarde um minuto.',
-      'LIVEPIX_RATE_LIMITED',
-      429
-    );
-  }
-  if (response.status === 422) {
-    return makeLivePixError(
-      providerMessage || 'A LivePix recusou os dados desta cobranca.',
-      'LIVEPIX_VALIDATION_ERROR',
-      422
-    );
-  }
-  return makeLivePixError(
-    providerMessage || 'Nao foi possivel gerar a cobranca na LivePix.',
-    'LIVEPIX_PROVIDER_ERROR',
-    response.status >= 400 && response.status < 600 ? response.status : 502
-  );
-}
-
-async function livePixFetch(url, options) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), LIVEPIX_REQUEST_TIMEOUT_MS);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw makeLivePixError('A LivePix demorou demais para responder.', 'LIVEPIX_TIMEOUT', 504);
-    }
-    throw makeLivePixError('Nao foi possivel conectar com a LivePix.', 'LIVEPIX_UNAVAILABLE', 502);
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function requestLivePixAccessToken() {
-  const missing = livePixConfigurationError();
-  if (missing) throw missing;
-
-  const form = new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: config.livePix.clientId,
-    client_secret: config.livePix.clientSecret,
-    scope: config.livePix.scope
-  });
-  const response = await livePixFetch(config.livePix.oauthUrl, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body: form.toString()
-  });
-  const payload = await parseLivePixJson(response);
-  if (!response.ok) throw livePixProviderError(response, payload);
-
-  const accessToken = cleanText(payload.access_token);
-  const expiresIn = Number(payload.expires_in || 3600);
-  if (!accessToken) {
-    throw makeLivePixError('A LivePix nao retornou um token de acesso.', 'LIVEPIX_INVALID_TOKEN_RESPONSE');
-  }
-
-  livePixCachedToken = {
-    value: accessToken,
-    expiresAt: Date.now() + Math.max(60, expiresIn) * 1000
-  };
-  return livePixCachedToken.value;
-}
-
-async function getLivePixAccessToken({ force = false } = {}) {
-  if (
-    !force
-    && livePixCachedToken
-    && Date.now() < livePixCachedToken.expiresAt - LIVEPIX_TOKEN_REFRESH_MARGIN_MS
-  ) {
-    return livePixCachedToken.value;
-  }
-  if (livePixTokenRequest) return livePixTokenRequest;
-
-  livePixTokenRequest = requestLivePixAccessToken().finally(() => {
-    livePixTokenRequest = null;
-  });
-  return livePixTokenRequest;
-}
-
-function normalizeLivePixRedirectUrl() {
-  let parsed;
-  try {
-    parsed = new URL(config.livePix.redirectUrl);
-  } catch {
-    throw makeLivePixError('LIVEPIX_REDIRECT_URL nao e uma URL valida.', 'LIVEPIX_INVALID_REDIRECT', 503);
-  }
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw makeLivePixError('LIVEPIX_REDIRECT_URL precisa usar HTTP ou HTTPS.', 'LIVEPIX_INVALID_REDIRECT', 503);
-  }
-  return parsed.href;
-}
-
-function normalizeLivePixCheckoutUrl(value) {
-  let parsed;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw makeLivePixError('A LivePix nao retornou um checkout valido.', 'LIVEPIX_INVALID_CHECKOUT');
-  }
-  const trustedHost = parsed.hostname === 'livepix.gg' || parsed.hostname.endsWith('.livepix.gg');
-  if (parsed.protocol !== 'https:' || !trustedHost) {
-    throw makeLivePixError('A LivePix retornou um checkout nao confiavel.', 'LIVEPIX_UNTRUSTED_CHECKOUT');
-  }
-  return parsed.href;
-}
-
-async function createLivePixQrCode(checkoutUrl) {
-  const trustedCheckoutUrl = normalizeLivePixCheckoutUrl(checkoutUrl);
-  try {
-    return await createQrPng(trustedCheckoutUrl, {
-      scale: 10,
-      margin: 4,
-      errorCorrectionLevel: 'H'
-    });
-  } catch {
-    throw makeLivePixError(
-      'A cobranca foi criada, mas nao foi possivel montar o QR Code.',
-      'LIVEPIX_QR_GENERATION_FAILED'
-    );
-  }
-}
-
-async function createLivePixPaymentRequest(amountCents, accessToken) {
-  const response = await livePixFetch(`${config.livePix.apiUrl}/v2/payments`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      amount: amountCents,
-      currency: 'BRL',
-      redirectUrl: normalizeLivePixRedirectUrl()
-    })
-  });
-  const payload = await parseLivePixJson(response);
-  return { response, payload };
-}
-
-async function createLivePixPayment(amountCents) {
-  const normalizedAmount = Number(amountCents);
-  if (!Number.isSafeInteger(normalizedAmount) || normalizedAmount < 100 || normalizedAmount > 10_000_000) {
-    throw makeLivePixError(
-      'O valor deve estar entre R$ 1,00 e R$ 100.000,00.',
-      'LIVEPIX_INVALID_AMOUNT',
-      400
-    );
-  }
-
-  let accessToken = await getLivePixAccessToken();
-  let result = await createLivePixPaymentRequest(normalizedAmount, accessToken);
-  if (result.response.status === 401) {
-    livePixCachedToken = null;
-    accessToken = await getLivePixAccessToken({ force: true });
-    result = await createLivePixPaymentRequest(normalizedAmount, accessToken);
-  }
-  if (!result.response.ok) throw livePixProviderError(result.response, result.payload);
-
-  const reference = cleanText(result.payload?.data?.reference);
-  const checkoutUrl = normalizeLivePixCheckoutUrl(result.payload?.data?.redirectUrl);
-  if (!reference) {
-    throw makeLivePixError('A LivePix nao retornou a referencia da cobranca.', 'LIVEPIX_INVALID_PAYMENT');
-  }
-
-  return {
-    reference,
-    checkoutUrl,
-    amountCents: normalizedAmount,
-    currency: 'BRL'
-  };
 }
 
 function safeText(value, max = 1000) {
@@ -543,14 +313,29 @@ async function createPixCharge(interaction) {
 
   try {
     const payment = await createLivePixPayment(amountCents);
+    await createLivePixPaymentIntent({
+      reference: payment.reference,
+      checkoutUrl: payment.checkoutUrl,
+      amountCents: payment.amountCents,
+      currency: payment.currency,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      createdByDiscordId: interaction.user.id,
+      productType: 'manual',
+      metadata: {
+        source: 'discord_slash_command',
+        command: 'pix'
+      }
+    });
     const qrCode = await createLivePixQrCode(payment.checkoutUrl);
     const qrCodeName = 'nexus-pix-qr.png';
     const paymentEmbed = await brandEmbed(interaction, {
       title: 'Pagamento Pix',
       description: [
         '**Cobranca gerada com seguranca pela LivePix.**',
-        'Escaneie o QR Code abaixo para abrir a cobranca e pagar.',
+        'Escaneie com a camera do celular para abrir o checkout e pagar.',
         'Se preferir, use o botao para abrir o checkout no aparelho.',
+        'O status sera atualizado automaticamente apos a confirmacao.',
         '',
         '━━━━━━━━━━━━━━━━━━━━'
       ].join('\n'),
@@ -567,7 +352,11 @@ async function createPixCharge(interaction) {
         .setLabel('Pagar com Pix')
         .setEmoji('💠')
         .setStyle(ButtonStyle.Link)
-        .setURL(payment.checkoutUrl)
+        .setURL(payment.checkoutUrl),
+      new ButtonBuilder()
+        .setCustomId(`nexus:pix:status:${payment.reference}`)
+        .setLabel('Verificar pagamento')
+        .setStyle(ButtonStyle.Secondary)
     );
     const payload = {
       embeds: [paymentEmbed],
@@ -579,6 +368,13 @@ async function createPixCharge(interaction) {
     const posted = interaction.channel?.isTextBased?.()
       ? await interaction.channel.send(payload).catch(() => null)
       : null;
+    if (posted) {
+      await attachLivePixDiscordMessage(payment.reference, {
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        messageId: posted.id
+      });
+    }
 
     await logAudit({
       actorDiscordId: interaction.user.id,
@@ -635,6 +431,74 @@ async function createPixCharge(interaction) {
     });
   } finally {
     pixRequestsInFlight.delete(interaction.user.id);
+  }
+}
+
+export async function updateLivePixPaymentMessage(client, intent) {
+  if (!client?.isReady?.() || !intent?.guildId || !intent?.channelId || !intent?.messageId) return false;
+  const guild = client.guilds.cache.get(intent.guildId)
+    || await client.guilds.fetch(intent.guildId).catch(() => null);
+  if (!guild) return false;
+  const channel = await guild.channels.fetch(intent.channelId).catch(() => null);
+  if (!channel?.isTextBased?.() || !channel.messages?.fetch) return false;
+  const message = await channel.messages.fetch(intent.messageId).catch(() => null);
+  if (!message) return false;
+
+  const current = message.embeds?.[0];
+  const embed = current
+    ? EmbedBuilder.from(current)
+    : new EmbedBuilder().setTitle('Pagamento Pix').setColor(BRAND_COLOR);
+  embed
+    .setDescription([
+      '**Pagamento confirmado pela LivePix.**',
+      'A referencia, o valor e o comprovante foram validados diretamente na API.',
+      '',
+      '━━━━━━━━━━━━━━━━━━━━'
+    ].join('\n'))
+    .setFields(
+      { name: 'Valor', value: formatPrice(intent.amountCents), inline: true },
+      { name: 'Status', value: 'Pagamento confirmado', inline: true },
+      { name: 'Referencia', value: `\`${safeText(intent.reference, 100)}\``, inline: false }
+    )
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`nexus:pix:paid:${intent.reference}`)
+      .setLabel('Pagamento confirmado')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(true)
+  );
+  await message.edit({
+    embeds: [embed],
+    components: [row],
+    allowedMentions: { parse: [] }
+  });
+  return true;
+}
+
+async function checkPixPayment(interaction, reference) {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const result = await syncLivePixPaymentIntent(reference);
+    if (!result.found) {
+      return interaction.editReply('Esta cobranca nao foi encontrada no Nexus.');
+    }
+    if (!result.paid) {
+      return interaction.editReply(
+        result.reason === 'not_received'
+          ? 'Pagamento ainda nao confirmado pela LivePix. Aguarde alguns segundos apos pagar e tente novamente.'
+          : `Pagamento ainda pendente (${safeText(result.reason, 80)}).`
+      );
+    }
+
+    const updated = await updateLivePixPaymentMessage(interaction.client, result.intent).catch(() => false);
+    if (updated) await markLivePixPaymentNotified(result.intent.reference);
+    return interaction.editReply('Pagamento confirmado e validado com sucesso.');
+  } catch (error) {
+    return interaction.editReply(
+      `Nao foi possivel verificar agora: ${safeText(error?.message || 'erro inesperado', 400)}`
+    );
   }
 }
 
@@ -1298,6 +1162,9 @@ async function routeComponent(interaction) {
   if (id === 'nexus:setup:channels') return setupChannels(interaction);
   if (id === 'nexus:setup:panel') return publishPanel(interaction);
   if (id === 'nexus:ticket:close') return closeTicket(interaction);
+  if (id.startsWith('nexus:pix:status:')) {
+    return checkPixPayment(interaction, id.slice('nexus:pix:status:'.length));
+  }
   if (id.startsWith('nexus:copy:')) return copyDelivery(interaction, id.slice('nexus:copy:'.length));
   if (id.startsWith('nexus:purchase:')) return createTicket(interaction, 'purchase', id.slice('nexus:purchase:'.length));
   if (id === 'nexus:buy') return createTicket(interaction, 'purchase', interaction.values[0]);

@@ -237,6 +237,32 @@ const schemaSql = `
     updated_at TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS livepix_payment_intents (
+    id TEXT PRIMARY KEY,
+    reference TEXT NOT NULL UNIQUE,
+    provider_payment_id TEXT UNIQUE,
+    guild_id TEXT,
+    channel_id TEXT,
+    message_id TEXT,
+    created_by_discord_id TEXT,
+    buyer_discord_id TEXT,
+    amount_cents INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'BRL',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'paid', 'expired', 'cancelled', 'failed')),
+    product_type TEXT NOT NULL DEFAULT 'manual',
+    product_id TEXT,
+    checkout_url TEXT NOT NULL,
+    proof TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    provider_created_at TEXT,
+    paid_at TEXT,
+    fulfilled_at TEXT,
+    fulfillment_status TEXT NOT NULL DEFAULT 'not_required' CHECK (fulfillment_status IN ('not_required', 'pending', 'completed', 'failed')),
+    notified_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS temp_email_inboxes (
     id TEXT PRIMARY KEY,
     label TEXT,
@@ -399,6 +425,10 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_generator_keys_plan ON generator_keys(plan_id);
   CREATE INDEX IF NOT EXISTS idx_generator_subscriptions_status ON generator_subscriptions(status, expires_at);
   CREATE INDEX IF NOT EXISTS idx_generator_subscriptions_plan ON generator_subscriptions(plan_id);
+  CREATE INDEX IF NOT EXISTS idx_livepix_payments_status ON livepix_payment_intents(status, created_at);
+  CREATE INDEX IF NOT EXISTS idx_livepix_payments_buyer ON livepix_payment_intents(buyer_discord_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_livepix_payments_message ON livepix_payment_intents(guild_id, channel_id, message_id);
+  CREATE INDEX IF NOT EXISTS idx_livepix_payments_notification ON livepix_payment_intents(status, notified_at);
   CREATE INDEX IF NOT EXISTS idx_authenticators_label ON authenticators(label);
   CREATE INDEX IF NOT EXISTS idx_temp_email_address ON temp_email_inboxes(address);
   CREATE INDEX IF NOT EXISTS idx_license_users_discord ON license_users(discord_id);

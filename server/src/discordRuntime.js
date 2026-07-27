@@ -26,7 +26,8 @@ import {
   generatorCommandDefinitions,
   generatorCommandNames,
   handleGeneratorInteraction,
-  isGeneratorInteraction
+  isGeneratorInteraction,
+  updateLivePixPaymentMessage
 } from './generatorBot.js';
 import {
   detectorCatalogResponse,
@@ -2099,6 +2100,13 @@ export async function startDefaultDiscordBot() {
     activityType: 'Watching',
     activityMessage: 'Nexus dashboard'
   });
+}
+
+export async function notifyLivePixPaymentIntent(intent) {
+  if (!config.discordBot.token || missingEnv(config.discordBot.token)) return false;
+  const entry = clients.get(config.discordBot.token);
+  if (!entry?.client?.isReady?.()) return false;
+  return updateLivePixPaymentMessage(entry.client, intent);
 }
 
 // Pequena superficie interna para testes de regressao; nao e exposta por HTTP.
