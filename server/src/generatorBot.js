@@ -197,7 +197,11 @@ function privateReplyOptions(interaction, payload) {
 
 async function show(interaction, payload) {
   if (interaction.isButton?.() || interaction.isStringSelectMenu?.()) {
-    if (!interaction.replied && !interaction.deferred) return interaction.update(payload);
+    const sourceIsPrivate = interaction.message?.flags?.has?.(MessageFlags.Ephemeral) === true;
+    if (!interaction.replied && !interaction.deferred && sourceIsPrivate) return interaction.update(payload);
+    if (!interaction.replied && !interaction.deferred) {
+      return interaction.reply(privateReplyOptions(interaction, payload));
+    }
   }
   if (interaction.deferred || interaction.replied) return interaction.editReply(payload);
   return interaction.reply(privateReplyOptions(interaction, payload));
@@ -864,6 +868,11 @@ async function setupChannels(interaction) {
 async function publishPanel(interaction) {
   assertManageGuild(interaction);
   if (!interaction.channel?.isTextBased?.()) throw new Error('Escolha um canal de texto para publicar o painel.');
+  const guildConfig = await getGuildConfig(interaction.guildId);
+  const configuredChannel = guildConfig?.panelChannelId
+    ? await interaction.guild.channels.fetch(guildConfig.panelChannelId).catch(() => null)
+    : null;
+  const channel = configuredChannel?.isTextBased?.() ? configuredChannel : interaction.channel;
   const embed = await brandEmbed(interaction, {
     title: 'Nexus • Gerador de contas',
     description: [
@@ -873,9 +882,39 @@ async function publishPanel(interaction) {
       '━━━━━━━━━━━━━━━━━━━━'
     ].join('\n')
   });
-  await interaction.channel.send({ embeds: [embed], components: navigationRows(), allowedMentions: { parse: [] } });
-  await saveGuildConfig(interaction.guildId, { panelChannelId: interaction.channelId });
-  return interaction.reply({ content: 'Painel publicado neste canal.', flags: MessageFlags.Ephemeral });
+  const payload = { embeds: [embed], components: navigationRows(), allowedMentions: { parse: [] } };
+  const isNexusPanel = (message) => (
+    message.author?.id === interaction.client.user.id
+    && message.components?.some((row) => row.components?.some((component) => component.customId === 'nexus:generate'))
+  );
+
+  const pinned = await channel.messages.fetchPins().catch(() => null);
+  let panelMessage = pinned?.items?.map((item) => item.message).find(isNexusPanel) || null;
+  if (!panelMessage) {
+    const recent = await channel.messages.fetch({ limit: 50 }).catch(() => null);
+    panelMessage = recent?.find(isNexusPanel) || null;
+  }
+
+  const existingPanel = Boolean(panelMessage);
+  if (panelMessage) await panelMessage.edit(payload);
+  else panelMessage = await channel.send(payload);
+
+  const pinSucceeded = panelMessage.pinned
+    || await panelMessage.pin('Painel principal do gerador Nexus').then(() => true).catch(() => false);
+  await saveGuildConfig(interaction.guildId, { panelChannelId: channel.id });
+  await logAudit({
+    actorDiscordId: interaction.user.id,
+    action: existingPanel ? 'generator_bot.panel_updated' : 'generator_bot.panel_published',
+    targetType: 'discord_message',
+    targetId: panelMessage.id,
+    metadata: { channelId: channel.id, pinned: pinSucceeded }
+  });
+  return interaction.reply({
+    content: pinSucceeded
+      ? `Painel público atualizado e fixado em ${channel}.`
+      : `Painel público atualizado em ${channel}. Para fixar, dê ao bot a permissão **Gerenciar mensagens**.`,
+    flags: MessageFlags.Ephemeral
+  });
 }
 
 async function copyDelivery(interaction, deliveryId) {
@@ -927,7 +966,8 @@ export function generatorCommandDefinitions() {
     {
       name: 'nexus',
       description: 'Abrir o painel premium do gerador Nexus',
-      dmPermission: false
+      dmPermission: false,
+      defaultMemberPermissions: PermissionFlagsBits.ManageGuild.toString()
     }
   ];
 }
@@ -944,7 +984,7 @@ export async function handleGeneratorInteraction(entry, interaction) {
   if (!isGeneratorInteraction(interaction)) return;
   if (entry?.token !== config.discordBot.token) return;
   if (interaction.isChatInputCommand?.()) {
-    return interaction.commandName === 'conta' ? showGenerate(interaction) : showHome(interaction);
+    return interaction.commandName === 'conta' ? showGenerate(interaction) : publishPanel(interaction);
   }
   if (interaction.isModalSubmit?.() && interaction.customId === 'nexus:key:submit') {
     return redeemKeyFromModal(interaction);
