@@ -215,20 +215,52 @@ async function upsertCommands(manager, definitions, removableNames = new Set()) 
   return manager.fetch();
 }
 
+async function removeManagedCommands(manager, managedNames) {
+  const current = await manager.fetch();
+  await Promise.all(
+    [...current.values()]
+      .filter((command) => managedNames.has(command.name))
+      .map((command) => command.delete())
+  );
+}
+
 async function registerGeneratorCommands(entry) {
   if (!entry?.client?.isReady?.() || !isDefaultBotToken(entry.token)) return;
-  const guildId = cleanText(config.discordBot.defaultGuildId);
-  const manager = await commandManager(entry, guildId);
   const definitions = [...DASHBOARD_COMMAND_DEFINITIONS, ...generatorCommandDefinitions()];
-  const commands = await upsertCommands(manager, definitions, new Set([...DASHBOARD_COMMAND_NAMES, ...generatorCommandNames]));
-  commandPolicies.set(commandPolicyKey(entry.token, guildId), {
-    guildId,
-    globalCooldown: 5,
-    roleId: '',
-    channelId: '',
-    commands: Object.fromEntries(DASHBOARD_COMMAND_DEFINITIONS.map((command) => [command.name, { enabled: true, cooldown: 5 }]))
-  });
-  return commands;
+  const managedNames = new Set([...DASHBOARD_COMMAND_NAMES, ...generatorCommandNames]);
+  const configuredGuildId = cleanText(config.discordBot.defaultGuildId);
+  const guildIds = configuredGuildId
+    ? [configuredGuildId]
+    : [...entry.client.guilds.cache.keys()];
+
+  // Um comando global antigo e outro registrado no servidor aparecem duplicados
+  // no Discord. Comandos registrados diretamente nos servidores aparecem na
+  // hora; se nao houver servidor padrao, sincroniza todos os servidores do bot.
+  if (guildIds.length) {
+    await removeManagedCommands(entry.client.application.commands, managedNames);
+  }
+
+  // Substituir a lista inteira evita sobras de deploys antigos e publica
+  // /nexus e /conta de forma atomica no servidor.
+  const targets = guildIds.length ? guildIds : [''];
+  const results = [];
+  for (const guildId of targets) {
+    const manager = await commandManager(entry, guildId);
+    const commands = await manager.set(definitions);
+    commandPolicies.set(commandPolicyKey(entry.token, guildId), {
+      guildId,
+      globalCooldown: 5,
+      roleId: '',
+      channelId: '',
+      commands: Object.fromEntries(DASHBOARD_COMMAND_DEFINITIONS.map((command) => [command.name, { enabled: true, cooldown: 5 }]))
+    });
+    console.log(
+      `[nexus] Comandos Discord sincronizados (${guildId ? `servidor ${guildId}` : 'global'}): `
+      + [...commands.values()].map((command) => `/${command.name}`).join(', ')
+    );
+    results.push({ guildId: guildId || null, commands });
+  }
+  return results;
 }
 
 async function replyCommandError(interaction, message) {
@@ -1547,7 +1579,7 @@ async function ensureClient({ botToken, status, activityType, activityMessage } 
       reject(error);
     };
 
-    client.once(Events.ClientReady, () => {
+    client.once(Events.ClientReady, async () => {
       clearTimeout(timeout);
       client.off('error', startupError);
       clearGatewayRecovery(token);
@@ -1556,7 +1588,7 @@ async function ensureClient({ botToken, status, activityType, activityMessage } 
         console.warn(`[nexus] Discord client error: ${error.message}`);
         if (!client.isReady()) scheduleGatewayRecovery(token, entry.desiredStatus, 'erro do cliente', entry);
       });
-      void registerGeneratorCommands(entry).catch((error) => {
+      await registerGeneratorCommands(entry).catch((error) => {
         console.warn(`[nexus] Comandos do gerador nao registrados: ${error.message}`);
       });
       entry.readyPromise = null;
