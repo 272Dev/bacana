@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+// Nexus main application.
 import { createPortal } from 'react-dom';
 import {
   Activity,
