@@ -228,10 +228,24 @@ executa-lo. O bot:
 - recupera reservas abandonadas e mostra estoque, compradores e historico recente
   na area administrativa.
 
-O banco ja guarda referencia e estado do pagamento por entrega. A cobranca
-LivePix ainda fica desativada: ela deve ser conectada depois com webhook assinado
-e confirmacao server-to-server antes de liberar a DM. Nunca confie apenas no
-retorno do navegador para aprovar um PIX.
+### Cobranca Pix
+
+O bot tambem publica o comando administrativo `/pix valor`. Ele cria a cobranca
+pela API oficial da LivePix e publica no canal um card com o valor, a referencia
+e um botao para o checkout. Somente membros com **Gerenciar servidor** podem
+usar o comando. Configure as credenciais apenas no ambiente do servidor:
+
+```env
+LIVEPIX_CLIENT_ID=seu_client_id
+LIVEPIX_CLIENT_SECRET=seu_client_secret
+LIVEPIX_SCOPE=payments:write
+LIVEPIX_REDIRECT_URL=https://nexus-zks.squareweb.app/
+```
+
+O backend reutiliza o token OAuth ate perto da expiracao, nunca registra o
+segredo nos logs e aceita somente checkout HTTPS da LivePix. A criacao da
+cobranca nao libera automaticamente contas ou planos: essa liberacao deve usar
+confirmacao server-to-server do pagamento, nunca apenas o retorno do navegador.
 
 ## Autenticador de codigos
 
@@ -325,6 +339,8 @@ PORT=80
 CLIENT_URL=https://nexus-zks.squareweb.app
 API_PUBLIC_URL=https://nexus-zks.squareweb.app
 DISCORD_REDIRECT_URI=https://nexus-zks.squareweb.app/api/auth/discord/callback
+LIVEPIX_SCOPE=payments:write
+LIVEPIX_REDIRECT_URL=https://nexus-zks.squareweb.app/
 REQUIRE_HTTPS=true
 TRUST_PROXY=true
 ```

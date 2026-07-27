@@ -82,6 +82,14 @@ export const config = {
     apiKey: env('RUSHMAIL_API_KEY'),
     baseUrl: env('RUSHMAIL_API_URL', 'https://rushmail.dev/public-api').replace(/\/+$/, '')
   },
+  livePix: {
+    clientId: env('LIVEPIX_CLIENT_ID'),
+    clientSecret: env('LIVEPIX_CLIENT_SECRET'),
+    scope: env('LIVEPIX_SCOPE', 'payments:write'),
+    oauthUrl: env('LIVEPIX_OAUTH_URL', 'https://oauth.livepix.gg/oauth2/token'),
+    apiUrl: env('LIVEPIX_API_URL', 'https://api.livepix.gg').replace(/\/+$/, ''),
+    redirectUrl: env('LIVEPIX_REDIRECT_URL', env('CLIENT_URL', 'http://localhost:5173'))
+  },
   discord: {
     clientId: env('DISCORD_CLIENT_ID'),
     clientSecret: env('DISCORD_CLIENT_SECRET'),

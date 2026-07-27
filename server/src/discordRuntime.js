@@ -241,7 +241,7 @@ async function registerGeneratorCommands(entry) {
   }
 
   // Substituir a lista inteira evita sobras de deploys antigos e publica
-  // /nexus e /conta de forma atomica no servidor.
+  // /nexus, /conta e /pix de forma atomica no servidor.
   const targets = guildIds.length ? guildIds : [''];
   const results = [];
   for (const guildId of targets) {

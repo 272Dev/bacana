@@ -30,10 +30,12 @@ import {
   releaseRobloxSalesDelivery,
   reserveRandomRobloxSalesAccount
 } from './robloxGenerator.js';
+import { createLivePixPayment } from './livePix.js';
 
-const GENERATOR_COMMAND_NAMES = new Set(['conta', 'nexus']);
+const GENERATOR_COMMAND_NAMES = new Set(['conta', 'nexus', 'pix']);
 const GENERATOR_PREFIX = 'nexus:';
 const requestsInFlight = new Set();
+const pixRequestsInFlight = new Set();
 const BRAND_COLOR = 0x0A0A0A;
 const DEFAULT_FOOTER = 'Nexus • Gerador premium';
 const SUPPORT_TYPES = {
@@ -288,6 +290,111 @@ async function logGeneratorEvent(interaction, type, embed) {
   if (!channelId) return;
   const channel = await interaction.guild?.channels.fetch(channelId).catch(() => null);
   if (channel?.isTextBased?.()) await channel.send({ embeds: [embed], allowedMentions: { parse: [] } }).catch(() => {});
+}
+
+async function createPixCharge(interaction) {
+  if (pixRequestsInFlight.has(interaction.user.id)) {
+    return interaction.reply({
+      content: 'Sua cobranca anterior ainda esta sendo criada.',
+      flags: MessageFlags.Ephemeral
+    });
+  }
+
+  const value = interaction.options.getNumber('valor', true);
+  const amountCents = Math.round(value * 100);
+  pixRequestsInFlight.add(interaction.user.id);
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  try {
+    const payment = await createLivePixPayment(amountCents);
+    const paymentEmbed = await brandEmbed(interaction, {
+      title: 'Pagamento Pix',
+      description: [
+        '**Cobranca gerada com seguranca pela LivePix.**',
+        'Clique no botao abaixo para abrir o checkout e concluir o pagamento.',
+        '',
+        '━━━━━━━━━━━━━━━━━━━━'
+      ].join('\n'),
+      fields: [
+        { name: 'Valor', value: formatPrice(payment.amountCents), inline: true },
+        { name: 'Status', value: 'Aguardando pagamento', inline: true },
+        { name: 'Referencia', value: `\`${safeText(payment.reference, 100)}\``, inline: false }
+      ],
+      image: false
+    });
+    const paymentRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setLabel('Pagar com Pix')
+        .setEmoji('💠')
+        .setStyle(ButtonStyle.Link)
+        .setURL(payment.checkoutUrl)
+    );
+    const payload = {
+      embeds: [paymentEmbed],
+      components: [paymentRow],
+      allowedMentions: { parse: [] }
+    };
+
+    const posted = interaction.channel?.isTextBased?.()
+      ? await interaction.channel.send(payload).catch(() => null)
+      : null;
+
+    await logAudit({
+      actorDiscordId: interaction.user.id,
+      action: 'generator_bot.pix_created',
+      targetType: 'livepix_payment',
+      targetId: payment.reference,
+      metadata: {
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        messageId: posted?.id || null,
+        amountCents: payment.amountCents,
+        currency: payment.currency
+      }
+    }).catch(() => {});
+
+    const logEmbed = await brandEmbed(interaction, {
+      title: 'Nova cobranca Pix',
+      description: `Cobranca criada por <@${interaction.user.id}>.`,
+      fields: [
+        { name: 'Valor', value: formatPrice(payment.amountCents), inline: true },
+        { name: 'Referencia', value: safeText(payment.reference, 100), inline: true },
+        { name: 'Canal', value: `<#${interaction.channelId}>`, inline: true }
+      ],
+      image: false
+    });
+    await logGeneratorEvent(interaction, 'purchases', logEmbed).catch(() => {});
+
+    if (!posted) {
+      return interaction.editReply({
+        content: 'A cobranca foi criada, mas o bot nao conseguiu publica-la neste canal. Use o checkout abaixo.',
+        ...payload
+      });
+    }
+    return interaction.editReply({
+      content: `Cobranca de **${formatPrice(payment.amountCents)}** publicada: ${posted.url}`,
+      allowedMentions: { parse: [] }
+    });
+  } catch (error) {
+    await logAudit({
+      actorDiscordId: interaction.user.id,
+      action: 'generator_bot.pix_failed',
+      targetType: 'livepix_payment',
+      metadata: {
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        amountCents,
+        errorCode: cleanText(error?.code || 'LIVEPIX_UNKNOWN_ERROR')
+      }
+    }).catch(() => {});
+    return interaction.editReply({
+      content: `Nao foi possivel gerar o Pix: ${safeText(error?.message || 'erro inesperado', 500)}`,
+      embeds: [],
+      components: []
+    });
+  } finally {
+    pixRequestsInFlight.delete(interaction.user.id);
+  }
 }
 
 async function confirmGeneration(interaction) {
@@ -968,6 +1075,22 @@ export function generatorCommandDefinitions() {
       description: 'Abrir o painel premium do gerador Nexus',
       dmPermission: false,
       defaultMemberPermissions: PermissionFlagsBits.ManageGuild.toString()
+    },
+    {
+      name: 'pix',
+      description: 'Gerar uma cobranca Pix pela LivePix',
+      dmPermission: false,
+      defaultMemberPermissions: PermissionFlagsBits.ManageGuild.toString(),
+      options: [
+        {
+          type: 10,
+          name: 'valor',
+          description: 'Valor da cobranca em reais',
+          required: true,
+          min_value: 1,
+          max_value: 100000
+        }
+      ]
     }
   ];
 }
@@ -984,7 +1107,9 @@ export async function handleGeneratorInteraction(entry, interaction) {
   if (!isGeneratorInteraction(interaction)) return;
   if (entry?.token !== config.discordBot.token) return;
   if (interaction.isChatInputCommand?.()) {
-    return interaction.commandName === 'conta' ? showGenerate(interaction) : publishPanel(interaction);
+    if (interaction.commandName === 'conta') return showGenerate(interaction);
+    if (interaction.commandName === 'pix') return createPixCharge(interaction);
+    return publishPanel(interaction);
   }
   if (interaction.isModalSubmit?.() && interaction.customId === 'nexus:key:submit') {
     return redeemKeyFromModal(interaction);
