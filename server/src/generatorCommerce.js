@@ -366,26 +366,38 @@ export async function redeemGeneratorKey({ discordId, key }) {
 
   const timestamp = nowIso();
   const expiresAt = expirationFromPlan(keyRow);
-  await db.prepare(`
-    INSERT INTO generator_subscriptions (
-      discord_id, plan_id, status, generations_used, started_at, expires_at,
-      key_id, customer_since, created_at, updated_at
-    ) VALUES (?, ?, 'active', 0, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (discord_id) DO UPDATE SET
-      plan_id = excluded.plan_id,
-      status = 'active',
-      generations_used = 0,
-      started_at = excluded.started_at,
-      expires_at = excluded.expires_at,
-      key_id = excluded.key_id,
-      updated_at = excluded.updated_at
-  `).run(normalizedDiscordId, keyRow.plan_id, timestamp, expiresAt, keyRow.id, timestamp, timestamp, timestamp);
-
-  await db.prepare(`
+  const claimed = await db.prepare(`
     UPDATE generator_keys
     SET status = 'redeemed', redeemed_by = ?, redeemed_at = ?, updated_at = ?
     WHERE id = ? AND status = 'active'
   `).run(normalizedDiscordId, timestamp, timestamp, keyRow.id);
+  if (!Number(claimed.changes || 0)) {
+    throw Object.assign(new Error('Esta key acabou de ser utilizada em outra solicitação.'), { status: 409 });
+  }
+
+  try {
+    await db.prepare(`
+      INSERT INTO generator_subscriptions (
+        discord_id, plan_id, status, generations_used, started_at, expires_at,
+        key_id, customer_since, created_at, updated_at
+      ) VALUES (?, ?, 'active', 0, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (discord_id) DO UPDATE SET
+        plan_id = excluded.plan_id,
+        status = 'active',
+        generations_used = 0,
+        started_at = excluded.started_at,
+        expires_at = excluded.expires_at,
+        key_id = excluded.key_id,
+        updated_at = excluded.updated_at
+    `).run(normalizedDiscordId, keyRow.plan_id, timestamp, expiresAt, keyRow.id, timestamp, timestamp, timestamp);
+  } catch (error) {
+    await db.prepare(`
+      UPDATE generator_keys
+      SET status = 'active', redeemed_by = NULL, redeemed_at = NULL, updated_at = ?
+      WHERE id = ? AND status = 'redeemed' AND redeemed_by = ?
+    `).run(nowIso(), keyRow.id, normalizedDiscordId).catch(() => {});
+    throw error;
+  }
 
   return mapSubscription(await getSubscriptionRow(normalizedDiscordId));
 }
