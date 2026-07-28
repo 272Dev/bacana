@@ -315,6 +315,8 @@ const schemaSql = `
     last_loader_version TEXT,
     suspicious_score INTEGER NOT NULL DEFAULT 0,
     suspicious_reason TEXT,
+    redeemed_at TEXT,
+    redeem_source TEXT,
     created_by TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -328,6 +330,7 @@ const schemaSql = `
     hwid TEXT,
     ip_approx TEXT,
     loader_version TEXT,
+    request_nonce_hash TEXT,
     metadata_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     FOREIGN KEY (license_user_id) REFERENCES license_users(id) ON DELETE CASCADE
@@ -360,9 +363,57 @@ const schemaSql = `
     payload_sha256 TEXT NOT NULL,
     payload_bytes INTEGER NOT NULL,
     protected_mode INTEGER NOT NULL DEFAULT 0,
+    original_sha256 TEXT,
+    protected_sha256 TEXT,
+    encrypted_sha256 TEXT,
+    original_bytes INTEGER,
+    protected_bytes INTEGER,
+    protection_level TEXT NOT NULL DEFAULT 'basic',
+    protection_options_json TEXT NOT NULL DEFAULT '{}',
+    encryption_key_id TEXT,
+    syntax_valid INTEGER NOT NULL DEFAULT 1,
+    validation_json TEXT NOT NULL DEFAULT '{}',
+    processing_ms INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 0,
     created_by TEXT,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS loader_tickets (
+    id TEXT PRIMARY KEY,
+    ticket_hash TEXT NOT NULL UNIQUE,
+    license_user_id TEXT NOT NULL,
+    release_id TEXT NOT NULL,
+    hwid_hash TEXT NOT NULL,
+    roblox_user_id TEXT,
+    nonce_hash TEXT NOT NULL UNIQUE,
+    executor TEXT,
+    used INTEGER NOT NULL DEFAULT 0,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    invalidated_at TEXT,
+    invalidation_reason TEXT,
+    FOREIGN KEY (license_user_id) REFERENCES license_users(id) ON DELETE CASCADE,
+    FOREIGN KEY (release_id) REFERENCES loader_releases(id) ON DELETE CASCADE
+  );
+
+  CREATE TABLE IF NOT EXISTS bot_api_nonces (
+    nonce_hash TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS nexus_rate_limits (
+    scope TEXT NOT NULL,
+    subject_hash TEXT NOT NULL,
+    window_started_at TEXT NOT NULL,
+    reset_at TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (scope, subject_hash)
   );
 
   CREATE TABLE IF NOT EXISTS discord_protection_configs (
@@ -448,6 +499,11 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_roblox_name_tags_enabled ON roblox_name_tags(enabled);
   CREATE INDEX IF NOT EXISTS idx_loader_releases_created ON loader_releases(created_at);
   CREATE INDEX IF NOT EXISTS idx_loader_releases_active ON loader_releases(active);
+  CREATE INDEX IF NOT EXISTS idx_loader_tickets_license ON loader_tickets(license_user_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_loader_tickets_release ON loader_tickets(release_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_loader_tickets_expiry ON loader_tickets(expires_at, used, invalidated_at);
+  CREATE INDEX IF NOT EXISTS idx_bot_api_nonces_expiry ON bot_api_nonces(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_nexus_rate_limits_reset ON nexus_rate_limits(reset_at);
   CREATE INDEX IF NOT EXISTS idx_discord_protection_guild ON discord_protection_configs(guild_id);
   CREATE INDEX IF NOT EXISTS idx_discord_protection_enabled ON discord_protection_configs(enabled);
   CREATE INDEX IF NOT EXISTS idx_discord_protection_events_guild ON discord_protection_events(guild_id, created_at);
@@ -513,8 +569,101 @@ export const db = {
         return statement.run(...params);
       }
     };
+  },
+
+  async transaction(handler) {
+    assertReady();
+    if (typeof handler !== 'function') throw new TypeError('Transacao invalida.');
+    if (postgres) {
+      const client = await postgres.connect();
+      const tx = {
+        async exec(sql) {
+          await client.query(sql);
+        },
+        prepare(sql) {
+          const postgresSql = toPostgresSql(sql);
+          return {
+            async get(...params) {
+              const result = await client.query(postgresSql, params);
+              return result.rows[0];
+            },
+            async all(...params) {
+              const result = await client.query(postgresSql, params);
+              return result.rows;
+            },
+            async run(...params) {
+              const result = await client.query(postgresSql, params);
+              return { changes: result.rowCount };
+            }
+          };
+        }
+      };
+      try {
+        await client.query('BEGIN');
+        const result = await handler(tx);
+        await client.query('COMMIT');
+        return result;
+      } catch (error) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+
+    const tx = {
+      async exec(sql) {
+        sqlite.exec(sql);
+      },
+      prepare(sql) {
+        const statement = sqlite.prepare(sql);
+        return {
+          async get(...params) {
+            return statement.get(...params);
+          },
+          async all(...params) {
+            return statement.all(...params);
+          },
+          async run(...params) {
+            return statement.run(...params);
+          }
+        };
+      }
+    };
+    await tx.exec('BEGIN IMMEDIATE');
+    try {
+      const result = await handler(tx);
+      await tx.exec('COMMIT');
+      return result;
+    } catch (error) {
+      await tx.exec('ROLLBACK').catch(() => {});
+      throw error;
+    }
   }
 };
+
+const postgresLoaderMigrations = [
+  "ALTER TABLE loader_releases ADD COLUMN IF NOT EXISTS original_sha256 TEXT",
+  "ALTER TABLE loader_releases ADD COLUMN IF NOT EXISTS protected_sha256 TEXT",
+  "ALTER TABLE loader_releases ADD COLUMN IF NOT EXISTS encrypted_sha256 TEXT",
+  "ALTER TABLE loader_releases ADD COLUMN IF NOT EXISTS original_bytes INTEGER",
+  "ALTER TABLE loader_releases ADD COLUMN IF NOT EXISTS protected_bytes INTEGER",
+  "ALTER TABLE loader_releases ADD COLUMN IF NOT EXISTS protection_level TEXT NOT NULL DEFAULT 'basic'",
+  "ALTER TABLE loader_releases ADD COLUMN IF NOT EXISTS protection_options_json TEXT NOT NULL DEFAULT '{}'",
+  "ALTER TABLE loader_releases ADD COLUMN IF NOT EXISTS encryption_key_id TEXT",
+  "ALTER TABLE loader_releases ADD COLUMN IF NOT EXISTS syntax_valid INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE loader_releases ADD COLUMN IF NOT EXISTS validation_json TEXT NOT NULL DEFAULT '{}'",
+  "ALTER TABLE loader_releases ADD COLUMN IF NOT EXISTS processing_ms INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE loader_releases ADD COLUMN IF NOT EXISTS updated_at TEXT"
+];
+
+const sqliteLoaderMigrations = postgresLoaderMigrations.map((statement) => statement.replace(' IF NOT EXISTS', ''));
+const postgresLicenseMigrations = [
+  "ALTER TABLE license_users ADD COLUMN IF NOT EXISTS redeemed_at TEXT",
+  "ALTER TABLE license_users ADD COLUMN IF NOT EXISTS redeem_source TEXT",
+  "ALTER TABLE license_events ADD COLUMN IF NOT EXISTS request_nonce_hash TEXT"
+];
+const sqliteLicenseMigrations = postgresLicenseMigrations.map((statement) => statement.replace(' IF NOT EXISTS', ''));
 
 export async function initDatabase() {
   if (sqlite || postgres) return;
@@ -533,6 +682,9 @@ export async function initDatabase() {
     await db.exec("ALTER TABLE livepix_payment_intents ADD COLUMN IF NOT EXISTS fulfillment_error TEXT");
     await db.exec("ALTER TABLE livepix_payment_intents ADD COLUMN IF NOT EXISTS fulfillment_resource_id TEXT");
     await db.exec("ALTER TABLE livepix_payment_intents ADD COLUMN IF NOT EXISTS delivery_message_id TEXT");
+    for (const migration of postgresLoaderMigrations) await db.exec(migration);
+    for (const migration of postgresLicenseMigrations) await db.exec(migration);
+    await db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_license_events_nonce ON license_events(license_user_id, event_type, request_nonce_hash)");
     return;
   }
 
@@ -562,6 +714,21 @@ export async function initDatabase() {
       if (!String(error?.message || '').toLowerCase().includes('duplicate column')) throw error;
     }
   }
+  for (const migration of sqliteLoaderMigrations) {
+    try {
+      await db.exec(migration);
+    } catch (error) {
+      if (!String(error?.message || '').toLowerCase().includes('duplicate column')) throw error;
+    }
+  }
+  for (const migration of sqliteLicenseMigrations) {
+    try {
+      await db.exec(migration);
+    } catch (error) {
+      if (!String(error?.message || '').toLowerCase().includes('duplicate column')) throw error;
+    }
+  }
+  await db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_license_events_nonce ON license_events(license_user_id, event_type, request_nonce_hash)");
 }
 
 export function nowIso() {

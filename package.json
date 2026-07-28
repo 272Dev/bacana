@@ -11,6 +11,8 @@
     "dev": "concurrently \"npm:server:dev\" \"npm:client:dev\"",
     "server:dev": "node --watch server/src/index.js",
     "server:start": "node server/src/index.js",
+    "test": "node --test server/test/*.test.js",
+    "test:security": "node --test server/test/security.test.js server/test/luaProtection.test.js",
     "client:dev": "vite --host 0.0.0.0 --configLoader runner",
     "build": "vite build --configLoader runner",
     "preview": "vite preview --host 0.0.0.0 --configLoader runner",

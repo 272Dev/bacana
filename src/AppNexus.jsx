@@ -94,6 +94,50 @@ const emptyNameTagForm = {
   hwidPreview: ''
 };
 
+const defaultLoaderProtection = {
+  level: 'normal',
+  removeComments: true,
+  renameLocalVariables: true,
+  renameLocalFunctions: true,
+  protectStrings: true,
+  protectConstants: true,
+  transformControlFlow: false,
+  addVersionMark: true,
+  syntaxCheck: true,
+  loadTest: true,
+  activateImmediately: true
+};
+
+const loaderProtectionPresets = {
+  basic: {
+    removeComments: true,
+    renameLocalVariables: true,
+    renameLocalFunctions: false,
+    protectStrings: false,
+    protectConstants: false,
+    transformControlFlow: false,
+    addVersionMark: false
+  },
+  normal: {
+    removeComments: true,
+    renameLocalVariables: true,
+    renameLocalFunctions: true,
+    protectStrings: true,
+    protectConstants: true,
+    transformControlFlow: false,
+    addVersionMark: true
+  },
+  strong: {
+    removeComments: true,
+    renameLocalVariables: true,
+    renameLocalFunctions: true,
+    protectStrings: true,
+    protectConstants: true,
+    transformControlFlow: true,
+    addVersionMark: true
+  }
+};
+
 const accessPermissionOptions = [
   { id: 'media.view', label: 'Ver midia' },
   { id: 'media.manage', label: 'Gerenciar midia' },
@@ -1241,6 +1285,7 @@ function UsersPage({ users, reloadUsers, currentUser }) {
   const [planForm, setPlanForm] = useState({ id: '', name: '', durationDays: '', defaultHwidResetLimit: 1 });
   const [releaseVersion, setReleaseVersion] = useState('');
   const [releaseLoading, setReleaseLoading] = useState(false);
+  const [releaseProtection, setReleaseProtection] = useState(defaultLoaderProtection);
   const [nameTags, setNameTags] = useState([]);
   const [tagSearch, setTagSearch] = useState('');
   const [tagForm, setTagForm] = useState(emptyNameTagForm);
@@ -1427,17 +1472,31 @@ function UsersPage({ users, reloadUsers, currentUser }) {
       setError('Selecione um arquivo .lua.');
       return;
     }
+    if (file.size < 500) {
+      setError('O arquivo Lua precisa ter pelo menos 500 bytes.');
+      return;
+    }
+    if (file.size > 8_000_000) {
+      setError('O arquivo Lua ultrapassa o limite de 8 MB.');
+      return;
+    }
     setReleaseLoading(true);
     setError('');
     try {
       const source = await file.text();
+      if (!source.trim()) throw new Error('O arquivo Lua está vazio.');
       const version = releaseVersion.trim() || `v${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
       const payload = await api('/loader/releases', {
         method: 'POST',
-        body: { version, source, protectedMode: true }
+        body: { version, fileName: file.name, source, protection: releaseProtection }
       });
       setReleaseVersion('');
-      setMessage(`Versao ${payload.release.version} publicada. O link fixo ja aponta para ela.`);
+      setMessage(
+        `Versão ${payload.release.version} processada: `
+        + `${payload.release.originalBytes.toLocaleString('pt-BR')} → `
+        + `${payload.release.protectedBytes.toLocaleString('pt-BR')} bytes. `
+        + `${payload.release.active ? 'Ativada com sucesso.' : 'Salva como inativa.'}`
+      );
       await loadReleases();
     } catch (requestError) {
       setError(requestError.message);
@@ -1735,12 +1794,49 @@ function UsersPage({ users, reloadUsers, currentUser }) {
             </div>
             <div className="loader-publish-form">
               <label>Versao<input value={releaseVersion} onChange={(event) => setReleaseVersion(event.target.value)} placeholder="v3.2.0" /></label>
+              <label>Nível de proteção
+                <NexusSelect value={releaseProtection.level} onChange={(event) => {
+                  const level = event.target.value;
+                  setReleaseProtection((current) => ({
+                    ...current,
+                    ...loaderProtectionPresets[level],
+                    level
+                  }));
+                }}>
+                  <option value="basic">Básico</option>
+                  <option value="normal">Normal</option>
+                  <option value="strong">Forte</option>
+                </NexusSelect>
+              </label>
               <label className="upload-button loader-file-button">
                 <Upload size={17} /> {releaseLoading ? 'Publicando...' : 'Selecionar script .lua'}
                 <input type="file" accept=".lua,text/x-lua" onChange={uploadRelease} disabled={releaseLoading} />
               </label>
             </div>
-            <p className="loader-security-note"><FileIcon size={15} /> Upload maximo de 8 MB - AES-256-GCM em repouso - entrega por ticket unico de 45 segundos</p>
+            <div className="loader-protection-options">
+              {[
+                ['removeComments', 'Remover comentários'],
+                ['renameLocalVariables', 'Renomear variáveis locais'],
+                ['renameLocalFunctions', 'Renomear funções locais'],
+                ['protectStrings', 'Proteger strings'],
+                ['protectConstants', 'Proteger constantes'],
+                ['transformControlFlow', 'Transformar fluxo de controle'],
+                ['addVersionMark', 'Adicionar marca da versão'],
+                ['activateImmediately', 'Ativar imediatamente']
+              ].map(([id, label]) => (
+                <label className="loader-protection-option" key={id}>
+                  <input
+                    type="checkbox"
+                    checked={releaseProtection[id]}
+                    onChange={(event) => setReleaseProtection((current) => ({ ...current, [id]: event.target.checked }))}
+                  />
+                  <span>{label}</span>
+                </label>
+              ))}
+              <label className="loader-protection-option locked"><input type="checkbox" checked readOnly /><span>Verificação de sintaxe obrigatória</span></label>
+              <label className="loader-protection-option locked"><input type="checkbox" checked readOnly /><span>Teste estrutural de carregamento obrigatório</span></label>
+            </div>
+            <p className="loader-security-note"><FileIcon size={15} /> 500 bytes a 8 MB · AES-256-GCM com rotação de chave · SHA-256 original e protegido · ticket único de 45 segundos</p>
           </section>
 
           <section className="panel loader-link-card">
@@ -1756,7 +1852,19 @@ function UsersPage({ users, reloadUsers, currentUser }) {
               {releases.map((release) => (
                 <article className={`loader-release-card ${release.active ? 'active' : ''}`} key={release.id}>
                   <span className="loader-release-icon"><Code2 size={19} /></span>
-                  <span className="loader-release-meta"><strong>{release.version}</strong><small>{release.bytes.toLocaleString('pt-BR')} bytes - SHA-256 {release.sha256.slice(0, 16)}... - {formatDate(release.createdAt)}</small></span>
+                  <div className="loader-release-meta">
+                    <strong>{release.version}</strong>
+                    <small>
+                      {release.protectionLevel || 'basic'} · {release.originalBytes.toLocaleString('pt-BR')} → {release.protectedBytes.toLocaleString('pt-BR')} bytes · SHA-256 {release.sha256.slice(0, 16)}... · {formatDate(release.createdAt)}
+                    </small>
+                    <small>{release.syntaxValid ? 'Sintaxe validada' : 'Sintaxe inválida'} · {release.processingMs || 0} ms · chave {release.encryptionKeyId || 'legada'}</small>
+                    <details className="loader-release-details">
+                      <summary>Hashes e validação</summary>
+                      <code>Original: {release.originalSha256}</code>
+                      <code>Protegido: {release.protectedSha256}</code>
+                      {(release.validation?.warnings || []).map((warning) => <small key={warning}>{warning}</small>)}
+                    </details>
+                  </div>
                   <span className={`license-status ${release.active ? 'active' : 'expired'}`}>{release.active ? 'Ativa' : 'Inativa'}</span>
                   {!release.active && <button className="ghost-button compact-button" onClick={() => activateRelease(release.id)}>Ativar</button>}
                   {!release.active && <IconButton label="Excluir versao" onClick={() => deleteRelease(release.id)}><Trash2 size={16} /></IconButton>}
@@ -1850,7 +1958,9 @@ function UsersPage({ users, reloadUsers, currentUser }) {
               <div className="license-profile-tags"><span className={`license-status ${selectedUser.status}`}>{statusLabel[selectedUser.status]}</span><span className="tag"><Crown size={14} /> {selectedUser.plan.name}</span><span className="tag">Discord {selectedUser.discordId}</span></div>
               <section className="license-detail-card key-card">
                 <div><p className="eyebrow">Key unica</p><strong>{selectedUser.licenseKey || selectedUser.keyPreview}</strong></div>
-                <IconButton label="Copiar key" onClick={() => copyText(selectedUser.licenseKey)}><Copy size={18} /></IconButton>
+                {selectedUser.licenseKey
+                  ? <IconButton label="Copiar key" onClick={() => copyText(selectedUser.licenseKey)}><Copy size={18} /></IconButton>
+                  : <small>A key completa aparece somente quando é criada ou trocada.</small>}
               </section>
               <div className="license-detail-grid">
                 <section className="license-detail-card"><Hash size={18} /><span><small>HWID vinculado</small><strong title={selectedUser.hwid || ''}>{selectedUser.hwid || 'Aguardando primeiro uso'}</strong></span></section>

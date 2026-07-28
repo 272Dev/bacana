@@ -19,6 +19,19 @@ function boolEnv(name, fallback = false) {
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 }
 
+function numberEnv(name, fallback, { min = 0, max = Number.MAX_SAFE_INTEGER } = {}) {
+  const parsed = Number(process.env[name]);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(parsed)));
+}
+
+function listEnv(name) {
+  return env(name)
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
 export function missingEnv(value) {
   const clean = String(value || '').trim();
   if (!clean) return true;
@@ -101,7 +114,33 @@ export const config = {
     token: env('DISCORD_BOT_TOKEN'),
     defaultGuildId: env('DISCORD_DEFAULT_GUILD_ID'),
     messageContentIntent: boolEnv('DISCORD_MESSAGE_CONTENT_INTENT', false),
-    guildMembersIntent: boolEnv('DISCORD_GUILD_MEMBERS_INTENT', false)
+    guildMembersIntent: boolEnv('DISCORD_GUILD_MEMBERS_INTENT', false),
+    apiId: env('NEXUS_BOT_API_ID', 'nexus-discord-bot'),
+    apiSecret: env('NEXUS_BOT_API_SECRET'),
+    apiUrl: env('NEXUS_BOT_API_URL', env('API_PUBLIC_URL', `http://localhost:${env('PORT', productionDefaultPort)}`)).replace(/\/+$/, ''),
+    allowedGuildIds: listEnv('NEXUS_BOT_ALLOWED_GUILD_IDS'),
+    allowedChannelIds: listEnv('NEXUS_BOT_ALLOWED_CHANNEL_IDS'),
+    ownerIds: listEnv('NEXUS_BOT_OWNER_IDS')
+  },
+  loader: {
+    ticketSigningSecret: env('LOADER_TICKET_SECRET'),
+    encryptionKeyId: env('APP_MASTER_KEY_ID', 'primary'),
+    previousMasterKeys: env('APP_PREVIOUS_MASTER_KEYS'),
+    eventRetentionDays: numberEnv('LICENSE_EVENT_RETENTION_DAYS', 90, { min: 7, max: 3650 }),
+    rateLimits: {
+      redeemAttempts: numberEnv('RATE_LIMIT_REDEEM_ATTEMPTS', 5, { min: 1, max: 100 }),
+      redeemWindowSeconds: numberEnv('RATE_LIMIT_REDEEM_WINDOW_SECONDS', 900, { min: 10, max: 86400 }),
+      licenseQueries: numberEnv('RATE_LIMIT_LICENSE_QUERIES', 15, { min: 1, max: 1000 }),
+      licenseQueryWindowSeconds: numberEnv('RATE_LIMIT_LICENSE_QUERY_WINDOW_SECONDS', 60, { min: 10, max: 3600 }),
+      hwidResets: numberEnv('RATE_LIMIT_HWID_RESETS', 3, { min: 1, max: 100 }),
+      hwidResetWindowSeconds: numberEnv('RATE_LIMIT_HWID_RESET_WINDOW_SECONDS', 3600, { min: 60, max: 86400 }),
+      validations: numberEnv('RATE_LIMIT_LOADER_VALIDATIONS', 20, { min: 1, max: 1000 }),
+      validationWindowSeconds: numberEnv('RATE_LIMIT_LOADER_VALIDATION_WINDOW_SECONDS', 60, { min: 10, max: 3600 }),
+      tickets: numberEnv('RATE_LIMIT_LOADER_TICKETS', 10, { min: 1, max: 1000 }),
+      ticketWindowSeconds: numberEnv('RATE_LIMIT_LOADER_TICKET_WINDOW_SECONDS', 60, { min: 10, max: 3600 }),
+      ticketConsumeAttempts: numberEnv('RATE_LIMIT_TICKET_CONSUME_ATTEMPTS', 5, { min: 1, max: 20 }),
+      botCooldownSeconds: numberEnv('RATE_LIMIT_BOT_COOLDOWN_SECONDS', 2, { min: 1, max: 60 })
+    }
   },
   security: {
     masterKey: env('APP_MASTER_KEY'),
@@ -120,6 +159,13 @@ export function getMissingRuntimeConfig() {
   }
   if (missingEnv(config.security.masterKey)) missing.push('APP_MASTER_KEY');
   if (missingEnv(config.security.sessionSecret)) missing.push('SESSION_SECRET');
+  if (
+    !missingEnv(config.discordBot.token)
+    && (missingEnv(config.discordBot.apiSecret) || config.discordBot.apiSecret.length < 32)
+  ) missing.push('NEXUS_BOT_API_SECRET');
+  if (missingEnv(config.loader.ticketSigningSecret) || config.loader.ticketSigningSecret.length < 32) {
+    missing.push('LOADER_TICKET_SECRET');
+  }
   if (config.authorizedUsers.length === 0) missing.push('AUTHORIZED_DISCORD_IDS');
   return missing;
 }

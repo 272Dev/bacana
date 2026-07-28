@@ -43,7 +43,7 @@ import {
   reserveRandomRobloxSalesAccount
 } from './robloxGenerator.js';
 
-const GENERATOR_COMMAND_NAMES = new Set(['conta', 'nexus', 'pix']);
+const GENERATOR_COMMAND_NAMES = new Set(['conta', 'pix']);
 const GENERATOR_PREFIX = 'nexus:';
 const requestsInFlight = new Set();
 const pixRequestsInFlight = new Set();
@@ -177,6 +177,14 @@ async function saveGuildConfig(guildId, input = {}) {
     timestamp
   );
   return getGuildConfig(guildId);
+}
+
+export async function getExistingSupportConfig(guildId) {
+  return getGuildConfig(guildId);
+}
+
+export async function saveExistingSupportConfig(guildId, input = {}) {
+  return saveGuildConfig(guildId, input);
 }
 
 async function brandEmbed(interaction, { title, description = '', fields = [], image = true, thumbnail = true } = {}) {
@@ -938,6 +946,10 @@ async function showSupport(interaction) {
   });
 }
 
+export async function showExistingSupport(interaction) {
+  return showSupport(interaction);
+}
+
 function ticketSlug(user) {
   const base = cleanText(user.username).toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 16) || 'usuario';
   return `ticket-${base}-${user.id.slice(-4)}`;
@@ -1456,12 +1468,6 @@ export function generatorCommandDefinitions() {
       dmPermission: false
     },
     {
-      name: 'nexus',
-      description: 'Abrir o painel premium do gerador Nexus',
-      dmPermission: false,
-      defaultMemberPermissions: PermissionFlagsBits.ManageGuild.toString()
-    },
-    {
       name: 'pix',
       description: 'Gerar uma cobranca Pix com QR Code',
       dmPermission: false,
@@ -1493,7 +1499,7 @@ export async function handleGeneratorInteraction(entry, interaction) {
   if (interaction.isChatInputCommand?.()) {
     if (interaction.commandName === 'conta') return showGenerate(interaction);
     if (interaction.commandName === 'pix') return createPixCharge(interaction);
-    return publishPanel(interaction);
+    return showGenerate(interaction);
   }
   if (interaction.isModalSubmit?.() && interaction.customId === 'nexus:key:submit') {
     return redeemKeyFromModal(interaction);

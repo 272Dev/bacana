@@ -100,9 +100,12 @@ import {
   processLivePixWebhook,
   syncLivePixPaymentIntent
 } from './livePixPayments.js';
-import { registerLicensingRoutes, seedLicensePlans } from './licensing.js';
+import { cleanupLicenseEvents, registerLicensingRoutes, seedLicensePlans } from './licensing.js';
 import { registerLoaderRoutes } from './loader.js';
 import { registerNameTagRoutes } from './nameTags.js';
+import { requireBotApiSignature, cleanupBotApiNonces } from './botApiAuth.js';
+import { registerLicenseBotApiRoutes } from './licenseBotApi.js';
+import { cleanupSecurityLimits } from './securityLimits.js';
 import { PERMISSIONS, effectivePermissions, requirePermission } from './permissions.js';
 import {
   checkLoginBlocked,
@@ -171,6 +174,11 @@ app.use(cors({
   origin: config.clientUrl,
   credentials: true
 }));
+app.use((req, res, next) => {
+  req.requestId = crypto.randomUUID();
+  res.setHeader('X-Request-Id', req.requestId);
+  next();
+});
 app.use(express.json({ limit: '60mb' }));
 app.use((req, _res, next) => {
   req.cookies = Object.fromEntries(
@@ -392,6 +400,7 @@ app.use((req, res, next) => {
 registerLicensingRoutes(app, { requireAuth, requireAdmin });
 registerLoaderRoutes(app, { requireAuth, requireAdmin });
 registerNameTagRoutes(app, { requireAuth, requireAdmin });
+registerLicenseBotApiRoutes(app, { requireBotApiSignature });
 
 function clientRedirect(pathname, params = {}) {
   const url = new URL(pathname, config.clientUrl);
@@ -2288,12 +2297,51 @@ app.get('*', async (req, res, next) => {
   });
 });
 
-app.use((error, _req, res, _next) => {
+app.use((error, req, res, _next) => {
+  if (error?.type === 'entity.parse.failed') {
+    return res.status(400).json({
+      success: false,
+      code: 'INVALID_JSON',
+      message: 'JSON inválido.',
+      error: 'JSON inválido.',
+      requestId: req.requestId
+    });
+  }
+  if (error?.type === 'entity.too.large') {
+    return res.status(413).json({
+      success: false,
+      code: 'PAYLOAD_TOO_LARGE',
+      message: 'O conteúdo enviado ultrapassa o limite permitido.',
+      error: 'O conteúdo enviado ultrapassa o limite permitido.',
+      requestId: req.requestId
+    });
+  }
   if (error instanceof z.ZodError) {
-    return res.status(400).json({ error: 'Dados invalidos.', details: error.flatten() });
+    return res.status(400).json({
+      success: false,
+      code: 'INVALID_INPUT',
+      message: 'Dados inválidos.',
+      error: 'Dados inválidos.',
+      requestId: req.requestId
+    });
   }
   const status = error.status || 500;
-  res.status(status).json({ error: error.message || 'Erro interno.' });
+  const code = error.code || 'INTERNAL_ERROR';
+  const message = status >= 500 ? 'Falha temporária no servidor.' : error.message || 'Não foi possível concluir a solicitação.';
+  if (status >= 500) {
+    console.error(`[nexus] ${req.requestId} ${code}:`, error);
+  }
+  res.status(status).json({
+    success: false,
+    code,
+    message,
+    error: message,
+    requestId: req.requestId,
+    retryAfterSeconds: error.retryAfterSeconds,
+    details: ['LUA_SYNTAX_INVALID', 'LUA_PROTECTION_INVALID'].includes(code)
+      ? error.validation
+      : undefined
+  });
 });
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
@@ -2361,6 +2409,10 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
         });
     }, 70_000);
     livePixWebhookTimer.unref?.();
+    const securityCleanupTimer = setInterval(() => {
+      void Promise.allSettled([cleanupBotApiNonces(), cleanupSecurityLimits(), cleanupLicenseEvents()]);
+    }, 10 * 60_000);
+    securityCleanupTimer.unref?.();
   });
 }
 

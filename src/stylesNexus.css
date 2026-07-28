@@ -5050,17 +5050,48 @@ label {
 
 .loader-publish-form {
   display: grid;
-  grid-template-columns: minmax(130px, 180px) minmax(0, 1fr);
+  grid-template-columns: minmax(130px, 180px) minmax(150px, 210px) minmax(0, 1fr);
   align-items: end;
   gap: 10px;
 }
 
-.loader-publish-form > label:first-child {
+.loader-publish-form > label:not(.loader-file-button) {
   display: grid;
   gap: 7px;
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 800;
+}
+
+.loader-protection-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.loader-protection-option {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.025);
+  font-size: 0.74rem;
+  font-weight: 750;
+}
+
+.loader-protection-option input {
+  width: 15px;
+  height: 15px;
+  accent-color: #fff;
+}
+
+.loader-protection-option.locked {
+  opacity: 0.72;
 }
 
 .loader-publish-form input:not([type="file"]) {
@@ -5164,6 +5195,32 @@ label {
 .loader-release-meta small {
   color: var(--muted);
   font-size: 0.71rem;
+}
+
+.loader-release-details {
+  margin-top: 4px;
+  max-width: min(720px, 100%);
+}
+
+.loader-release-details summary {
+  width: fit-content;
+  color: #b8b8bc;
+  cursor: pointer;
+  font-size: 0.68rem;
+}
+
+.loader-release-details code {
+  display: block;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+  color: #929298;
+  font-size: 0.62rem;
+}
+
+.loader-release-details small {
+  display: block;
+  margin-top: 5px;
+  white-space: normal;
 }
 
 .compact-button {
@@ -5933,6 +5990,10 @@ label {
   }
 
   .loader-publish-form {
+    grid-template-columns: 1fr;
+  }
+
+  .loader-protection-options {
     grid-template-columns: 1fr;
   }
 

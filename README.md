@@ -1,5 +1,8 @@
 # Nexus
 
+Documentação da integração de licenças, bot, HWID e loader protegido:
+[docs/NEXUS-LICENSING.md](docs/NEXUS-LICENSING.md).
+
 Nexus e um cofre privado de contas para PC e mobile, com login exclusivo via Discord OAuth2, whitelist por Discord ID, senhas criptografadas e integracao com perfis publicos do Roblox.
 
 ## Stack

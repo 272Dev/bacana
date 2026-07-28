@@ -31,6 +31,12 @@ import {
   updateLivePixPaymentMessage
 } from './generatorBot.js';
 import {
+  handleLicenseInteraction,
+  isLicenseInteraction,
+  licenseCommandDefinitions,
+  licenseCommandNames
+} from './licenseBot.js';
+import {
   detectorCatalogResponse,
   detectorConfig,
   detectorDefinition,
@@ -228,8 +234,16 @@ async function removeManagedCommands(manager, managedNames) {
 
 async function registerGeneratorCommands(entry) {
   if (!entry?.client?.isReady?.() || !isDefaultBotToken(entry.token)) return;
-  const definitions = [...DASHBOARD_COMMAND_DEFINITIONS, ...generatorCommandDefinitions()];
-  const managedNames = new Set([...DASHBOARD_COMMAND_NAMES, ...generatorCommandNames]);
+  const definitions = [
+    ...DASHBOARD_COMMAND_DEFINITIONS,
+    ...licenseCommandDefinitions(),
+    ...generatorCommandDefinitions()
+  ];
+  const managedNames = new Set([
+    ...DASHBOARD_COMMAND_NAMES,
+    ...licenseCommandNames,
+    ...generatorCommandNames
+  ]);
   const configuredGuildId = cleanText(config.discordBot.defaultGuildId);
   const guildIds = configuredGuildId
     ? [configuredGuildId]
@@ -1333,9 +1347,11 @@ function attachProtectionHandlers(entry) {
   const client = entry.client;
 
   client.on(Events.InteractionCreate, (interaction) => {
-    const handler = isGeneratorInteraction(interaction)
-      ? handleGeneratorInteraction(entry, interaction)
-      : handleDashboardInteraction(entry, interaction);
+    const handler = isLicenseInteraction(interaction)
+      ? handleLicenseInteraction(entry, interaction)
+      : isGeneratorInteraction(interaction)
+        ? handleGeneratorInteraction(entry, interaction)
+        : handleDashboardInteraction(entry, interaction);
     void handler.catch((error) => {
       console.warn(`[nexus] Falha no comando /${interaction.commandName || 'desconhecido'}: ${error.message}`);
       void replyCommandError(interaction, error.message);
@@ -1638,12 +1654,14 @@ export async function syncDiscordCommands({
   const enabledDefinitions = DASHBOARD_COMMAND_DEFINITIONS.filter((definition) => (
     hasExplicitConfiguration ? requested.get(definition.name)?.enabled === true : true
   ));
-  if (isDefaultBotToken(entry.token)) enabledDefinitions.push(...generatorCommandDefinitions());
+  if (isDefaultBotToken(entry.token)) {
+    enabledDefinitions.push(...licenseCommandDefinitions(), ...generatorCommandDefinitions());
+  }
 
   const synced = await upsertCommands(
     manager,
     enabledDefinitions,
-    new Set([...DASHBOARD_COMMAND_NAMES, ...generatorCommandNames])
+    new Set([...DASHBOARD_COMMAND_NAMES, ...licenseCommandNames, ...generatorCommandNames])
   );
   const normalizedPolicy = Object.fromEntries(DASHBOARD_COMMAND_DEFINITIONS.map((definition) => {
     const configured = requested.get(definition.name);
