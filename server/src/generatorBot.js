@@ -37,13 +37,18 @@ import {
   redeemGeneratorKey
 } from './generatorCommerce.js';
 import {
+  activateLicensePlanPayment,
+  findLicensePlan,
+  listLicensePlans
+} from './licensing.js';
+import {
   completeRobloxSalesDelivery,
   getRobloxGeneratorSettings,
   releaseRobloxSalesDelivery,
   reserveRandomRobloxSalesAccount
 } from './robloxGenerator.js';
 
-const GENERATOR_COMMAND_NAMES = new Set(['conta', 'pix']);
+const GENERATOR_COMMAND_NAMES = new Set(['nexus', 'conta', 'pix']);
 const GENERATOR_PREFIX = 'nexus:';
 const requestsInFlight = new Set();
 const pixRequestsInFlight = new Set();
@@ -490,14 +495,17 @@ export async function fulfillLivePixPaymentIntent(client, intent) {
   if (!claimed) return getLivePixPaymentIntent(intent.reference);
 
   try {
-    if (claimed.productType !== 'generator_plan') {
+    if (!['generator_plan', 'license_plan'].includes(claimed.productType)) {
       throw new Error(`Produto automatico nao suportado: ${claimed.productType}`);
     }
     if (!claimed.buyerDiscordId || !claimed.productId) {
       throw new Error('Pagamento sem comprador ou plano vinculado.');
     }
 
-    const plan = await findGeneratorPlan(claimed.productId, { activeOnly: false });
+    const isLicensePlan = claimed.productType === 'license_plan';
+    const plan = isLicensePlan
+      ? await findLicensePlan(claimed.productId, { activeOnly: false })
+      : await findGeneratorPlan(claimed.productId, { activeOnly: false });
     if (!plan) throw new Error('O plano vinculado ao pagamento nao foi encontrado.');
     const agreedPrice = Number(claimed.metadata?.planPriceCents);
     if (
@@ -508,18 +516,27 @@ export async function fulfillLivePixPaymentIntent(client, intent) {
       throw new Error('O valor confirmado nao corresponde ao preco contratado.');
     }
 
-    const generated = await generateGeneratorPaymentKey({
-      planId: plan.id,
-      paymentReference: claimed.reference,
-      createdByDiscordId: claimed.createdByDiscordId
-    });
+    const generated = isLicensePlan
+      ? await activateLicensePlanPayment({
+          planId: plan.id,
+          discordId: claimed.buyerDiscordId,
+          actorDiscordId: claimed.createdByDiscordId,
+          paymentReference: claimed.reference
+        })
+      : await generateGeneratorPaymentKey({
+          planId: plan.id,
+          paymentReference: claimed.reference,
+          createdByDiscordId: claimed.createdByDiscordId
+        });
     const buyer = await client.users.fetch(claimed.buyerDiscordId);
     const deliveryEmbed = new EmbedBuilder()
       .setColor(BRAND_COLOR)
-      .setTitle('Pagamento confirmado • Sua key Nexus')
+      .setTitle(isLicensePlan ? 'Pagamento confirmado • Licença Nexus' : 'Pagamento confirmado • Sua key Nexus')
       .setDescription([
         'Seu pagamento foi confirmado automaticamente pela LivePix.',
-        'Use o botao abaixo para ativar seu plano.',
+        isLicensePlan
+          ? 'A licença do script já foi ativada no seu Discord.'
+          : 'Use o botão abaixo para ativar seu plano do gerador.',
         '',
         '━━━━━━━━━━━━━━━━━━━━'
       ].join('\n'))
@@ -536,9 +553,8 @@ export async function fulfillLivePixPaymentIntent(client, intent) {
     if (avatar) deliveryEmbed.setThumbnail(avatar);
     const deliveryRow = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId('nexus:key')
-        .setLabel('Ativar key')
-        .setEmoji('🔑')
+        .setCustomId(isLicensePlan ? 'nexus_loader_copy' : 'nexus:key')
+        .setLabel(isLicensePlan ? 'Copiar loader' : 'Ativar key')
         .setStyle(ButtonStyle.Primary)
     );
     const delivery = await buyer.send({
@@ -552,13 +568,14 @@ export async function fulfillLivePixPaymentIntent(client, intent) {
     });
     await logAudit({
       actorDiscordId: claimed.createdByDiscordId,
-      action: 'generator_bot.pix_key_delivered',
+      action: isLicensePlan ? 'license_bot.pix_license_delivered' : 'generator_bot.pix_key_delivered',
       targetType: 'livepix_payment',
       targetId: claimed.reference,
       metadata: {
         buyerDiscordId: claimed.buyerDiscordId,
         planId: plan.id,
-        generatorKeyId: generated.id,
+        resourceId: generated.id,
+        productType: claimed.productType,
         amountCents: claimed.amountCents,
         deliveryMessageId: delivery.id
       }
@@ -585,7 +602,7 @@ export async function updateLivePixPaymentMessage(client, intent) {
   const embed = current
     ? EmbedBuilder.from(current)
     : new EmbedBuilder().setTitle('Pagamento Pix').setColor(BRAND_COLOR);
-  const automaticDelivery = intent.productType === 'generator_plan';
+  const automaticDelivery = ['generator_plan', 'license_plan'].includes(intent.productType);
   const delivered = intent.fulfillmentStatus === 'completed';
   const deliveryFailed = intent.fulfillmentStatus === 'failed';
   const statusText = automaticDelivery
@@ -955,7 +972,7 @@ function ticketSlug(user) {
   return `ticket-${base}-${user.id.slice(-4)}`;
 }
 
-async function publishTicketPixCheckout(interaction, channel, plan) {
+async function publishTicketPixCheckout(interaction, channel, plan, productType = 'generator_plan') {
   if (!plan?.active || plan.priceCents <= 0) {
     throw new Error('Este plano nao esta disponivel para pagamento automatico.');
   }
@@ -970,10 +987,12 @@ async function publishTicketPixCheckout(interaction, channel, plan) {
     channelId: channel.id,
     createdByDiscordId: interaction.user.id,
     buyerDiscordId: interaction.user.id,
-    productType: 'generator_plan',
+    productType,
     productId: plan.id,
     metadata: {
-      source: 'discord_purchase_ticket',
+      source: productType === 'license_plan'
+        ? 'discord_license_purchase_ticket'
+        : 'discord_purchase_ticket',
       ticketChannelId: channel.id,
       planName: plan.name,
       planPriceCents: plan.priceCents,
@@ -1043,7 +1062,7 @@ async function publishTicketPixCheckout(interaction, channel, plan) {
   return { payment, message: posted };
 }
 
-async function createTicket(interaction, type, planId = null) {
+async function createTicket(interaction, type, planId = null, productType = 'generator_plan') {
   if (!interaction.guild) throw new Error('Abra o ticket dentro do servidor.');
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   let guildConfig = await getGuildConfig(interaction.guildId);
@@ -1066,7 +1085,7 @@ async function createTicket(interaction, type, planId = null) {
     name: ticketSlug(interaction.user),
     type: ChannelType.GuildText,
     parent: category.id,
-    topic: `nexus-user:${interaction.user.id};type:${type};plan:${planId || ''}`,
+    topic: `nexus-user:${interaction.user.id};type:${type};product:${productType};plan:${planId || ''}`,
     permissionOverwrites: [
       { id: interaction.guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
       {
@@ -1085,7 +1104,11 @@ async function createTicket(interaction, type, planId = null) {
     ],
     reason: `Ticket Nexus de ${interaction.user.tag}`
   });
-  const plans = planId ? await listGeneratorPlans({ activeOnly: true }) : [];
+  const plans = planId
+    ? productType === 'license_plan'
+      ? await listLicensePlans({ activeOnly: true })
+      : await listGeneratorPlans({ activeOnly: true })
+    : [];
   const selectedPlan = plans.find((plan) => plan.id === planId);
   const ticketEmbed = await brandEmbed(interaction, {
     title: `Ticket • ${SUPPORT_TYPES[type] || 'Suporte'}`,
@@ -1115,7 +1138,7 @@ async function createTicket(interaction, type, planId = null) {
   });
   if (type === 'purchase' && planId) {
     try {
-      await publishTicketPixCheckout(interaction, channel, selectedPlan);
+      await publishTicketPixCheckout(interaction, channel, selectedPlan, productType);
     } catch (error) {
       await logAudit({
         actorDiscordId: interaction.user.id,
@@ -1138,7 +1161,7 @@ async function createTicket(interaction, type, planId = null) {
     action: 'generator_bot.ticket_created',
     targetType: 'discord_channel',
     targetId: channel.id,
-    metadata: { type, planId }
+    metadata: { type, planId, productType }
   });
   const logEmbed = await brandEmbed(interaction, {
     title: 'Ticket aberto',
@@ -1151,6 +1174,10 @@ async function createTicket(interaction, type, planId = null) {
   });
   await logGeneratorEvent(interaction, type === 'purchase' ? 'purchases' : 'tickets', logEmbed);
   return interaction.editReply(`Ticket criado: ${channel}`);
+}
+
+export async function createLicensePurchaseTicket(interaction, planId) {
+  return createTicket(interaction, 'purchase', planId, 'license_plan');
 }
 
 async function closeTicket(interaction) {
@@ -1486,7 +1513,12 @@ export function generatorCommandDefinitions() {
 }
 
 export function isGeneratorInteraction(interaction) {
-  if (interaction.isChatInputCommand?.()) return GENERATOR_COMMAND_NAMES.has(interaction.commandName);
+  if (interaction.isChatInputCommand?.()) {
+    if (interaction.commandName === 'nexus') {
+      return interaction.options.getSubcommand(false) === 'contas';
+    }
+    return GENERATOR_COMMAND_NAMES.has(interaction.commandName);
+  }
   if (interaction.isButton?.() || interaction.isStringSelectMenu?.() || interaction.isModalSubmit?.()) {
     return cleanText(interaction.customId).startsWith(GENERATOR_PREFIX);
   }
@@ -1497,6 +1529,7 @@ export async function handleGeneratorInteraction(entry, interaction) {
   if (!isGeneratorInteraction(interaction)) return;
   if (entry?.token !== config.discordBot.token) return;
   if (interaction.isChatInputCommand?.()) {
+    if (interaction.commandName === 'nexus') return showGenerate(interaction);
     if (interaction.commandName === 'conta') return showGenerate(interaction);
     if (interaction.commandName === 'pix') return createPixCharge(interaction);
     return showGenerate(interaction);

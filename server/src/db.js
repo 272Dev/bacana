@@ -288,6 +288,7 @@ const schemaSql = `
     name TEXT NOT NULL UNIQUE,
     duration_days INTEGER,
     default_hwid_reset_limit INTEGER NOT NULL DEFAULT 1,
+    price_cents INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -661,7 +662,8 @@ const sqliteLoaderMigrations = postgresLoaderMigrations.map((statement) => state
 const postgresLicenseMigrations = [
   "ALTER TABLE license_users ADD COLUMN IF NOT EXISTS redeemed_at TEXT",
   "ALTER TABLE license_users ADD COLUMN IF NOT EXISTS redeem_source TEXT",
-  "ALTER TABLE license_events ADD COLUMN IF NOT EXISTS request_nonce_hash TEXT"
+  "ALTER TABLE license_events ADD COLUMN IF NOT EXISTS request_nonce_hash TEXT",
+  "ALTER TABLE license_plans ADD COLUMN IF NOT EXISTS price_cents INTEGER NOT NULL DEFAULT 0"
 ];
 const sqliteLicenseMigrations = postgresLicenseMigrations.map((statement) => statement.replace(' IF NOT EXISTS', ''));
 

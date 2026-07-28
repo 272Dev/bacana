@@ -5,18 +5,21 @@ import {
   EmbedBuilder,
   MessageFlags,
   ModalBuilder,
+  StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle
 } from 'discord.js';
 import { config } from './config.js';
 import { botApiRequest } from './botApiClient.js';
 import {
+  createLicensePurchaseTicket,
   getExistingSupportConfig,
   saveExistingSupportConfig,
   showExistingSupport
 } from './generatorBot.js';
 import { logAudit } from './audit.js';
 import { claimInteractionCooldown } from './interactionPolicy.js';
+import { listLicensePlans } from './licensing.js';
 
 const COMMAND_NAMES = new Set(['nexus', 'licenca', 'resgatar', 'loader', 'hwid', 'historico']);
 const COMPONENT_PREFIX = 'nexus_';
@@ -25,6 +28,17 @@ const COLOR = 0x0A0A0A;
 
 function clean(value) {
   return String(value || '').trim();
+}
+
+function formatPrice(cents) {
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL'
+  }).format(Math.max(0, Number(cents || 0)) / 100);
+}
+
+function formatDuration(days) {
+  return days == null ? 'Lifetime' : `${days} dia(s)`;
 }
 
 function discordDate(value, style = 'f', fallback = 'Não disponível') {
@@ -90,6 +104,7 @@ function panelRows() {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId('nexus_hwid_reset').setLabel('Resetar HWID').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('nexus_history_view').setLabel('Histórico').setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId('nexus_license_plans').setLabel('Comprar').setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId('nexus_support').setLabel('Suporte').setStyle(ButtonStyle.Secondary),
       new ButtonBuilder().setCustomId('nexus_panel_refresh').setLabel('Atualizar').setStyle(ButtonStyle.Secondary)
     )
@@ -216,6 +231,37 @@ async function showHistory(interaction) {
   return interaction.editReply({ embeds: [embed], components: [] });
 }
 
+async function showLicensePlans(interaction) {
+  const plans = await listLicensePlans({ activeOnly: true });
+  const purchasable = plans.filter((plan) => plan.priceCents > 0);
+  const embed = baseEmbed(
+    interaction,
+    'Nexus — Planos do Script',
+    'Escolha um plano. O Pix, o QR Code, a confirmação e a ativação da licença são automáticos.'
+  ).addFields(plans.slice(0, 10).map((plan) => ({
+    name: plan.name,
+    value: [
+      `**${formatPrice(plan.priceCents)}** • ${formatDuration(plan.durationDays)}`,
+      `${plan.defaultHwidResetLimit} reset(s) de HWID`
+    ].join('\n'),
+    inline: true
+  })));
+
+  const components = purchasable.length
+    ? [new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId('nexus_license_buy')
+          .setPlaceholder('Selecionar plano para pagar com Pix')
+          .addOptions(purchasable.slice(0, 25).map((plan) => ({
+            label: plan.name.slice(0, 100),
+            description: `${formatPrice(plan.priceCents)} • ${formatDuration(plan.durationDays)}`.slice(0, 100),
+            value: plan.id
+          })))
+      )]
+    : [];
+  return replyPrivate(interaction, { embeds: [embed], components });
+}
+
 function redeemModal() {
   const input = new TextInputBuilder()
     .setCustomId('nexus_key_value')
@@ -327,6 +373,8 @@ async function routeComponent(interaction) {
     return replyPrivate(interaction, { content: 'Reset de HWID cancelado.', embeds: [], components: [] });
   }
   if (id === 'nexus_history_view') return showHistory(interaction);
+  if (id === 'nexus_license_plans') return showLicensePlans(interaction);
+  if (id === 'nexus_license_buy') return createLicensePurchaseTicket(interaction, interaction.values[0]);
   if (id === 'nexus_support') return showExistingSupport(interaction);
   if (id === 'nexus_panel_refresh') return refreshPanel(interaction);
 }
@@ -335,9 +383,13 @@ export function licenseCommandDefinitions() {
   return [
     {
       name: 'nexus',
-      description: 'Painel oficial de licenças Nexus',
+      description: 'Central oficial Nexus',
       dmPermission: false,
-      options: [{ type: 1, name: 'painel', description: 'Publicar ou atualizar o painel Nexus' }]
+      options: [
+        { type: 1, name: 'painel', description: 'Publicar ou atualizar o painel do script' },
+        { type: 1, name: 'contas', description: 'Abrir o gerador de contas' },
+        { type: 1, name: 'comprar', description: 'Comprar uma licença do script com Pix' }
+      ]
     },
     { name: 'licenca', description: 'Consultar sua licença Nexus', dmPermission: false },
     {
@@ -365,8 +417,13 @@ export function licenseCommandDefinitions() {
 }
 
 export function isLicenseInteraction(interaction) {
-  if (interaction.isChatInputCommand?.()) return COMMAND_NAMES.has(interaction.commandName);
-  if (interaction.isButton?.() || interaction.isModalSubmit?.()) {
+  if (interaction.isChatInputCommand?.()) {
+    if (interaction.commandName === 'nexus') {
+      return interaction.options.getSubcommand(false) !== 'contas';
+    }
+    return COMMAND_NAMES.has(interaction.commandName);
+  }
+  if (interaction.isButton?.() || interaction.isStringSelectMenu?.() || interaction.isModalSubmit?.()) {
     return clean(interaction.customId).startsWith(COMPONENT_PREFIX);
   }
   return false;
@@ -378,9 +435,13 @@ export async function handleLicenseInteraction(_entry, interaction) {
     enforceCooldown(interaction);
     return redeemKey(interaction, interaction.fields.getTextInputValue('nexus_key_value'));
   }
-  if (interaction.isButton?.()) return routeComponent(interaction);
+  if (interaction.isButton?.() || interaction.isStringSelectMenu?.()) return routeComponent(interaction);
   enforceCooldown(interaction);
-  if (interaction.commandName === 'nexus') return publishPanel(interaction);
+  if (interaction.commandName === 'nexus') {
+    return interaction.options.getSubcommand(false) === 'comprar'
+      ? showLicensePlans(interaction)
+      : publishPanel(interaction);
+  }
   if (interaction.commandName === 'licenca') return showLicense(interaction);
   if (interaction.commandName === 'resgatar') return redeemKey(interaction, interaction.options.getString('key', true));
   if (interaction.commandName === 'loader') return showLoader(interaction);

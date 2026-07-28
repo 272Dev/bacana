@@ -25,6 +25,7 @@ const planCreateSchema = z.object({
   name: z.string().trim().min(2).max(60),
   durationDays: z.coerce.number().int().min(1).max(3650).nullable().optional(),
   defaultHwidResetLimit: z.coerce.number().int().min(0).max(100).default(1),
+  priceCents: z.coerce.number().int().min(0).max(100000000).default(0),
   active: z.boolean().optional().default(true)
 });
 
@@ -141,6 +142,7 @@ function mapPlan(row) {
     name: row.name,
     durationDays: row.duration_days == null ? null : Number(row.duration_days),
     defaultHwidResetLimit: Number(row.default_hwid_reset_limit || 0),
+    priceCents: Math.max(0, Number(row.price_cents || 0)),
     active: Number(row.active) === 1,
     userCount: Number(row.user_count || 0),
     createdAt: row.created_at,
@@ -198,6 +200,146 @@ function mapLicenseUser(row, { includeKey = false, includeEvents = false, public
 async function getPlan(planId, { activeOnly = false } = {}) {
   const suffix = activeOnly ? ' AND active = 1' : '';
   return db.prepare(`SELECT * FROM license_plans WHERE id = ?${suffix}`).get(planId);
+}
+
+export async function findLicensePlan(planId, { activeOnly = false } = {}) {
+  return mapPlan(await getPlan(planId, { activeOnly }));
+}
+
+export async function listLicensePlans({ activeOnly = false } = {}) {
+  const rows = await db.prepare(`
+    SELECT lp.*, COUNT(lu.id) AS user_count
+    FROM license_plans lp
+    LEFT JOIN license_users lu ON lu.plan_id = lp.id
+    ${activeOnly ? 'WHERE lp.active = 1' : ''}
+    GROUP BY lp.id, lp.name, lp.duration_days, lp.default_hwid_reset_limit,
+      lp.price_cents, lp.active, lp.created_at, lp.updated_at
+    ORDER BY CASE WHEN lp.duration_days IS NULL THEN 1 ELSE 0 END,
+      lp.duration_days ASC, lp.price_cents ASC
+  `).all();
+  return rows.map(mapPlan);
+}
+
+function paidExpiration(plan, currentExpiresAt = null) {
+  if (plan.duration_days == null) return null;
+  const currentTimestamp = Date.parse(currentExpiresAt || '');
+  const baseTimestamp = Number.isFinite(currentTimestamp) && currentTimestamp > Date.now()
+    ? currentTimestamp
+    : Date.now();
+  return new Date(baseTimestamp + Number(plan.duration_days) * 86400000).toISOString();
+}
+
+export async function activateLicensePlanPayment({
+  planId,
+  discordId,
+  actorDiscordId = null,
+  paymentReference
+}) {
+  const parsedDiscordId = discordIdSchema.parse(discordId);
+  const reference = String(paymentReference || '').trim();
+  if (!reference || reference.length > 200) throw httpError('Referencia de pagamento invalida.', 400);
+  const plan = await getPlan(planId);
+  if (!plan) throw httpError('Plano da licenca nao encontrado.', 404);
+  const profile = await resolveDiscordProfile(parsedDiscordId);
+  const paymentNonceHash = crypto.createHash('sha256').update(`license-payment:${reference}`).digest('hex');
+
+  const result = await db.transaction(async (tx) => {
+    let row = await tx.prepare(`
+      SELECT lu.*, lp.name AS plan_name, lp.duration_days AS plan_duration_days
+      FROM license_users lu
+      JOIN license_plans lp ON lp.id = lu.plan_id
+      WHERE lu.discord_id = ?
+    `).get(parsedDiscordId);
+
+    if (row) {
+      const alreadyApplied = await tx.prepare(`
+        SELECT id FROM license_events
+        WHERE license_user_id = ? AND event_type = 'payment_activated' AND request_nonce_hash = ?
+      `).get(row.id, paymentNonceHash);
+      if (!alreadyApplied) {
+        const expiresAt = paidExpiration(plan, row.expires_at);
+        await tx.prepare(`
+          UPDATE license_users SET
+            discord_username = ?, discord_global_name = ?, discord_avatar_url = ?,
+            plan_id = ?, status = 'active', expires_at = ?,
+            hwid_reset_limit = CASE
+              WHEN hwid_reset_limit > ? THEN hwid_reset_limit ELSE ?
+            END,
+            updated_at = ?
+          WHERE id = ?
+        `).run(
+          profile.username,
+          profile.globalName,
+          profile.avatarUrl,
+          plan.id,
+          expiresAt,
+          Number(plan.default_hwid_reset_limit || 0),
+          Number(plan.default_hwid_reset_limit || 0),
+          nowIso(),
+          row.id
+        );
+        await recordLicenseEvent(row.id, 'payment_activated', {
+          requestNonceHash: paymentNonceHash,
+          metadata: { source: 'livepix', planId: plan.id }
+        }, tx);
+        row = await getLicenseRow(row.id, tx);
+      }
+      return { row, renewed: !alreadyApplied, created: false };
+    }
+
+    const key = generateLicenseKey();
+    const id = crypto.randomUUID();
+    const timestamp = nowIso();
+    await tx.prepare(`
+      INSERT INTO license_users (
+        id, discord_id, discord_username, discord_global_name, discord_avatar_url,
+        license_key_hash, license_key_encrypted, license_key_preview, plan_id, status,
+        expires_at, hwid_reset_limit, redeemed_at, redeem_source,
+        created_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, 'livepix', ?, ?, ?)
+    `).run(
+      id,
+      parsedDiscordId,
+      profile.username,
+      profile.globalName,
+      profile.avatarUrl,
+      hashLicenseKey(key),
+      encryptSecret(key),
+      keyPreview(key),
+      plan.id,
+      paidExpiration(plan),
+      Number(plan.default_hwid_reset_limit || 0),
+      timestamp,
+      actorDiscordId || parsedDiscordId,
+      timestamp,
+      timestamp
+    );
+    await recordLicenseEvent(id, 'payment_activated', {
+      requestNonceHash: paymentNonceHash,
+      metadata: { source: 'livepix', planId: plan.id }
+    }, tx);
+    row = await getLicenseRow(id, tx);
+    return { row, renewed: false, created: true };
+  });
+
+  await logAudit({
+    actorDiscordId: actorDiscordId || parsedDiscordId,
+    action: result.created ? 'license_payment.created' : 'license_payment.renewed',
+    targetType: 'license_user',
+    targetId: result.row.id,
+    metadata: { discordId: parsedDiscordId, planId: plan.id, paymentReferenceHash: paymentNonceHash }
+  }).catch(() => {});
+
+  return {
+    id: result.row.id,
+    key: revealStoredKey(result.row),
+    keyPreview: result.row.license_key_preview,
+    plan: mapPlan(plan),
+    status: result.row.status,
+    expiresAt: result.row.expires_at,
+    created: result.created,
+    renewed: result.renewed
+  };
 }
 
 async function getLicenseRow(userId, store = db) {
@@ -655,18 +797,24 @@ export async function validateLicenseAccess(input, ipApprox = 'desconhecido') {
 export async function seedLicensePlans() {
   const now = nowIso();
   const plans = [
-    ['lifetime', 'Lifetime', null, 3],
-    ['monthly', 'Mensal', 30, 2],
-    ['weekly', 'Semanal', 7, 1],
-    ['trial', 'Teste', 1, 1]
+    ['lifetime', 'Lifetime', null, 3, 24990],
+    ['monthly', 'Mensal', 30, 2, 5990],
+    ['weekly', 'Semanal', 7, 1, 2490],
+    ['trial', 'Teste', 1, 1, 990]
   ];
   for (const plan of plans) {
     await db.prepare(`
       INSERT INTO license_plans (
-        id, name, duration_days, default_hwid_reset_limit, active, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 1, ?, ?)
-      ON CONFLICT(id) DO NOTHING
-    `).run(plan[0], plan[1], plan[2], plan[3], now, now);
+        id, name, duration_days, default_hwid_reset_limit, price_cents,
+        active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        price_cents = CASE
+          WHEN license_plans.price_cents = 0 THEN excluded.price_cents
+          ELSE license_plans.price_cents
+        END,
+        updated_at = excluded.updated_at
+    `).run(plan[0], plan[1], plan[2], plan[3], plan[4], now, now);
   }
 }
 
@@ -676,7 +824,8 @@ export function registerLicensingRoutes(app, { requireAuth, requireAdmin }) {
       SELECT lp.*, COUNT(lu.id) AS user_count
       FROM license_plans lp
       LEFT JOIN license_users lu ON lu.plan_id = lp.id
-      GROUP BY lp.id, lp.name, lp.duration_days, lp.default_hwid_reset_limit, lp.active, lp.created_at, lp.updated_at
+      GROUP BY lp.id, lp.name, lp.duration_days, lp.default_hwid_reset_limit, lp.price_cents,
+        lp.active, lp.created_at, lp.updated_at
       ORDER BY CASE WHEN lp.duration_days IS NULL THEN 1 ELSE 0 END, lp.duration_days ASC
     `).all();
     res.json({ plans: rows.map(mapPlan) });
@@ -688,9 +837,19 @@ export function registerLicensingRoutes(app, { requireAuth, requireAdmin }) {
     const id = crypto.randomUUID();
     await db.prepare(`
       INSERT INTO license_plans (
-        id, name, duration_days, default_hwid_reset_limit, active, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, payload.name, payload.durationDays ?? null, payload.defaultHwidResetLimit, payload.active ? 1 : 0, now, now);
+        id, name, duration_days, default_hwid_reset_limit, price_cents,
+        active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      payload.name,
+      payload.durationDays ?? null,
+      payload.defaultHwidResetLimit,
+      payload.priceCents,
+      payload.active ? 1 : 0,
+      now,
+      now
+    );
     await logAudit({ actorDiscordId: req.user.discordId, action: 'license_plan.created', targetType: 'license_plan', targetId: id, metadata: payload, ip: requestIp(req) });
     res.status(201).json({ plan: mapPlan(await getPlan(id)) });
   });
@@ -700,12 +859,14 @@ export function registerLicensingRoutes(app, { requireAuth, requireAdmin }) {
     const current = await getPlan(req.params.id);
     if (!current) throw httpError('Plano nao encontrado.', 404);
     await db.prepare(`
-      UPDATE license_plans SET name = ?, duration_days = ?, default_hwid_reset_limit = ?, active = ?, updated_at = ?
+      UPDATE license_plans SET name = ?, duration_days = ?, default_hwid_reset_limit = ?,
+        price_cents = ?, active = ?, updated_at = ?
       WHERE id = ?
     `).run(
       payload.name ?? current.name,
       Object.hasOwn(payload, 'durationDays') ? payload.durationDays : current.duration_days,
       payload.defaultHwidResetLimit ?? current.default_hwid_reset_limit,
+      payload.priceCents ?? current.price_cents,
       payload.active == null ? current.active : payload.active ? 1 : 0,
       nowIso(),
       current.id

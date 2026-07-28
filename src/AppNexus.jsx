@@ -1282,7 +1282,13 @@ function UsersPage({ users, reloadUsers, currentUser }) {
   const [error, setError] = useState('');
   const [licenseForm, setLicenseForm] = useState({ discordId: '', planId: '', expiresAt: '', hwidResetLimit: '', status: 'active' });
   const [accessForm, setAccessForm] = useState({ discordId: '', role: 'member', label: '', permissions: [] });
-  const [planForm, setPlanForm] = useState({ id: '', name: '', durationDays: '', defaultHwidResetLimit: 1 });
+  const [planForm, setPlanForm] = useState({
+    id: '',
+    name: '',
+    durationDays: '',
+    defaultHwidResetLimit: 1,
+    priceReais: ''
+  });
   const [releaseVersion, setReleaseVersion] = useState('');
   const [releaseLoading, setReleaseLoading] = useState(false);
   const [releaseProtection, setReleaseProtection] = useState(defaultLoaderProtection);
@@ -1441,12 +1447,13 @@ function UsersPage({ users, reloadUsers, currentUser }) {
     const body = {
       name: planForm.name,
       durationDays: planForm.durationDays === '' ? null : Number(planForm.durationDays),
-      defaultHwidResetLimit: Number(planForm.defaultHwidResetLimit)
+      defaultHwidResetLimit: Number(planForm.defaultHwidResetLimit),
+      priceCents: Math.round(Number(planForm.priceReais || 0) * 100)
     };
     try {
       if (planForm.id) await api(`/licenses/plans/${planForm.id}`, { method: 'PATCH', body });
       else await api('/licenses/plans', { method: 'POST', body });
-      setPlanForm({ id: '', name: '', durationDays: '', defaultHwidResetLimit: 1 });
+      setPlanForm({ id: '', name: '', durationDays: '', defaultHwidResetLimit: 1, priceReais: '' });
       setMessage(planForm.id ? 'Plano atualizado.' : 'Plano criado.');
       await loadPlans();
     } catch (requestError) {
@@ -1898,14 +1905,15 @@ function UsersPage({ users, reloadUsers, currentUser }) {
               <input value={planForm.name} onChange={(event) => setPlanForm((current) => ({ ...current, name: event.target.value }))} placeholder="Nome do plano" required />
               <input type="number" min="1" value={planForm.durationDays} onChange={(event) => setPlanForm((current) => ({ ...current, durationDays: event.target.value }))} placeholder="Dias (vazio = lifetime)" />
               <input type="number" min="0" max="100" value={planForm.defaultHwidResetLimit} onChange={(event) => setPlanForm((current) => ({ ...current, defaultHwidResetLimit: event.target.value }))} placeholder="Resets" />
+              <input type="number" min="0" step="0.01" value={planForm.priceReais} onChange={(event) => setPlanForm((current) => ({ ...current, priceReais: event.target.value }))} placeholder="Preço em R$" />
               <button className="primary-button"><Save size={16} /> {planForm.id ? 'Salvar' : 'Criar'}</button>
             </form>
             <div className="plan-list">
               {plans.map((plan) => (
                 <article className="plan-card" key={plan.id}>
                   <span className="plan-icon"><Crown size={19} /></span>
-                  <span><strong>{plan.name}</strong><small>{plan.durationDays == null ? 'Lifetime' : `${plan.durationDays} dias`} · {plan.defaultHwidResetLimit} resets · {plan.userCount} usuarios</small></span>
-                  <IconButton label="Editar" onClick={() => setPlanForm({ id: plan.id, name: plan.name, durationDays: plan.durationDays ?? '', defaultHwidResetLimit: plan.defaultHwidResetLimit })}><SlidersHorizontal size={16} /></IconButton>
+                  <span><strong>{plan.name}</strong><small>{plan.durationDays == null ? 'Lifetime' : `${plan.durationDays} dias`} · {plan.defaultHwidResetLimit} resets · {(Number(plan.priceCents || 0) / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} · {plan.userCount} usuarios</small></span>
+                  <IconButton label="Editar" onClick={() => setPlanForm({ id: plan.id, name: plan.name, durationDays: plan.durationDays ?? '', defaultHwidResetLimit: plan.defaultHwidResetLimit, priceReais: (Number(plan.priceCents || 0) / 100).toFixed(2) })}><SlidersHorizontal size={16} /></IconButton>
                   <IconButton label="Excluir" onClick={() => deletePlan(plan.id)}><Trash2 size={16} /></IconButton>
                 </article>
               ))}
