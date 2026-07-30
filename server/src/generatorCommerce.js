@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { z } from 'zod';
 import { db, nowIso } from './db.js';
+import { config } from './config.js';
 import { decryptSecret, encryptSecret } from './crypto.js';
 import { getAuthorizedUser } from './db.js';
 import { hasPermission, PERMISSIONS } from './permissions.js';
@@ -50,6 +51,18 @@ function generateKeyValue() {
   const bytes = crypto.randomBytes(16);
   const body = [...bytes].map((byte) => alphabet[byte % alphabet.length]).join('');
   return `NEXUS-GEN-${body.slice(0, 4)}-${body.slice(4, 8)}-${body.slice(8, 12)}-${body.slice(12, 16)}`;
+}
+
+function generatePaymentKeyValue(paymentReference) {
+  const digest = crypto
+    .createHmac('sha256', String(config.security.masterKey || ''))
+    .update(`generator-payment:${cleanText(paymentReference)}`)
+    .digest();
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const body = [...digest.subarray(0, 20)]
+    .map((byte) => alphabet[byte % alphabet.length])
+    .join('');
+  return `NEXUS-GEN-${body.slice(0, 5)}-${body.slice(5, 10)}-${body.slice(10, 15)}-${body.slice(15, 20)}`;
 }
 
 function keyPreview(value) {
@@ -311,6 +324,52 @@ export async function generateGeneratorKeys(input, actorDiscordId) {
   }
 
   return keys;
+}
+
+export async function generateGeneratorPaymentKey({
+  planId,
+  paymentReference,
+  createdByDiscordId = null
+}) {
+  const normalizedReference = cleanText(paymentReference);
+  if (!normalizedReference) throw new Error('Referencia do pagamento invalida.');
+  const plan = await getPlanRow(cleanText(planId));
+  if (!plan) throw Object.assign(new Error('Plano vinculado ao pagamento nao encontrado.'), { status: 400 });
+
+  const value = generatePaymentKeyValue(normalizedReference);
+  const hashed = hashKey(value);
+  const timestamp = nowIso();
+  await db.prepare(`
+    INSERT INTO generator_keys (
+      id, key_hash, key_encrypted, key_preview, plan_id, status,
+      redeemed_by, redeemed_at, created_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'active', NULL, NULL, ?, ?, ?)
+    ON CONFLICT (key_hash) DO NOTHING
+  `).run(
+    crypto.randomUUID(),
+    hashed,
+    encryptSecret(value),
+    keyPreview(value),
+    plan.id,
+    createdByDiscordId || null,
+    timestamp,
+    timestamp
+  );
+
+  const keyRow = await db.prepare(`
+    SELECT * FROM generator_keys WHERE key_hash = ?
+  `).get(hashed);
+  if (!keyRow || keyRow.plan_id !== plan.id) {
+    throw new Error('Nao foi possivel vincular a key ao pagamento.');
+  }
+  return {
+    id: keyRow.id,
+    key: decryptSecret(keyRow.key_encrypted),
+    keyPreview: keyRow.key_preview,
+    plan: mapPlan(plan),
+    status: keyRow.status,
+    createdAt: keyRow.created_at
+  };
 }
 
 export async function listGeneratorKeys({ limit = 100 } = {}) {
