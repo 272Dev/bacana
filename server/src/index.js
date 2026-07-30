@@ -56,9 +56,11 @@ import {
 import {
   applyDiscordBotProfile,
   configureDiscordProtection,
+  closeExpiredLivePixPurchaseTicket,
   getDiscordProtectionCatalog,
   getDiscordProtectionStats,
   getDiscordRuntimeState,
+  notifyLivePixPaymentIntent,
   restoreDiscordProtections,
   restoreDiscordVoiceConnections,
   runDiscordBotLifecycle,
@@ -87,9 +89,28 @@ import {
   seedGeneratorPlans,
   updateGeneratorPlan
 } from './generatorCommerce.js';
-import { registerLicensingRoutes, seedLicensePlans } from './licensing.js';
+import { ensureLivePixWebhook, isLivePixConfigured } from './livePix.js';
+import {
+  listPendingLivePixFulfillments,
+  listPendingLivePixPayments,
+  listRecentExpiredLivePixPayments,
+  listUnnotifiedPaidLivePixPayments,
+  markLivePixPurchaseTicketExpired,
+  markLivePixPaymentNotified,
+  processLivePixWebhook,
+  syncLivePixPaymentIntent
+} from './livePixPayments.js';
+import { cleanupLicenseEvents, registerLicensingRoutes, seedLicensePlans } from './licensing.js';
 import { registerLoaderRoutes } from './loader.js';
 import { registerNameTagRoutes } from './nameTags.js';
+import { registerGlobalChatRoutes } from './globalChat.js';
+import { registerAvatarSyncRoutes } from './avatarSync.js';
+import { registerAuraProfileRoutes } from './auraProfiles.js';
+import { cleanupNexusPresence, registerNexusPresenceRoutes } from './nexusPresence.js';
+import { registerChatBotRoutes } from './chatbotProxy.js';
+import { requireBotApiSignature, cleanupBotApiNonces } from './botApiAuth.js';
+import { registerLicenseBotApiRoutes } from './licenseBotApi.js';
+import { cleanupSecurityLimits } from './securityLimits.js';
 import { PERMISSIONS, effectivePermissions, requirePermission } from './permissions.js';
 import {
   checkLoginBlocked,
@@ -158,6 +179,11 @@ app.use(cors({
   origin: config.clientUrl,
   credentials: true
 }));
+app.use((req, res, next) => {
+  req.requestId = crypto.randomUUID();
+  res.setHeader('X-Request-Id', req.requestId);
+  next();
+});
 app.use(express.json({ limit: '60mb' }));
 app.use((req, _res, next) => {
   req.cookies = Object.fromEntries(
@@ -180,6 +206,169 @@ app.use((req, res, next) => {
   next();
 });
 
+const livePixWebhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 240,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false
+});
+let livePixWebhookReady = false;
+const PURCHASE_TICKET_TTL_MS = 20 * 60 * 1000;
+
+async function notifyPaidLivePixIntent(intent) {
+  if (!intent?.reference || intent.status !== 'paid') return false;
+  const notified = await notifyLivePixPaymentIntent(intent).catch(() => false);
+  if (notified) await markLivePixPaymentNotified(intent.reference);
+  return notified;
+}
+
+async function reconcileLivePixPaymentNotifications() {
+  const [unnotified, pendingFulfillments] = await Promise.all([
+    listUnnotifiedPaidLivePixPayments(50),
+    listPendingLivePixFulfillments(50)
+  ]);
+  const intents = [...new Map(
+    [...unnotified, ...pendingFulfillments].map((intent) => [intent.reference, intent])
+  ).values()];
+  let notified = 0;
+  for (const intent of intents) {
+    if (await notifyPaidLivePixIntent(intent)) notified += 1;
+  }
+  return { checked: intents.length, notified };
+}
+
+async function pollPendingLivePixPayments() {
+  const intents = await listPendingLivePixPayments(25);
+  let confirmed = 0;
+  let expiredTickets = 0;
+  for (const intent of intents) {
+    try {
+      const result = await syncLivePixPaymentIntent(intent.reference);
+      if (result.paid) {
+        confirmed += 1;
+        await notifyPaidLivePixIntent(result.intent);
+        continue;
+      }
+      const createdAt = Date.parse(intent.createdAt || '');
+      const configuredExpiration = Date.parse(intent.metadata?.expiresAt || '');
+      const expiresAt = Number.isFinite(configuredExpiration)
+        ? configuredExpiration
+        : createdAt + PURCHASE_TICKET_TTL_MS;
+      const shouldExpireTicket = intent.productType === 'generator_plan'
+        && intent.metadata?.source === 'discord_purchase_ticket'
+        && !intent.metadata?.ticketExpiredAt
+        && Number.isFinite(expiresAt)
+        && Date.now() >= expiresAt;
+      if (!shouldExpireTicket) continue;
+      const closed = await closeExpiredLivePixPurchaseTicket(intent);
+      if (!closed) {
+        console.warn(`[nexus] Nao foi possivel fechar o ticket Pix ${intent.reference}.`);
+        continue;
+      }
+      const expiredIntent = await markLivePixPurchaseTicketExpired(intent.reference);
+      if (
+        !expiredIntent
+        || expiredIntent.status !== 'expired'
+        || !expiredIntent.metadata?.ticketExpiredAt
+      ) {
+        continue;
+      }
+      expiredTickets += 1;
+      await logAudit({
+        actorDiscordId: expiredIntent.buyerDiscordId,
+        action: 'generator_bot.ticket_pix_expired',
+        targetType: 'livepix_payment',
+        targetId: expiredIntent.reference,
+        metadata: {
+          guildId: expiredIntent.guildId,
+          channelId: expiredIntent.metadata?.ticketOriginalChannelId || null,
+          amountCents: expiredIntent.amountCents,
+          currency: expiredIntent.currency
+        }
+      }).catch(() => {});
+    } catch (error) {
+      if (['LIVEPIX_RATE_LIMITED', 'LIVEPIX_TOKEN_BACKOFF'].includes(error?.code)) break;
+      console.warn(`[nexus] Falha ao consultar Pix ${intent.reference}: ${error.message}`);
+    }
+  }
+  return { checked: intents.length, confirmed, expiredTickets };
+}
+
+async function pollRecentlyExpiredLivePixPayments() {
+  const intents = await listRecentExpiredLivePixPayments(25, 24);
+  let confirmed = 0;
+  for (const intent of intents) {
+    try {
+      const result = await syncLivePixPaymentIntent(intent.reference);
+      if (!result.paid) continue;
+      confirmed += 1;
+      await notifyPaidLivePixIntent(result.intent);
+    } catch (error) {
+      if (['LIVEPIX_RATE_LIMITED', 'LIVEPIX_TOKEN_BACKOFF'].includes(error?.code)) break;
+      console.warn(`[nexus] Falha ao consultar Pix expirado ${intent.reference}: ${error.message}`);
+    }
+  }
+  return { checked: intents.length, confirmed };
+}
+
+app.post('/api/webhooks/livepix', livePixWebhookLimiter, async (req, res) => {
+  try {
+    const result = await processLivePixWebhook(req.body);
+    if (result.paid && result.intent) {
+      await logAudit({
+        action: 'livepix.payment_confirmed',
+        targetType: 'livepix_payment',
+        targetId: result.intent.reference,
+        metadata: {
+          amountCents: result.intent.amountCents,
+          currency: result.intent.currency,
+          productType: result.intent.productType,
+          providerPaymentId: result.intent.providerPaymentId
+        },
+        ip: req.ip
+      }).catch(() => {});
+      await notifyPaidLivePixIntent(result.intent);
+    }
+    return res.status(200).json({
+      received: true,
+      paid: result.paid === true,
+      ignored: result.ignored === true,
+      reason: result.reason
+    });
+  } catch (error) {
+    console.warn(`[nexus] Falha ao validar webhook LivePix: ${error.message}`);
+    return res.status(503).json({ received: false, error: 'Falha temporaria ao validar pagamento.' });
+  }
+});
+
+app.get('/api/payments/livepix/return', (_req, res) => {
+  res.type('html').send(`<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Nexus | Pagamento enviado</title>
+  <style>
+    :root{color-scheme:dark;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    *{box-sizing:border-box}
+    body{min-height:100vh;margin:0;display:grid;place-items:center;background:#050505;color:#f5f5f5;padding:24px}
+    main{width:min(480px,100%);padding:34px;border:1px solid #2c2c2c;border-radius:24px;background:#0d0d0d;box-shadow:0 24px 80px #000}
+    .mark{width:46px;height:46px;display:grid;place-items:center;border:1px solid #555;border-radius:15px;font-weight:900;margin-bottom:24px}
+    h1{font-size:24px;letter-spacing:-.03em;margin:0 0 12px}
+    p{color:#aaa;line-height:1.6;margin:0}
+    strong{color:#fff}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark">N</div>
+    <h1>Pagamento enviado para confirmacao</h1>
+    <p>Volte ao Discord. O Nexus atualiza a cobranca <strong>automaticamente</strong> depois que a LivePix confirmar o pagamento.</p>
+  </main>
+</body>
+</html>`);
+});
+
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 180,
@@ -195,6 +384,12 @@ const authLimiter = rateLimit({
 });
 
 app.use('/api', apiLimiter);
+
+registerGlobalChatRoutes(app);
+registerAvatarSyncRoutes(app);
+registerAuraProfileRoutes(app);
+registerNexusPresenceRoutes(app);
+registerChatBotRoutes(app);
 
 function setCookie(res, name, value, options) {
   const attrs = [`${encodeURIComponent(name)}=${encodeURIComponent(value)}`, `Path=${options.path || '/'}`];
@@ -216,6 +411,7 @@ app.use((req, res, next) => {
 registerLicensingRoutes(app, { requireAuth, requireAdmin });
 registerLoaderRoutes(app, { requireAuth, requireAdmin });
 registerNameTagRoutes(app, { requireAuth, requireAdmin });
+registerLicenseBotApiRoutes(app, { requireBotApiSignature });
 
 function clientRedirect(pathname, params = {}) {
   const url = new URL(pathname, config.clientUrl);
@@ -2112,12 +2308,51 @@ app.get('*', async (req, res, next) => {
   });
 });
 
-app.use((error, _req, res, _next) => {
+app.use((error, req, res, _next) => {
+  if (error?.type === 'entity.parse.failed') {
+    return res.status(400).json({
+      success: false,
+      code: 'INVALID_JSON',
+      message: 'JSON inválido.',
+      error: 'JSON inválido.',
+      requestId: req.requestId
+    });
+  }
+  if (error?.type === 'entity.too.large') {
+    return res.status(413).json({
+      success: false,
+      code: 'PAYLOAD_TOO_LARGE',
+      message: 'O conteúdo enviado ultrapassa o limite permitido.',
+      error: 'O conteúdo enviado ultrapassa o limite permitido.',
+      requestId: req.requestId
+    });
+  }
   if (error instanceof z.ZodError) {
-    return res.status(400).json({ error: 'Dados invalidos.', details: error.flatten() });
+    return res.status(400).json({
+      success: false,
+      code: 'INVALID_INPUT',
+      message: 'Dados inválidos.',
+      error: 'Dados inválidos.',
+      requestId: req.requestId
+    });
   }
   const status = error.status || 500;
-  res.status(status).json({ error: error.message || 'Erro interno.' });
+  const code = error.code || 'INTERNAL_ERROR';
+  const message = status >= 500 ? 'Falha temporária no servidor.' : error.message || 'Não foi possível concluir a solicitação.';
+  if (status >= 500) {
+    console.error(`[nexus] ${req.requestId} ${code}:`, error);
+  }
+  res.status(status).json({
+    success: false,
+    code,
+    message,
+    error: message,
+    requestId: req.requestId,
+    retryAfterSeconds: error.retryAfterSeconds,
+    details: ['LUA_SYNTAX_INVALID', 'LUA_PROTECTION_INVALID'].includes(code)
+      ? error.validation
+      : undefined
+  });
 });
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
@@ -2126,8 +2361,11 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
     void Promise.allSettled([
       startDefaultDiscordBot(),
       restoreDiscordProtections(),
-      restoreDiscordVoiceConnections()
-    ]).then(([botResult, protectionResult, voiceResult]) => {
+      restoreDiscordVoiceConnections(),
+      isLivePixConfigured()
+        ? ensureLivePixWebhook()
+        : Promise.resolve({ configured: false, reason: 'missing_credentials' })
+    ]).then(async ([botResult, protectionResult, voiceResult, livePixResult]) => {
       if (botResult.status === 'fulfilled' && botResult.value) console.log('Discord bot conectado ao Gateway.');
       if (botResult.status === 'rejected') console.warn(`Discord bot nao conectou ao Gateway: ${botResult.reason.message}`);
       if (protectionResult.status === 'fulfilled') {
@@ -2140,7 +2378,64 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
       } else {
         console.warn(`Calls Discord nao foram restauradas: ${voiceResult.reason.message}`);
       }
+      if (livePixResult.status === 'fulfilled' && livePixResult.value.configured) {
+        livePixWebhookReady = true;
+        console.log(
+          `Webhook LivePix ${livePixResult.value.created ? 'criado' : 'ativo'}: `
+          + `${livePixResult.value.url}`
+        );
+      } else if (livePixResult.status === 'rejected') {
+        console.warn(`Webhook LivePix nao foi configurado: ${livePixResult.reason.message}`);
+      }
+      await reconcileLivePixPaymentNotifications().catch((error) => {
+        console.warn(`[nexus] Falha ao reconciliar pagamentos LivePix: ${error.message}`);
+      });
     });
+    const livePixReconciliationTimer = setInterval(() => {
+      void pollPendingLivePixPayments()
+        .then(() => reconcileLivePixPaymentNotifications())
+        .catch((error) => {
+          console.warn(`[nexus] Falha ao reconciliar pagamentos LivePix: ${error.message}`);
+        });
+    }, 30_000);
+    livePixReconciliationTimer.unref?.();
+    const expiredLivePixTimer = setInterval(() => {
+      void pollRecentlyExpiredLivePixPayments()
+        .then(() => reconcileLivePixPaymentNotifications())
+        .catch((error) => {
+          console.warn(`[nexus] Falha ao reconciliar pagamentos Pix expirados: ${error.message}`);
+        });
+    }, 5 * 60_000);
+    expiredLivePixTimer.unref?.();
+    const livePixWebhookTimer = setInterval(() => {
+      if (!isLivePixConfigured() || livePixWebhookReady) return;
+      void ensureLivePixWebhook()
+        .then((result) => {
+          if (!result.configured) return;
+          livePixWebhookReady = true;
+          console.log(`Webhook LivePix ${result.created ? 'criado' : 'ativo'}: ${result.url}`);
+        })
+        .catch((error) => {
+          console.warn(`Nova tentativa do webhook LivePix falhou: ${error.message}`);
+        });
+    }, 70_000);
+    livePixWebhookTimer.unref?.();
+    // Presence records are intentionally ephemeral.  The route filters at two
+    // minutes, and this short maintenance cadence also erases expired rows
+    // during quiet periods rather than retaining a location history.
+    void cleanupNexusPresence().catch((error) => {
+      console.warn(`[nexus] Falha ao limpar presencas expiradas: ${error.message}`);
+    });
+    const nexusPresenceCleanupTimer = setInterval(() => {
+      void cleanupNexusPresence().catch((error) => {
+        console.warn(`[nexus] Falha ao limpar presencas expiradas: ${error.message}`);
+      });
+    }, 60_000);
+    nexusPresenceCleanupTimer.unref?.();
+    const securityCleanupTimer = setInterval(() => {
+      void Promise.allSettled([cleanupBotApiNonces(), cleanupSecurityLimits(), cleanupLicenseEvents(), cleanupNexusPresence()]);
+    }, 10 * 60_000);
+    securityCleanupTimer.unref?.();
   });
 }
 
