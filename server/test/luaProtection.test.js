@@ -20,6 +20,17 @@ test('aceita sintaxe Lua estruturalmente válida', () => {
   assert.equal(validateLuaSyntax(validSource).valid, true);
 });
 
+test('aceita if aninhado logo após then', () => {
+  const source = (`local function update(value)
+  if value then
+    if value.active then return value end
+  end
+  return nil
+end
+`).repeat(8);
+  assert.equal(validateLuaSyntax(source).valid, true);
+});
+
 test('detecta string não fechada', () => {
   assert.equal(validateLuaSyntax('local x = "sem fim').valid, false);
 });
@@ -82,4 +93,3 @@ test('bloqueia arquivo maior que 8 MB', () => {
     (error) => error.code === 'LUA_FILE_TOO_LARGE'
   );
 });
-

@@ -202,10 +202,14 @@ export function validateLuaSyntax(source) {
     const word = token.value;
     if (word === 'function') blocks.push({ kind: word, offset: token.start });
     else if (word === 'if') {
+      // Luau permite `if` como expressao, por exemplo `return if ok then a else b`.
+      // Apenas esses contextos sintaticos abrem uma expressao. Considerar um `if`
+      // logo apos `then`/`do` como expressao fazia blocos aninhados perderem o
+      // respectivo `end` e rejeitava fontes validas com erro estrutural.
       const expressionIf = previous
         && (
           (previous.type === 'symbol' && ['=', '(', ',', '{', '['].includes(previous.value))
-          || (previous.type === 'word' && ['return', 'then', 'else', 'elseif', 'do'].includes(previous.value))
+          || (previous.type === 'word' && previous.value === 'return')
         );
       if (!expressionIf) blocks.push({ kind: word, offset: token.start });
     }
