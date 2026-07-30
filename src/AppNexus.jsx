@@ -87,11 +87,56 @@ const emptyNameTagForm = {
   title: 'Nexus Member',
   icon: 'initial',
   badge: 'none',
+  tagColor: '#FFFFFF',
   morphDistance: 52,
   maxDistance: 160,
   enabled: true,
   hwidBound: false,
   hwidPreview: ''
+};
+
+const defaultLoaderProtection = {
+  level: 'normal',
+  removeComments: true,
+  renameLocalVariables: true,
+  renameLocalFunctions: true,
+  protectStrings: true,
+  protectConstants: true,
+  transformControlFlow: false,
+  addVersionMark: true,
+  syntaxCheck: true,
+  loadTest: true,
+  activateImmediately: true
+};
+
+const loaderProtectionPresets = {
+  basic: {
+    removeComments: true,
+    renameLocalVariables: true,
+    renameLocalFunctions: false,
+    protectStrings: false,
+    protectConstants: false,
+    transformControlFlow: false,
+    addVersionMark: false
+  },
+  normal: {
+    removeComments: true,
+    renameLocalVariables: true,
+    renameLocalFunctions: true,
+    protectStrings: true,
+    protectConstants: true,
+    transformControlFlow: false,
+    addVersionMark: true
+  },
+  strong: {
+    removeComments: true,
+    renameLocalVariables: true,
+    renameLocalFunctions: true,
+    protectStrings: true,
+    protectConstants: true,
+    transformControlFlow: true,
+    addVersionMark: true
+  }
 };
 
 const accessPermissionOptions = [
@@ -1207,8 +1252,9 @@ function NameTagBadge({ badge }) {
 
 function NameTagPreview({ tag, compact = false }) {
   const name = tag.displayNameOverride || tag.robloxDisplayName || tag.robloxUsername || 'Player';
+  const accent = /^#[0-9a-f]{6}$/i.test(tag.tagColor || '') ? tag.tagColor : '#FFFFFF';
   return (
-    <div className={`name-tag-preview ${compact ? 'compact' : ''}`}>
+    <div className={`name-tag-preview ${compact ? 'compact' : ''}`} style={{ '--name-tag-accent': accent }}>
       <div className="name-tag-preview-pill">
         <span className="name-tag-preview-icon"><NameTagGlyph icon={tag.icon} name={name} /></span>
         <span className="name-tag-preview-copy"><strong>{name}</strong><small>{tag.title || 'Nexus Member'}</small></span>
@@ -1238,9 +1284,16 @@ function UsersPage({ users, reloadUsers, currentUser }) {
   const [error, setError] = useState('');
   const [licenseForm, setLicenseForm] = useState({ discordId: '', planId: '', expiresAt: '', hwidResetLimit: '', status: 'active' });
   const [accessForm, setAccessForm] = useState({ discordId: '', role: 'member', label: '', permissions: [] });
-  const [planForm, setPlanForm] = useState({ id: '', name: '', durationDays: '', defaultHwidResetLimit: 1 });
+  const [planForm, setPlanForm] = useState({
+    id: '',
+    name: '',
+    durationDays: '',
+    defaultHwidResetLimit: 1,
+    priceReais: ''
+  });
   const [releaseVersion, setReleaseVersion] = useState('');
   const [releaseLoading, setReleaseLoading] = useState(false);
+  const [releaseProtection, setReleaseProtection] = useState(defaultLoaderProtection);
   const [nameTags, setNameTags] = useState([]);
   const [tagSearch, setTagSearch] = useState('');
   const [tagForm, setTagForm] = useState(emptyNameTagForm);
@@ -1396,12 +1449,13 @@ function UsersPage({ users, reloadUsers, currentUser }) {
     const body = {
       name: planForm.name,
       durationDays: planForm.durationDays === '' ? null : Number(planForm.durationDays),
-      defaultHwidResetLimit: Number(planForm.defaultHwidResetLimit)
+      defaultHwidResetLimit: Number(planForm.defaultHwidResetLimit),
+      priceCents: Math.round(Number(planForm.priceReais || 0) * 100)
     };
     try {
       if (planForm.id) await api(`/licenses/plans/${planForm.id}`, { method: 'PATCH', body });
       else await api('/licenses/plans', { method: 'POST', body });
-      setPlanForm({ id: '', name: '', durationDays: '', defaultHwidResetLimit: 1 });
+      setPlanForm({ id: '', name: '', durationDays: '', defaultHwidResetLimit: 1, priceReais: '' });
       setMessage(planForm.id ? 'Plano atualizado.' : 'Plano criado.');
       await loadPlans();
     } catch (requestError) {
@@ -1427,17 +1481,31 @@ function UsersPage({ users, reloadUsers, currentUser }) {
       setError('Selecione um arquivo .lua.');
       return;
     }
+    if (file.size < 500) {
+      setError('O arquivo Lua precisa ter pelo menos 500 bytes.');
+      return;
+    }
+    if (file.size > 8_000_000) {
+      setError('O arquivo Lua ultrapassa o limite de 8 MB.');
+      return;
+    }
     setReleaseLoading(true);
     setError('');
     try {
       const source = await file.text();
+      if (!source.trim()) throw new Error('O arquivo Lua está vazio.');
       const version = releaseVersion.trim() || `v${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
       const payload = await api('/loader/releases', {
         method: 'POST',
-        body: { version, source, protectedMode: true }
+        body: { version, fileName: file.name, source, protection: releaseProtection }
       });
       setReleaseVersion('');
-      setMessage(`Versao ${payload.release.version} publicada. O link fixo ja aponta para ela.`);
+      setMessage(
+        `Versão ${payload.release.version} processada: `
+        + `${payload.release.originalBytes.toLocaleString('pt-BR')} → `
+        + `${payload.release.protectedBytes.toLocaleString('pt-BR')} bytes. `
+        + `${payload.release.active ? 'Ativada com sucesso.' : 'Salva como inativa.'}`
+      );
       await loadReleases();
     } catch (requestError) {
       setError(requestError.message);
@@ -1497,6 +1565,7 @@ function UsersPage({ users, reloadUsers, currentUser }) {
           title: tagForm.title,
           icon: tagForm.icon,
           badge: tagForm.badge,
+          tagColor: tagForm.tagColor,
           morphDistance: Number(tagForm.morphDistance),
           maxDistance: Number(tagForm.maxDistance),
           enabled: Boolean(tagForm.enabled)
@@ -1735,12 +1804,49 @@ function UsersPage({ users, reloadUsers, currentUser }) {
             </div>
             <div className="loader-publish-form">
               <label>Versao<input value={releaseVersion} onChange={(event) => setReleaseVersion(event.target.value)} placeholder="v3.2.0" /></label>
+              <label>Nível de proteção
+                <NexusSelect value={releaseProtection.level} onChange={(event) => {
+                  const level = event.target.value;
+                  setReleaseProtection((current) => ({
+                    ...current,
+                    ...loaderProtectionPresets[level],
+                    level
+                  }));
+                }}>
+                  <option value="basic">Básico</option>
+                  <option value="normal">Normal</option>
+                  <option value="strong">Forte</option>
+                </NexusSelect>
+              </label>
               <label className="upload-button loader-file-button">
                 <Upload size={17} /> {releaseLoading ? 'Publicando...' : 'Selecionar script .lua'}
                 <input type="file" accept=".lua,text/x-lua" onChange={uploadRelease} disabled={releaseLoading} />
               </label>
             </div>
-            <p className="loader-security-note"><FileIcon size={15} /> Upload maximo de 8 MB - AES-256-GCM em repouso - entrega por ticket unico de 45 segundos</p>
+            <div className="loader-protection-options">
+              {[
+                ['removeComments', 'Remover comentários'],
+                ['renameLocalVariables', 'Renomear variáveis locais'],
+                ['renameLocalFunctions', 'Renomear funções locais'],
+                ['protectStrings', 'Proteger strings'],
+                ['protectConstants', 'Proteger constantes'],
+                ['transformControlFlow', 'Transformar fluxo de controle'],
+                ['addVersionMark', 'Adicionar marca da versão'],
+                ['activateImmediately', 'Ativar imediatamente']
+              ].map(([id, label]) => (
+                <label className="loader-protection-option" key={id}>
+                  <input
+                    type="checkbox"
+                    checked={releaseProtection[id]}
+                    onChange={(event) => setReleaseProtection((current) => ({ ...current, [id]: event.target.checked }))}
+                  />
+                  <span>{label}</span>
+                </label>
+              ))}
+              <label className="loader-protection-option locked"><input type="checkbox" checked readOnly /><span>Verificação de sintaxe obrigatória</span></label>
+              <label className="loader-protection-option locked"><input type="checkbox" checked readOnly /><span>Teste estrutural de carregamento obrigatório</span></label>
+            </div>
+            <p className="loader-security-note"><FileIcon size={15} /> 500 bytes a 8 MB · AES-256-GCM com rotação de chave · SHA-256 original e protegido · ticket único de 45 segundos</p>
           </section>
 
           <section className="panel loader-link-card">
@@ -1756,7 +1862,19 @@ function UsersPage({ users, reloadUsers, currentUser }) {
               {releases.map((release) => (
                 <article className={`loader-release-card ${release.active ? 'active' : ''}`} key={release.id}>
                   <span className="loader-release-icon"><Code2 size={19} /></span>
-                  <span className="loader-release-meta"><strong>{release.version}</strong><small>{release.bytes.toLocaleString('pt-BR')} bytes - SHA-256 {release.sha256.slice(0, 16)}... - {formatDate(release.createdAt)}</small></span>
+                  <div className="loader-release-meta">
+                    <strong>{release.version}</strong>
+                    <small>
+                      {release.protectionLevel || 'basic'} · {release.originalBytes.toLocaleString('pt-BR')} → {release.protectedBytes.toLocaleString('pt-BR')} bytes · SHA-256 {release.sha256.slice(0, 16)}... · {formatDate(release.createdAt)}
+                    </small>
+                    <small>{release.syntaxValid ? 'Sintaxe validada' : 'Sintaxe inválida'} · {release.processingMs || 0} ms · chave {release.encryptionKeyId || 'legada'}</small>
+                    <details className="loader-release-details">
+                      <summary>Hashes e validação</summary>
+                      <code>Original: {release.originalSha256}</code>
+                      <code>Protegido: {release.protectedSha256}</code>
+                      {(release.validation?.warnings || []).map((warning) => <small key={warning}>{warning}</small>)}
+                    </details>
+                  </div>
                   <span className={`license-status ${release.active ? 'active' : 'expired'}`}>{release.active ? 'Ativa' : 'Inativa'}</span>
                   {!release.active && <button className="ghost-button compact-button" onClick={() => activateRelease(release.id)}>Ativar</button>}
                   {!release.active && <IconButton label="Excluir versao" onClick={() => deleteRelease(release.id)}><Trash2 size={16} /></IconButton>}
@@ -1790,14 +1908,15 @@ function UsersPage({ users, reloadUsers, currentUser }) {
               <input value={planForm.name} onChange={(event) => setPlanForm((current) => ({ ...current, name: event.target.value }))} placeholder="Nome do plano" required />
               <input type="number" min="1" value={planForm.durationDays} onChange={(event) => setPlanForm((current) => ({ ...current, durationDays: event.target.value }))} placeholder="Dias (vazio = lifetime)" />
               <input type="number" min="0" max="100" value={planForm.defaultHwidResetLimit} onChange={(event) => setPlanForm((current) => ({ ...current, defaultHwidResetLimit: event.target.value }))} placeholder="Resets" />
+              <input type="number" min="0" step="0.01" value={planForm.priceReais} onChange={(event) => setPlanForm((current) => ({ ...current, priceReais: event.target.value }))} placeholder="Preço em R$" />
               <button className="primary-button"><Save size={16} /> {planForm.id ? 'Salvar' : 'Criar'}</button>
             </form>
             <div className="plan-list">
               {plans.map((plan) => (
                 <article className="plan-card" key={plan.id}>
                   <span className="plan-icon"><Crown size={19} /></span>
-                  <span><strong>{plan.name}</strong><small>{plan.durationDays == null ? 'Lifetime' : `${plan.durationDays} dias`} · {plan.defaultHwidResetLimit} resets · {plan.userCount} usuarios</small></span>
-                  <IconButton label="Editar" onClick={() => setPlanForm({ id: plan.id, name: plan.name, durationDays: plan.durationDays ?? '', defaultHwidResetLimit: plan.defaultHwidResetLimit })}><SlidersHorizontal size={16} /></IconButton>
+                  <span><strong>{plan.name}</strong><small>{plan.durationDays == null ? 'Lifetime' : `${plan.durationDays} dias`} · {plan.defaultHwidResetLimit} resets · {(Number(plan.priceCents || 0) / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })} · {plan.userCount} usuarios</small></span>
+                  <IconButton label="Editar" onClick={() => setPlanForm({ id: plan.id, name: plan.name, durationDays: plan.durationDays ?? '', defaultHwidResetLimit: plan.defaultHwidResetLimit, priceReais: (Number(plan.priceCents || 0) / 100).toFixed(2) })}><SlidersHorizontal size={16} /></IconButton>
                   <IconButton label="Excluir" onClick={() => deletePlan(plan.id)}><Trash2 size={16} /></IconButton>
                 </article>
               ))}
@@ -1826,6 +1945,7 @@ function UsersPage({ users, reloadUsers, currentUser }) {
               <label className="span-2">Cargo ou titulo<input maxLength="32" value={tagForm.title} onChange={(event) => setTagForm((current) => ({ ...current, title: event.target.value }))} required /></label>
               <label>Indicador<NexusSelect value={tagForm.icon} onChange={(event) => setTagForm((current) => ({ ...current, icon: event.target.value }))}><option value="initial">Inicial</option><option value="diamond">Diamante</option><option value="shield">Escudo</option><option value="star">Estrela</option><option value="dot">Ponto</option></NexusSelect></label>
               <label>Selo<NexusSelect value={tagForm.badge} onChange={(event) => setTagForm((current) => ({ ...current, badge: event.target.value }))}><option value="none">Nenhum</option><option value="verified">Verificado</option><option value="admin">Admin</option><option value="premium">Premium</option></NexusSelect></label>
+              <label>Cor do detalhe<input type="color" value={tagForm.tagColor || '#FFFFFF'} onChange={(event) => setTagForm((current) => ({ ...current, tagColor: event.target.value.toUpperCase() }))} title="Cor discreta da tag" /></label>
               <label>Abrir abaixo de (studs)<input type="number" min="15" max="120" value={tagForm.morphDistance} onChange={(event) => setTagForm((current) => ({ ...current, morphDistance: event.target.value }))} /></label>
               <label>Distancia maxima<input type="number" min="40" max="300" value={tagForm.maxDistance} onChange={(event) => setTagForm((current) => ({ ...current, maxDistance: event.target.value }))} /></label>
             </div>
@@ -1850,7 +1970,9 @@ function UsersPage({ users, reloadUsers, currentUser }) {
               <div className="license-profile-tags"><span className={`license-status ${selectedUser.status}`}>{statusLabel[selectedUser.status]}</span><span className="tag"><Crown size={14} /> {selectedUser.plan.name}</span><span className="tag">Discord {selectedUser.discordId}</span></div>
               <section className="license-detail-card key-card">
                 <div><p className="eyebrow">Key unica</p><strong>{selectedUser.licenseKey || selectedUser.keyPreview}</strong></div>
-                <IconButton label="Copiar key" onClick={() => copyText(selectedUser.licenseKey)}><Copy size={18} /></IconButton>
+                {selectedUser.licenseKey
+                  ? <IconButton label="Copiar key" onClick={() => copyText(selectedUser.licenseKey)}><Copy size={18} /></IconButton>
+                  : <small>A key completa aparece somente quando é criada ou trocada.</small>}
               </section>
               <div className="license-detail-grid">
                 <section className="license-detail-card"><Hash size={18} /><span><small>HWID vinculado</small><strong title={selectedUser.hwid || ''}>{selectedUser.hwid || 'Aguardando primeiro uso'}</strong></span></section>
