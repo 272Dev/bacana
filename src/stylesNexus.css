@@ -5529,7 +5529,7 @@ label {
   gap: 9px;
   padding: 0 10px 0 8px;
   color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.52);
+  border: 1px solid var(--name-tag-accent, rgba(255, 255, 255, 0.52));
   border-radius: 22px;
   background: #0a0a0a;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.58), inset 0 1px rgba(255, 255, 255, 0.04);
@@ -5539,8 +5539,8 @@ label {
 .name-tag-preview-far {
   display: grid;
   place-items: center;
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.36);
+  color: var(--name-tag-accent, #fff);
+  border: 1px solid var(--name-tag-accent, rgba(255, 255, 255, 0.36));
   border-radius: 999px;
   background: #111;
 }
@@ -5567,7 +5567,7 @@ label {
 }
 
 .name-tag-preview-copy strong {
-  color: #fff;
+  color: var(--name-tag-accent, #fff);
   font-size: 0.78rem;
   line-height: 1.1;
   letter-spacing: -0.01em;

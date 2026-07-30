@@ -103,6 +103,11 @@ import {
 import { cleanupLicenseEvents, registerLicensingRoutes, seedLicensePlans } from './licensing.js';
 import { registerLoaderRoutes } from './loader.js';
 import { registerNameTagRoutes } from './nameTags.js';
+import { registerGlobalChatRoutes } from './globalChat.js';
+import { registerAvatarSyncRoutes } from './avatarSync.js';
+import { registerAuraProfileRoutes } from './auraProfiles.js';
+import { cleanupNexusPresence, registerNexusPresenceRoutes } from './nexusPresence.js';
+import { registerChatBotRoutes } from './chatbotProxy.js';
 import { requireBotApiSignature, cleanupBotApiNonces } from './botApiAuth.js';
 import { registerLicenseBotApiRoutes } from './licenseBotApi.js';
 import { cleanupSecurityLimits } from './securityLimits.js';
@@ -379,6 +384,12 @@ const authLimiter = rateLimit({
 });
 
 app.use('/api', apiLimiter);
+
+registerGlobalChatRoutes(app);
+registerAvatarSyncRoutes(app);
+registerAuraProfileRoutes(app);
+registerNexusPresenceRoutes(app);
+registerChatBotRoutes(app);
 
 function setCookie(res, name, value, options) {
   const attrs = [`${encodeURIComponent(name)}=${encodeURIComponent(value)}`, `Path=${options.path || '/'}`];
@@ -2409,8 +2420,20 @@ if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {
         });
     }, 70_000);
     livePixWebhookTimer.unref?.();
+    // Presence records are intentionally ephemeral.  The route filters at two
+    // minutes, and this short maintenance cadence also erases expired rows
+    // during quiet periods rather than retaining a location history.
+    void cleanupNexusPresence().catch((error) => {
+      console.warn(`[nexus] Falha ao limpar presencas expiradas: ${error.message}`);
+    });
+    const nexusPresenceCleanupTimer = setInterval(() => {
+      void cleanupNexusPresence().catch((error) => {
+        console.warn(`[nexus] Falha ao limpar presencas expiradas: ${error.message}`);
+      });
+    }, 60_000);
+    nexusPresenceCleanupTimer.unref?.();
     const securityCleanupTimer = setInterval(() => {
-      void Promise.allSettled([cleanupBotApiNonces(), cleanupSecurityLimits(), cleanupLicenseEvents()]);
+      void Promise.allSettled([cleanupBotApiNonces(), cleanupSecurityLimits(), cleanupLicenseEvents(), cleanupNexusPresence()]);
     }, 10 * 60_000);
     securityCleanupTimer.unref?.();
   });

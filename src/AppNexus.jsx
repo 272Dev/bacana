@@ -87,6 +87,7 @@ const emptyNameTagForm = {
   title: 'Nexus Member',
   icon: 'initial',
   badge: 'none',
+  tagColor: '#FFFFFF',
   morphDistance: 52,
   maxDistance: 160,
   enabled: true,
@@ -1251,8 +1252,9 @@ function NameTagBadge({ badge }) {
 
 function NameTagPreview({ tag, compact = false }) {
   const name = tag.displayNameOverride || tag.robloxDisplayName || tag.robloxUsername || 'Player';
+  const accent = /^#[0-9a-f]{6}$/i.test(tag.tagColor || '') ? tag.tagColor : '#FFFFFF';
   return (
-    <div className={`name-tag-preview ${compact ? 'compact' : ''}`}>
+    <div className={`name-tag-preview ${compact ? 'compact' : ''}`} style={{ '--name-tag-accent': accent }}>
       <div className="name-tag-preview-pill">
         <span className="name-tag-preview-icon"><NameTagGlyph icon={tag.icon} name={name} /></span>
         <span className="name-tag-preview-copy"><strong>{name}</strong><small>{tag.title || 'Nexus Member'}</small></span>
@@ -1563,6 +1565,7 @@ function UsersPage({ users, reloadUsers, currentUser }) {
           title: tagForm.title,
           icon: tagForm.icon,
           badge: tagForm.badge,
+          tagColor: tagForm.tagColor,
           morphDistance: Number(tagForm.morphDistance),
           maxDistance: Number(tagForm.maxDistance),
           enabled: Boolean(tagForm.enabled)
@@ -1942,6 +1945,7 @@ function UsersPage({ users, reloadUsers, currentUser }) {
               <label className="span-2">Cargo ou titulo<input maxLength="32" value={tagForm.title} onChange={(event) => setTagForm((current) => ({ ...current, title: event.target.value }))} required /></label>
               <label>Indicador<NexusSelect value={tagForm.icon} onChange={(event) => setTagForm((current) => ({ ...current, icon: event.target.value }))}><option value="initial">Inicial</option><option value="diamond">Diamante</option><option value="shield">Escudo</option><option value="star">Estrela</option><option value="dot">Ponto</option></NexusSelect></label>
               <label>Selo<NexusSelect value={tagForm.badge} onChange={(event) => setTagForm((current) => ({ ...current, badge: event.target.value }))}><option value="none">Nenhum</option><option value="verified">Verificado</option><option value="admin">Admin</option><option value="premium">Premium</option></NexusSelect></label>
+              <label>Cor do detalhe<input type="color" value={tagForm.tagColor || '#FFFFFF'} onChange={(event) => setTagForm((current) => ({ ...current, tagColor: event.target.value.toUpperCase() }))} title="Cor discreta da tag" /></label>
               <label>Abrir abaixo de (studs)<input type="number" min="15" max="120" value={tagForm.morphDistance} onChange={(event) => setTagForm((current) => ({ ...current, morphDistance: event.target.value }))} /></label>
               <label>Distancia maxima<input type="number" min="40" max="300" value={tagForm.maxDistance} onChange={(event) => setTagForm((current) => ({ ...current, maxDistance: event.target.value }))} /></label>
             </div>

@@ -95,6 +95,11 @@ export const config = {
     apiKey: env('RUSHMAIL_API_KEY'),
     baseUrl: env('RUSHMAIL_API_URL', 'https://rushmail.dev/public-api').replace(/\/+$/, '')
   },
+  chatbot: {
+    groqApiKey: env('GROQ_API_KEY'),
+    groqUrl: env('GROQ_API_URL', 'https://api.groq.com/openai/v1/chat/completions').replace(/\/+$/, ''),
+    model: env('GROQ_MODEL', 'llama-3.3-70b-versatile')
+  },
   livePix: {
     clientId: env('LIVEPIX_CLIENT_ID'),
     clientSecret: env('LIVEPIX_CLIENT_SECRET'),

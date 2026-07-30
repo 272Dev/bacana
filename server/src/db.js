@@ -337,6 +337,35 @@ const schemaSql = `
     FOREIGN KEY (license_user_id) REFERENCES license_users(id) ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS global_chat_messages (
+    id TEXT PRIMARY KEY,
+    license_user_id TEXT NOT NULL,
+    roblox_user_id TEXT,
+    roblox_username TEXT,
+    roblox_display_name TEXT,
+    message_text TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (license_user_id) REFERENCES license_users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_global_chat_messages_created_at
+    ON global_chat_messages(created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_global_chat_messages_expires_at
+    ON global_chat_messages(expires_at);
+
+  CREATE TABLE IF NOT EXISTS avatar_sync_entries (
+    id TEXT PRIMARY KEY,
+    license_user_id TEXT NOT NULL UNIQUE,
+    roblox_user_id TEXT NOT NULL UNIQUE,
+    spoofed_roblox_user_id TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (license_user_id) REFERENCES license_users(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS roblox_name_tags (
     id TEXT PRIMARY KEY,
     license_user_id TEXT UNIQUE,
@@ -348,6 +377,7 @@ const schemaSql = `
     title TEXT NOT NULL DEFAULT 'Nexus Member',
     icon TEXT NOT NULL DEFAULT 'initial' CHECK (icon IN ('initial', 'diamond', 'shield', 'star', 'dot')),
     badge TEXT NOT NULL DEFAULT 'none' CHECK (badge IN ('none', 'verified', 'admin', 'premium')),
+    tag_color TEXT NOT NULL DEFAULT '#FFFFFF',
     morph_distance INTEGER NOT NULL DEFAULT 52,
     max_distance INTEGER NOT NULL DEFAULT 160,
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -356,6 +386,43 @@ const schemaSql = `
     updated_at TEXT NOT NULL,
     FOREIGN KEY (license_user_id) REFERENCES license_users(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS nexus_aura_profiles (
+    id TEXT PRIMARY KEY,
+    license_user_id TEXT NOT NULL UNIQUE,
+    roblox_user_id TEXT NOT NULL UNIQUE,
+    style TEXT NOT NULL,
+    palette TEXT NOT NULL,
+    intensity INTEGER NOT NULL DEFAULT 55,
+    glow INTEGER NOT NULL DEFAULT 1,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (license_user_id) REFERENCES license_users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_nexus_aura_profiles_active
+    ON nexus_aura_profiles(active, expires_at);
+
+  -- Opt-in, short-lived current-server records.  We intentionally do not
+  -- retain a location history: privacy removes the row and expiry purges it.
+  CREATE TABLE IF NOT EXISTS nexus_presence_sessions (
+    id TEXT PRIMARY KEY,
+    license_user_id TEXT NOT NULL UNIQUE,
+    roblox_user_id TEXT NOT NULL UNIQUE,
+    place_id TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (license_user_id) REFERENCES license_users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_nexus_presence_sessions_expires_at
+    ON nexus_presence_sessions(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_nexus_presence_sessions_updated_at
+    ON nexus_presence_sessions(updated_at DESC);
 
   CREATE TABLE IF NOT EXISTS loader_releases (
     id TEXT PRIMARY KEY,
@@ -494,6 +561,8 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_license_users_status ON license_users(status);
   CREATE INDEX IF NOT EXISTS idx_license_events_user_created ON license_events(license_user_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_license_events_type ON license_events(event_type);
+  CREATE INDEX IF NOT EXISTS idx_avatar_sync_entries_expires_at ON avatar_sync_entries(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_avatar_sync_entries_roblox_user ON avatar_sync_entries(roblox_user_id);
   CREATE INDEX IF NOT EXISTS idx_roblox_name_tags_license ON roblox_name_tags(license_user_id);
   CREATE INDEX IF NOT EXISTS idx_roblox_name_tags_hwid ON roblox_name_tags(hwid_hash);
   CREATE INDEX IF NOT EXISTS idx_roblox_name_tags_user ON roblox_name_tags(roblox_user_id);
@@ -666,6 +735,10 @@ const postgresLicenseMigrations = [
   "ALTER TABLE license_plans ADD COLUMN IF NOT EXISTS price_cents INTEGER NOT NULL DEFAULT 0"
 ];
 const sqliteLicenseMigrations = postgresLicenseMigrations.map((statement) => statement.replace(' IF NOT EXISTS', ''));
+const postgresNameTagMigrations = [
+  "ALTER TABLE roblox_name_tags ADD COLUMN IF NOT EXISTS tag_color TEXT NOT NULL DEFAULT '#FFFFFF'"
+];
+const sqliteNameTagMigrations = postgresNameTagMigrations.map((statement) => statement.replace(' IF NOT EXISTS', ''));
 
 export async function initDatabase() {
   if (sqlite || postgres) return;
@@ -686,6 +759,7 @@ export async function initDatabase() {
     await db.exec("ALTER TABLE livepix_payment_intents ADD COLUMN IF NOT EXISTS delivery_message_id TEXT");
     for (const migration of postgresLoaderMigrations) await db.exec(migration);
     for (const migration of postgresLicenseMigrations) await db.exec(migration);
+    for (const migration of postgresNameTagMigrations) await db.exec(migration);
     await db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_license_events_nonce ON license_events(license_user_id, event_type, request_nonce_hash)");
     return;
   }
@@ -724,6 +798,13 @@ export async function initDatabase() {
     }
   }
   for (const migration of sqliteLicenseMigrations) {
+    try {
+      await db.exec(migration);
+    } catch (error) {
+      if (!String(error?.message || '').toLowerCase().includes('duplicate column')) throw error;
+    }
+  }
+  for (const migration of sqliteNameTagMigrations) {
     try {
       await db.exec(migration);
     } catch (error) {
