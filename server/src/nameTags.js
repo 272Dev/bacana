@@ -7,12 +7,15 @@ import { requestLicenseIp } from './licensing.js';
 const licenseIdSchema = z.string().uuid('Usuario licenciado invalido.');
 const robloxIdSchema = z.string().trim().regex(/^\d{1,20}$/);
 const optionalText = (max) => z.string().trim().max(max).optional().nullable().or(z.literal(''));
+const tagColorSchema = z.string().trim().regex(/^#[0-9a-fA-F]{6}$/, 'Cor da tag invalida.')
+  .transform((value) => value.toUpperCase()).default('#FFFFFF');
 
 const tagSchema = z.object({
   displayNameOverride: optionalText(32),
   title: z.string().trim().min(1).max(32).default('Nexus Member'),
   icon: z.enum(['initial', 'diamond', 'shield', 'star', 'dot']).default('initial'),
   badge: z.enum(['none', 'verified', 'admin', 'premium']).default('none'),
+  tagColor: tagColorSchema,
   morphDistance: z.coerce.number().int().min(15).max(120).default(52),
   maxDistance: z.coerce.number().int().min(40).max(300).default(160),
   enabled: z.boolean().default(true)
@@ -42,6 +45,7 @@ function mapPublicTag(row) {
     title: row.title,
     icon: row.icon,
     badge: row.badge,
+    tagColor: row.tag_color || '#FFFFFF',
     morphDistance: Number(row.morph_distance || 52),
     maxDistance: Number(row.max_distance || 160)
   };
@@ -55,6 +59,7 @@ function mapSessionTag(row) {
     title: row.title,
     icon: row.icon,
     badge: row.badge,
+    tagColor: row.tag_color || '#FFFFFF',
     morphDistance: Number(row.morph_distance || 52),
     maxDistance: Number(row.max_distance || 160)
   };
@@ -73,6 +78,7 @@ function mapAdminTag(row) {
     title: row.title,
     icon: row.icon,
     badge: row.badge,
+    tagColor: row.tag_color || '#FFFFFF',
     morphDistance: Number(row.morph_distance || 52),
     maxDistance: Number(row.max_distance || 160),
     enabled: Number(row.enabled) === 1,
@@ -129,6 +135,7 @@ export async function ensureNameTagForSession(licenseUserId, input) {
       title: license?.plan_name ? `Nexus ${String(license.plan_name).slice(0, 24)}` : 'Nexus Member',
       icon: 'initial',
       badge: 'none',
+      tag_color: '#FFFFFF',
       morph_distance: 52,
       max_distance: 160,
       enabled: 1
@@ -137,12 +144,12 @@ export async function ensureNameTagForSession(licenseUserId, input) {
       INSERT INTO roblox_name_tags (
         id, license_user_id, hwid_hash, roblox_user_id, roblox_username,
         roblox_display_name, display_name_override, title, icon, badge,
-        morph_distance, max_distance, enabled, created_by, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'loader', ?, ?)
+        tag_color, morph_distance, max_distance, enabled, created_by, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'loader', ?, ?)
     `).run(
       row.id, row.license_user_id, row.hwid_hash, row.roblox_user_id,
       row.roblox_username, row.roblox_display_name, row.display_name_override,
-      row.title, row.icon, row.badge, row.morph_distance, row.max_distance,
+      row.title, row.icon, row.badge, row.tag_color, row.morph_distance, row.max_distance,
       timestamp, timestamp
     );
     return mapSessionTag(row);
@@ -225,11 +232,11 @@ export function registerNameTagRoutes(app, { requireAuth, requireAdmin }) {
       await db.prepare(`
         UPDATE roblox_name_tags SET
           hwid_hash = ?, display_name_override = ?, title = ?, icon = ?, badge = ?,
-          morph_distance = ?, max_distance = ?, enabled = ?, updated_at = ?
+          tag_color = ?, morph_distance = ?, max_distance = ?, enabled = ?, updated_at = ?
         WHERE id = ?
       `).run(
         license.hwid ? hashHwid(license.hwid) : null, clean(payload.displayNameOverride),
-        payload.title, payload.icon, payload.badge, payload.morphDistance,
+        payload.title, payload.icon, payload.badge, payload.tagColor, payload.morphDistance,
         payload.maxDistance, payload.enabled ? 1 : 0, timestamp, existing.id
       );
     } else {
@@ -237,12 +244,12 @@ export function registerNameTagRoutes(app, { requireAuth, requireAdmin }) {
         INSERT INTO roblox_name_tags (
           id, license_user_id, hwid_hash, roblox_user_id, roblox_username,
           roblox_display_name, display_name_override, title, icon, badge,
-          morph_distance, max_distance, enabled, created_by, created_at, updated_at
-        ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          tag_color, morph_distance, max_distance, enabled, created_by, created_at, updated_at
+        ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         crypto.randomUUID(), licenseUserId, license.hwid ? hashHwid(license.hwid) : null,
         clean(payload.displayNameOverride), payload.title, payload.icon, payload.badge,
-        payload.morphDistance, payload.maxDistance, payload.enabled ? 1 : 0,
+        payload.tagColor, payload.morphDistance, payload.maxDistance, payload.enabled ? 1 : 0,
         req.user.discordId, timestamp, timestamp
       );
     }
@@ -251,7 +258,7 @@ export function registerNameTagRoutes(app, { requireAuth, requireAdmin }) {
       action: existing ? 'roblox_name_tag.updated' : 'roblox_name_tag.created',
       targetType: 'roblox_name_tag',
       targetId: licenseUserId,
-      metadata: { title: payload.title, icon: payload.icon, badge: payload.badge, enabled: payload.enabled },
+      metadata: { title: payload.title, icon: payload.icon, badge: payload.badge, tagColor: payload.tagColor, enabled: payload.enabled },
       ip: requestLicenseIp(req)
     });
     res.json({ tag: mapAdminTag(await getAdminTagByLicense(licenseUserId)) });
