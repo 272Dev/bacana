@@ -424,6 +424,31 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_nexus_presence_sessions_updated_at
     ON nexus_presence_sessions(updated_at DESC);
 
+  -- Consent-only, short-lived requests between users who are both using the
+  -- Nexus presence feature.  A request never contains a JobId or a teleport
+  -- target; a game owned by the operator can optionally consume an accepted
+  -- request through its own server-side integration.
+  CREATE TABLE IF NOT EXISTS nexus_presence_requests (
+    id TEXT PRIMARY KEY,
+    requester_license_user_id TEXT NOT NULL,
+    requester_roblox_user_id TEXT NOT NULL,
+    target_license_user_id TEXT NOT NULL,
+    target_roblox_user_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+      CHECK (status IN ('pending', 'accepted', 'declined', 'expired')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    responded_at TEXT,
+    FOREIGN KEY (requester_license_user_id) REFERENCES license_users(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_license_user_id) REFERENCES license_users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_nexus_presence_requests_target
+    ON nexus_presence_requests(target_license_user_id, status, expires_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_nexus_presence_requests_requester
+    ON nexus_presence_requests(requester_license_user_id, status, expires_at DESC);
+
   CREATE TABLE IF NOT EXISTS loader_releases (
     id TEXT PRIMARY KEY,
     version TEXT NOT NULL,

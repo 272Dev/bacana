@@ -50,6 +50,7 @@ test('schema cria tabelas persistentes de tickets, nonces e rate limits', () => 
   assert.ok(tables.includes('avatar_sync_entries'));
   assert.ok(tables.includes('nexus_aura_profiles'));
   assert.ok(tables.includes('nexus_presence_sessions'));
+  assert.ok(tables.includes('nexus_presence_requests'));
   const nameTagColumns = database.prepare('PRAGMA table_info(roblox_name_tags)').all()
     .map((column) => column.name);
   assert.ok(nameTagColumns.includes('tag_color'));
