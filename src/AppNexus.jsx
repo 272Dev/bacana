@@ -3289,6 +3289,172 @@ function formatSender(sender = {}) {
   return `${sender.name} <${sender.address}>`;
 }
 
+function escapeEmailHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function getSafeEmailUrl(value, { allowMailto = false, allowDataImage = false } = {}) {
+  const rawValue = String(value || '').trim().replace(/&amp;/gi, '&');
+  const raw = rawValue.startsWith('//') ? `https:${rawValue}` : rawValue;
+  if (!raw) return '';
+  if (allowDataImage && /^data:image\/(?:png|jpe?g|gif|webp|avif);base64,/i.test(raw)) return raw;
+
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.href;
+    if (allowMailto && parsed.protocol === 'mailto:') return parsed.href;
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function getEmailLinkLabel(link) {
+  try {
+    const parsed = new URL(link);
+    return parsed.hostname.replace(/^www\./i, '') || parsed.protocol.replace(':', '');
+  } catch {
+    return 'Link externo';
+  }
+}
+
+function cleanEmailInlineStyle(value = '') {
+  return String(value)
+    .replace(/url\s*\([^)]*\)/gi, '')
+    .replace(/expression\s*\([^)]*\)/gi, '')
+    .replace(/behavior\s*:/gi, '')
+    .replace(/-moz-binding\s*:/gi, '');
+}
+
+function createPlainTextEmailDocument(text = '') {
+  const body = escapeEmailHtml(text || 'Mensagem sem conteúdo.');
+  return `<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      html, body { margin: 0; min-height: 100%; background: #f7f7f8; color: #202124; }
+      body { padding: 28px; font: 15px/1.6 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; white-space: pre-wrap; overflow-wrap: anywhere; }
+    </style>
+  </head>
+  <body>${body}</body>
+</html>`;
+}
+
+function createEmailPreviewDocument(html, text, loadRemoteImages) {
+  if (!html || typeof DOMParser === 'undefined') return createPlainTextEmailDocument(text);
+
+  const parser = new DOMParser();
+  const document = parser.parseFromString(html, 'text/html');
+  const blockedTags = 'script,noscript,iframe,frame,frameset,object,embed,applet,form,input,button,select,textarea,base,meta[http-equiv],link';
+  document.querySelectorAll(blockedTags).forEach((element) => element.remove());
+  document.querySelectorAll('style').forEach((element) => {
+    const safeCss = cleanEmailInlineStyle(element.textContent || '').replace(/@import\s+[^;]+;/gi, '');
+    if (safeCss.trim()) element.textContent = safeCss;
+    else element.remove();
+  });
+
+  document.querySelectorAll('*').forEach((element) => {
+    [...element.attributes].forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value;
+
+      if (name.startsWith('on') || ['srcdoc', 'formaction', 'ping', 'srcset'].includes(name)) {
+        element.removeAttribute(attribute.name);
+        return;
+      }
+
+      if (name === 'style') {
+        const safeStyle = cleanEmailInlineStyle(value);
+        if (safeStyle) element.setAttribute('style', safeStyle);
+        else element.removeAttribute('style');
+        return;
+      }
+
+      if (name === 'href') {
+        const safeLink = getSafeEmailUrl(value, { allowMailto: true });
+        if (!safeLink) {
+          element.removeAttribute('href');
+          return;
+        }
+        element.setAttribute('href', safeLink);
+        element.setAttribute('target', '_blank');
+        element.setAttribute('rel', 'noopener noreferrer');
+        return;
+      }
+
+      if (name === 'src' || name === 'background') {
+        const safeAsset = getSafeEmailUrl(value, { allowDataImage: element.tagName === 'IMG' });
+        const isRemote = /^https?:\/\//i.test(safeAsset);
+        if (!safeAsset || (isRemote && !loadRemoteImages)) {
+          element.removeAttribute(attribute.name);
+          return;
+        }
+        element.setAttribute(attribute.name, safeAsset);
+      }
+    });
+  });
+
+  document.querySelectorAll('img').forEach((image) => {
+    if (image.getAttribute('src')) return;
+    const placeholder = document.createElement('div');
+    placeholder.className = 'nexus-email-image-placeholder';
+    placeholder.textContent = loadRemoteImages ? 'Imagem indisponível' : 'Imagem remota bloqueada';
+    image.replaceWith(placeholder);
+  });
+
+  const viewport = document.createElement('meta');
+  viewport.name = 'viewport';
+  viewport.content = 'width=device-width, initial-scale=1';
+  document.head.append(viewport);
+
+  const styles = document.createElement('style');
+  styles.textContent = `
+    :root { color-scheme: light; }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; min-height: 100%; margin: 0; background: #f7f7f8; color: #202124; }
+    body { padding: clamp(18px, 3vw, 34px); font: 15px/1.58 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; overflow-wrap: anywhere; }
+    a { color: #9f2736; text-decoration: underline; text-underline-offset: 2px; }
+    img { display: block; max-width: 100% !important; height: auto !important; margin-inline: auto; }
+    table { max-width: 100% !important; height: auto !important; border-collapse: collapse; }
+    td, th { max-width: 100%; overflow-wrap: anywhere; }
+    pre { max-width: 100%; overflow: auto; white-space: pre-wrap; }
+    blockquote { margin: 1em 0; padding-left: 14px; border-left: 3px solid #d6d6d8; color: #5d6068; }
+    .nexus-email-image-placeholder { display: grid; min-height: 92px; place-items: center; padding: 16px; border: 1px dashed #b8bbc2; border-radius: 12px; color: #666b75; background: #eef0f3; font-size: 13px; }
+  `;
+  document.head.append(styles);
+
+  if (!document.body.textContent?.trim() && document.body.children.length === 0) {
+    document.body.textContent = text || 'Mensagem sem conteúdo.';
+  }
+
+  return `<!doctype html>\n${document.documentElement.outerHTML}`;
+}
+
+function downloadEmailHtml(message) {
+  const source = message?.html || createPlainTextEmailDocument(message?.text || message?.intro || '');
+  const blob = new Blob([source], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  const safeSubject = String(message?.subject || 'mensagem')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gi, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 56) || 'mensagem';
+  anchor.href = url;
+  anchor.download = `nexus-email-${safeSubject}.html`;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 function TempEmailPage() {
   const [inboxes, setInboxes] = useState([]);
   const [domains, setDomains] = useState([]);
@@ -3300,6 +3466,8 @@ function TempEmailPage() {
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [showRemoteImages, setShowRemoteImages] = useState(true);
+  const [readerMode, setReaderMode] = useState('rendered');
   const [providerStatus, setProviderStatus] = useState({
     configured: true,
     inboxCount: null,
@@ -3409,6 +3577,7 @@ function TempEmailPage() {
     if (!selectedInbox) return;
     setLoading(true);
     setNotice('');
+    setSelectedMessage(message);
     try {
       const payload = await api(`/temp-email/inboxes/${selectedInbox.id}/messages/${message.id}`);
       setSelectedMessage(payload.message);
@@ -3421,8 +3590,29 @@ function TempEmailPage() {
   }
 
   const mailText = selectedMessage?.text || selectedMessage?.intro || '';
+  const mailHtml = selectedMessage?.html || '';
+  const messageLinks = useMemo(() => {
+    const seen = new Set();
+    return (selectedMessage?.links || [])
+      .map((link) => getSafeEmailUrl(link, { allowMailto: true }))
+      .filter((link) => {
+        if (!link || seen.has(link)) return false;
+        seen.add(link);
+        return true;
+      })
+      .slice(0, 8);
+  }, [selectedMessage?.links]);
+  const emailPreviewDocument = useMemo(
+    () => createEmailPreviewDocument(mailHtml, mailText, showRemoteImages),
+    [mailHtml, mailText, showRemoteImages]
+  );
   const creditsExhausted = providerStatus.creditsRemaining != null && providerStatus.creditsRemaining <= 0;
   const canCreateInbox = providerStatus.configured !== false && !creditsExhausted && domains.length > 0;
+
+  useEffect(() => {
+    setShowRemoteImages(true);
+    setReaderMode('rendered');
+  }, [selectedMessage?.id]);
 
   return (
     <section className="page">
@@ -3531,30 +3721,119 @@ function TempEmailPage() {
         </section>
 
         <section className="panel temp-email-reader">
-          <div className="panel-title">
+          <div className="panel-title temp-email-reader-heading">
             <div>
               <h3>{selectedMessage?.subject || 'Leitor'}</h3>
               <small>{selectedMessage ? formatSender(selectedMessage.from) : 'Abra uma mensagem'}</small>
             </div>
             {selectedMessage && (
-              <button className="primary-button" onClick={() => copyText(mailText)}>
-                <Copy size={17} />
-                Copiar
-              </button>
+              <div className="temp-email-reader-actions">
+                <button className="ghost-button" onClick={() => copyText(mailText)}>
+                  <Copy size={16} />
+                  Copiar texto
+                </button>
+                <button className="primary-button" onClick={() => downloadEmailHtml(selectedMessage)}>
+                  <Download size={16} />
+                  Baixar HTML
+                </button>
+              </div>
             )}
           </div>
           {selectedMessage ? (
             <div className="temp-email-reader-body">
-              <pre>{mailText || 'Mensagem sem texto.'}</pre>
-              {selectedMessage.links?.length > 0 && (
-                <div className="temp-email-links">
-                  {selectedMessage.links.map((link) => (
-                    <button className="ghost-button" key={link} onClick={() => copyText(link)}>
-                      <Copy size={16} />
-                      Copiar link
-                    </button>
-                  ))}
+              <div className="temp-email-message-meta">
+                <span className="temp-email-sender-icon"><Mail size={18} /></span>
+                <div>
+                  <strong>{formatSender(selectedMessage.from)}</strong>
+                  <small>Para {selectedInbox?.address || 'esta caixa'} {selectedMessage.createdAt ? `· ${formatDate(selectedMessage.createdAt)}` : ''}</small>
                 </div>
+              </div>
+
+              {selectedMessage.htmlTooLarge && (
+                <div className="temp-email-inline-notice">
+                  Esta mensagem é grande demais para a visualização HTML segura. O texto simples continua disponível abaixo.
+                </div>
+              )}
+
+              <div className="temp-email-reader-toolbar">
+                <div className="temp-email-view-switcher" role="tablist" aria-label="Modo de visualização do email">
+                  <button className={readerMode === 'rendered' ? 'active' : ''} onClick={() => setReaderMode('rendered')} role="tab" aria-selected={readerMode === 'rendered'}>
+                    <MailOpen size={15} />
+                    Email
+                  </button>
+                  <button className={readerMode === 'text' ? 'active' : ''} onClick={() => setReaderMode('text')} role="tab" aria-selected={readerMode === 'text'}>
+                    <FileIcon size={15} />
+                    Texto
+                  </button>
+                </div>
+                {mailHtml && (
+                  <button className={showRemoteImages ? 'ghost-button active' : 'ghost-button'} onClick={() => setShowRemoteImages((current) => !current)}>
+                    {showRemoteImages ? <EyeOff size={16} /> : <Eye size={16} />}
+                    {showRemoteImages ? 'Ocultar imagens' : 'Mostrar imagens'}
+                  </button>
+                )}
+              </div>
+
+              <div className="temp-email-reader-scroll">
+                {readerMode === 'rendered' && mailHtml ? (
+                  <iframe
+                    className="temp-email-html-frame"
+                    title={`Email: ${selectedMessage.subject || 'mensagem'}`}
+                    sandbox="allow-popups"
+                    referrerPolicy="no-referrer"
+                    srcDoc={emailPreviewDocument}
+                  />
+                ) : (
+                  <pre>{mailText || 'Mensagem sem texto.'}</pre>
+                )}
+              </div>
+
+              {selectedMessage.attachments?.length > 0 && (
+                <section className="temp-email-attachments" aria-label="Anexos">
+                  <div>
+                    <strong>Anexos</strong>
+                    <small>{selectedMessage.attachments.length} arquivo{selectedMessage.attachments.length === 1 ? '' : 's'}</small>
+                  </div>
+                  <div className="temp-email-attachment-list">
+                    {selectedMessage.attachments.map((attachment) => (
+                      <article className="temp-email-attachment" key={attachment.id || attachment.name}>
+                        <FileIcon size={18} />
+                        <span>
+                          <strong>{attachment.name}</strong>
+                          <small>{attachment.contentType || 'Arquivo'}{attachment.size ? ` · ${formatFileSize(attachment.size)}` : ''}</small>
+                        </span>
+                        {attachment.url ? (
+                          <a className="ghost-button" href={attachment.url} target="_blank" rel="noreferrer">
+                            <Download size={15} />
+                            Baixar
+                          </a>
+                        ) : <small className="temp-email-attachment-unavailable">Indisponível</small>}
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {messageLinks.length > 0 && (
+                <details className="temp-email-links">
+                  <summary>Links detectados <span>{messageLinks.length}</span></summary>
+                  <div>
+                    {messageLinks.map((link) => (
+                      <article className="temp-email-link" key={link}>
+                        <a href={link} target="_blank" rel="noreferrer">
+                          <span>
+                            <strong>{getEmailLinkLabel(link)}</strong>
+                            <small>{link}</small>
+                          </span>
+                          <ChevronRight size={17} />
+                        </a>
+                        <button className="temp-email-link-copy" title="Copiar link" onClick={() => copyText(link)}>
+                          <Copy size={15} />
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                </details>
               )}
             </div>
           ) : (

@@ -8,6 +8,9 @@ const RUSHMAIL_PROVIDER = 'rushmail';
 const FIREMAIL_BASE_URL = 'https://firemail.com.br/api';
 const FIREMAIL_PROVIDER = 'firemail';
 const REQUEST_TIMEOUT_MS = 12_000;
+const MAX_EMAIL_HTML_CHARS = 1_000_000;
+const MAX_MESSAGE_LINKS = 12;
+const MAX_MESSAGE_ATTACHMENTS = 20;
 
 function cleanText(value) {
   return String(value || '').trim();
@@ -59,9 +62,111 @@ function stripHtml(value) {
     .trim();
 }
 
+function normalizeExternalUrl(value, { allowMailto = false } = {}) {
+  const rawValue = cleanText(value).replace(/&amp;/gi, '&');
+  const raw = rawValue.startsWith('//') ? `https:${rawValue}` : rawValue;
+  if (!raw) return null;
+
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return parsed.toString();
+    if (allowMailto && parsed.protocol === 'mailto:') return parsed.toString();
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
 function extractLinks(...values) {
-  const text = values.filter(Boolean).join('\n');
-  return Array.from(new Set(text.match(/https?:\/\/[^\s<>"')]+/gi) || [])).slice(0, 20);
+  const candidates = [];
+
+  for (const value of values) {
+    const text = String(value || '');
+    candidates.push(...(text.match(/https?:\/\/[^\s<>"')]+/gi) || []));
+
+    const hrefPattern = /\bhref\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi;
+    let match;
+    while ((match = hrefPattern.exec(text))) {
+      candidates.push(match[1] || match[2] || match[3] || '');
+    }
+  }
+
+  const links = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const normalized = normalizeExternalUrl(candidate, { allowMailto: true });
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    links.push(normalized);
+    if (links.length >= MAX_MESSAGE_LINKS) break;
+  }
+  return links;
+}
+
+function getMessageBody(message = {}) {
+  const fields = ['body', 'html', 'htmlBody', 'bodyHtml', 'content', 'text', 'textBody'];
+  for (const field of fields) {
+    if (typeof message[field] === 'string' && message[field].trim()) return message[field];
+  }
+  return '';
+}
+
+function getSafeEmailHtml(value) {
+  const html = String(value || '').trim();
+  if (!html || !/<\/?[a-z][\s\S]*>/i.test(html)) {
+    return { html: null, htmlTooLarge: false };
+  }
+  if (html.length > MAX_EMAIL_HTML_CHARS) {
+    return { html: null, htmlTooLarge: true };
+  }
+
+  // The page still renders this in a sandboxed iframe. This lightweight pass
+  // removes the active tags and attributes before the content ever leaves the
+  // API, while the iframe remains the actual isolation boundary.
+  const sanitized = html
+    .replace(/<\s*(script|iframe|object|embed|frame|frameset|form|base)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+    .replace(/<\s*(script|iframe|object|embed|frame|frameset|form|base)\b[^>]*\/?\s*>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/\s(?:srcdoc|formaction)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+
+  return { html: sanitized || null, htmlTooLarge: false };
+}
+
+function mapMessageAttachments(message = {}) {
+  const rawAttachments = [
+    ...(Array.isArray(message.attachments) ? message.attachments : []),
+    ...(Array.isArray(message.files) ? message.files : [])
+  ];
+  const seen = new Set();
+
+  return rawAttachments
+    .map((attachment, index) => {
+      const id = cleanText(attachment?.id || attachment?.attachmentId || `attachment-${index + 1}`).slice(0, 160);
+      const name = cleanText(attachment?.name || attachment?.fileName || attachment?.filename || `Anexo ${index + 1}`).slice(0, 180);
+      const contentType = cleanText(attachment?.contentType || attachment?.mimeType || attachment?.type).slice(0, 120);
+      const rawSize = Number(attachment?.size ?? attachment?.bytes ?? attachment?.contentLength);
+      const size = Number.isFinite(rawSize) && rawSize >= 0 ? rawSize : null;
+      const url = normalizeExternalUrl(attachment?.url || attachment?.downloadUrl || attachment?.href);
+      return { id, name, contentType, size, url };
+    })
+    .filter((attachment) => {
+      const identity = `${attachment.id}:${attachment.name}:${attachment.url || ''}`;
+      if (seen.has(identity)) return false;
+      seen.add(identity);
+      return true;
+    })
+    .slice(0, MAX_MESSAGE_ATTACHMENTS);
+}
+
+function canManageAllTempEmail(actor) {
+  return ['owner', 'admin'].includes(cleanText(actor?.role).toLowerCase());
+}
+
+function canAccessTempEmailInbox(row, actor) {
+  if (!actor) return true;
+  if (canManageAllTempEmail(actor)) return true;
+  return Boolean(row?.created_by && actor.discordId && row.created_by === actor.discordId);
 }
 
 function rushmailConfigured() {
@@ -192,9 +297,11 @@ function mapFiremailMessage(message) {
   };
 }
 
-async function getInboxRow(id) {
+async function getInboxRow(id, actor) {
   const row = await db.prepare('SELECT * FROM temp_email_inboxes WHERE id = ?').get(id);
-  if (!row) throw makeHttpError('Caixa temporaria nao encontrada.', 404);
+  if (!row || !canAccessTempEmailInbox(row, actor)) {
+    throw makeHttpError('Caixa temporaria nao encontrada.', 404);
+  }
   return row;
 }
 
@@ -233,7 +340,7 @@ export async function listTempEmailDomains() {
   }];
 }
 
-export async function listTempEmailInboxes({ search = '' } = {}) {
+export async function listTempEmailInboxes({ search = '', actor } = {}) {
   const rows = await db.prepare(`
     SELECT *
     FROM temp_email_inboxes
@@ -241,6 +348,7 @@ export async function listTempEmailInboxes({ search = '' } = {}) {
   `).all();
   const cleanSearch = cleanText(search).toLowerCase();
   return rows
+    .filter((row) => canAccessTempEmailInbox(row, actor))
     .filter((row) => {
       if (!cleanSearch) return true;
       return [row.label, row.address, row.provider].filter(Boolean)
@@ -319,8 +427,8 @@ export async function createTempEmailInbox({ payload = {}, actorDiscordId }) {
   return mapInbox(row);
 }
 
-export async function listTempEmailMessages(id) {
-  const row = await getInboxRow(id);
+export async function listTempEmailMessages(id, actor) {
+  const row = await getInboxRow(id, actor);
   let messages;
 
   if (row.provider === RUSHMAIL_PROVIDER) {
@@ -343,8 +451,8 @@ export async function listTempEmailMessages(id) {
   return messages;
 }
 
-export async function getTempEmailMessage({ inboxId, messageId }) {
-  const row = await getInboxRow(inboxId);
+export async function getTempEmailMessage({ inboxId, messageId, actor }) {
+  const row = await getInboxRow(inboxId, actor);
   let message;
   let mapped;
   let body;
@@ -356,29 +464,34 @@ export async function getTempEmailMessage({ inboxId, messageId }) {
       throw makeHttpError('A mensagem nao pertence a esta caixa.', 403);
     }
     mapped = mapRushmailMessage(message);
-    body = message.body || '';
+    body = getMessageBody(message);
   } else if (row.provider === FIREMAIL_PROVIDER) {
     const emailName = getEmailName(row.address);
     if (!emailName) throw makeHttpError('Endereco temporario invalido.', 400);
     const response = await firemailRequest(`/email/message/${encodeURIComponent(emailName)}/${encodeURIComponent(messageId)}`);
     message = response?.data || {};
     mapped = mapFiremailMessage(message);
-    body = message.body || message.text || '';
+    body = getMessageBody(message);
   } else {
     throw makeHttpError(`Provedor de email nao suportado: ${row.provider}.`, 409);
   }
 
-  const text = stripHtml(body);
+  const emailHtml = getSafeEmailHtml(body);
+  const text = stripHtml(body) || cleanText(message.text || message.textBody || message.preview);
   return {
     ...mapped,
     id: String(message.id || messageId),
-    text: text || cleanText(body),
-    links: extractLinks(text, body)
+    text,
+    html: emailHtml.html,
+    htmlAvailable: Boolean(emailHtml.html),
+    htmlTooLarge: emailHtml.htmlTooLarge,
+    links: extractLinks(text, emailHtml.html || body),
+    attachments: mapMessageAttachments(message)
   };
 }
 
-export async function deleteTempEmailInbox(id) {
-  const row = await getInboxRow(id);
+export async function deleteTempEmailInbox(id, actor) {
+  const row = await getInboxRow(id, actor);
   if (row.provider === RUSHMAIL_PROVIDER) {
     const providerAccountId = cleanText(row.provider_account_id);
     if (!providerAccountId) throw makeHttpError('Identificador da caixa RushMail ausente.', 409);

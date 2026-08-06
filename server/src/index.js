@@ -1592,7 +1592,7 @@ app.get('/api/temp-email/status', requireAuth, async (_req, res, next) => {
 });
 
 app.get('/api/temp-email/inboxes', requireAuth, async (req, res) => {
-  const inboxes = await listTempEmailInboxes({ search: req.query.search });
+  const inboxes = await listTempEmailInboxes({ search: req.query.search, actor: req.user });
   res.json({ inboxes, provider: getTempEmailProvider() });
 });
 
@@ -1619,7 +1619,7 @@ app.post('/api/temp-email/inboxes', requireAuth, async (req, res, next) => {
 
 app.delete('/api/temp-email/inboxes/:id', requireAuth, async (req, res, next) => {
   try {
-    await deleteTempEmailInbox(req.params.id);
+    await deleteTempEmailInbox(req.params.id, req.user);
     await logAudit({
       actorDiscordId: req.user.discordId,
       action: 'temp_email.deleted',
@@ -1634,14 +1634,15 @@ app.delete('/api/temp-email/inboxes/:id', requireAuth, async (req, res, next) =>
 });
 
 app.get('/api/temp-email/inboxes/:id/messages', requireAuth, async (req, res) => {
-  const messages = await listTempEmailMessages(req.params.id);
+  const messages = await listTempEmailMessages(req.params.id, req.user);
   res.json({ messages });
 });
 
 app.get('/api/temp-email/inboxes/:id/messages/:messageId', requireAuth, async (req, res) => {
   const message = await getTempEmailMessage({
     inboxId: req.params.id,
-    messageId: req.params.messageId
+    messageId: req.params.messageId,
+    actor: req.user
   });
   res.json({ message });
 });
