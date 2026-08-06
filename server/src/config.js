@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url';
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const envPath = path.resolve(rootDir, '.env');
 
-dotenv.config({ path: envPath, override: true });
+// Em producao, as variaveis do provedor de hospedagem sao a fonte de verdade.
+// Um .env local serve apenas como fallback para desenvolvimento e nunca pode
+// sobrescrever segredos atualizados no painel da SquareCloud.
+dotenv.config({ path: envPath, override: false });
 
 const productionDefaultPort = process.env.NODE_ENV === 'production' ? '80' : '4000';
 
