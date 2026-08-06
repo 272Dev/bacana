@@ -3401,6 +3401,22 @@ function createEmailPreviewDocument(html, text, loadRemoteImages) {
     });
   });
 
+  // Apply this after cleaning every attribute: email markup can contain an
+  // existing target/rel later in the attribute list, which must never win over
+  // the safe, top-level navigation behaviour of the reader.
+  document.querySelectorAll('a').forEach((anchor) => {
+    const safeLink = getSafeEmailUrl(anchor.getAttribute('href'), { allowMailto: true });
+    if (!safeLink) {
+      anchor.removeAttribute('href');
+      anchor.removeAttribute('target');
+      anchor.removeAttribute('rel');
+      return;
+    }
+    anchor.setAttribute('href', safeLink);
+    anchor.setAttribute('target', '_blank');
+    anchor.setAttribute('rel', 'noopener noreferrer');
+  });
+
   document.querySelectorAll('img').forEach((image) => {
     if (image.getAttribute('src')) return;
     const placeholder = document.createElement('div');
@@ -3779,7 +3795,7 @@ function TempEmailPage() {
                   <iframe
                     className="temp-email-html-frame"
                     title={`Email: ${selectedMessage.subject || 'mensagem'}`}
-                    sandbox="allow-popups"
+                    sandbox="allow-popups allow-popups-to-escape-sandbox"
                     referrerPolicy="no-referrer"
                     srcDoc={emailPreviewDocument}
                   />
