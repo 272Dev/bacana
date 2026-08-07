@@ -20,6 +20,7 @@ import {
   validateLuaUpload
 } from './luaProtection.js';
 import { assertLoaderTicketEligible } from './loaderPolicy.js';
+import { changeLogContentSchema, publishChangeLog } from './changeLogService.js';
 
 const SESSION_TTL_MS = 45_000;
 const MAX_SOURCE_BYTES = MAX_LUA_SOURCE_BYTES;
@@ -65,7 +66,8 @@ const releaseSchema = z.object({
   fileName: z.string().trim().regex(/^[^\\/:*?"<>|\u0000-\u001F]{1,180}\.lua$/i, 'Selecione um arquivo .lua válido.'),
   source: z.string().min(1).max(MAX_SOURCE_BYTES),
   protection: protectionSchema.optional(),
-  protectedMode: z.boolean().optional()
+  protectedMode: z.boolean().optional(),
+  changeLog: changeLogContentSchema.optional()
 }).strict();
 
 function sha256(value) {
@@ -133,6 +135,51 @@ export async function getActiveLoaderInfo() {
     bootstrapUrl: `${base}/loader/nexus.lua`,
     loadstring: `loadstring(game:HttpGet("${base}/loader/nexus.lua"))()`
   };
+}
+
+function defaultReleaseChangeLog(payload, isActive) {
+  return {
+    title: 'Nexus Update',
+    changes: [
+      isActive
+        ? 'Nova versao do Nexus publicada e ativada.'
+        : 'Nova versao do Nexus publicada.',
+      `Protecao ${String(payload.protection?.level || LUA_PROTECTION_DEFAULTS.level).toUpperCase()} aplicada.`
+    ]
+  };
+}
+
+async function publishReleaseChangeLog({ payload, release, actorDiscordId, ip }) {
+  const content = payload.changeLog || defaultReleaseChangeLog(payload, Number(release.active) === 1);
+  try {
+    return await publishChangeLog({
+      version: payload.version,
+      title: content.title,
+      changes: content.changes,
+      releaseId: release.id
+    }, {
+      actorDiscordId,
+      releaseId: release.id,
+      ip
+    });
+  } catch (error) {
+    await logAudit({
+      actorDiscordId,
+      action: 'changelog.release_publish_failed',
+      targetType: 'loader_release',
+      targetId: release.id,
+      metadata: {
+        version: payload.version,
+        code: error?.code || 'INTERNAL_ERROR'
+      },
+      ip
+    }).catch(() => {});
+    return {
+      changeLog: null,
+      delivery: null,
+      warning: 'A versao foi publicada, mas o Change Log nao foi registrado. Tente novamente pelo painel.'
+    };
+  }
 }
 
 function buildBootstrap() {
@@ -624,7 +671,20 @@ export function registerLoaderRoutes(app, { requireAuth, requireAdmin }) {
       },
       ip: requestLicenseIp(req)
     });
-    res.status(201).json({ release: mapRelease(row) });
+    // The loader release is already committed. A Discord outage must never
+    // roll back a valid encrypted Lua publication.
+    const changeLogResult = await publishReleaseChangeLog({
+      payload,
+      release: row,
+      actorDiscordId: req.user.discordId,
+      ip: requestLicenseIp(req)
+    });
+    res.status(201).json({
+      release: mapRelease(row),
+      changeLog: changeLogResult.changeLog,
+      changeLogDelivery: changeLogResult.delivery,
+      changeLogWarning: changeLogResult.warning || null
+    });
   });
 
   app.post('/api/loader/releases/:id/activate', requireAuth, requireAdmin, async (req, res) => {

@@ -473,6 +473,37 @@ const schemaSql = `
     updated_at TEXT
   );
 
+  -- Public release notes stay independent from the encrypted Lua payload. The
+  -- game/UI may read the note, while Discord delivery details remain private.
+  CREATE TABLE IF NOT EXISTS nexus_change_logs (
+    id TEXT PRIMARY KEY,
+    version TEXT NOT NULL,
+    title TEXT NOT NULL,
+    changes_json TEXT NOT NULL,
+    release_id TEXT UNIQUE,
+    published_by TEXT,
+    published_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (release_id) REFERENCES loader_releases(id) ON DELETE SET NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS nexus_change_log_deliveries (
+    id TEXT PRIMARY KEY,
+    changelog_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('sent', 'failed', 'skipped')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    discord_message_id TEXT,
+    last_error TEXT,
+    attempted_at TEXT,
+    delivered_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (changelog_id, channel_id),
+    FOREIGN KEY (changelog_id) REFERENCES nexus_change_logs(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS loader_tickets (
     id TEXT PRIMARY KEY,
     ticket_hash TEXT NOT NULL UNIQUE,
@@ -594,6 +625,9 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_roblox_name_tags_enabled ON roblox_name_tags(enabled);
   CREATE INDEX IF NOT EXISTS idx_loader_releases_created ON loader_releases(created_at);
   CREATE INDEX IF NOT EXISTS idx_loader_releases_active ON loader_releases(active);
+  CREATE INDEX IF NOT EXISTS idx_nexus_change_logs_published ON nexus_change_logs(published_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_nexus_change_logs_release ON nexus_change_logs(release_id);
+  CREATE INDEX IF NOT EXISTS idx_nexus_change_log_deliveries_status ON nexus_change_log_deliveries(status, updated_at DESC);
   CREATE INDEX IF NOT EXISTS idx_loader_tickets_license ON loader_tickets(license_user_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_loader_tickets_release ON loader_tickets(release_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_loader_tickets_expiry ON loader_tickets(expires_at, used, invalidated_at);

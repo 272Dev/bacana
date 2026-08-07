@@ -102,6 +102,7 @@ import {
 } from './livePixPayments.js';
 import { cleanupLicenseEvents, registerLicensingRoutes, seedLicensePlans } from './licensing.js';
 import { registerLoaderRoutes } from './loader.js';
+import { registerChangeLogRoutes } from './changeLogService.js';
 import { registerNameTagRoutes } from './nameTags.js';
 import { registerGlobalChatRoutes } from './globalChat.js';
 import { registerAvatarSyncRoutes } from './avatarSync.js';
@@ -410,6 +411,7 @@ app.use((req, res, next) => {
 // normalizado acima. A validacao publica da key continua sem autenticacao.
 registerLicensingRoutes(app, { requireAuth, requireAdmin });
 registerLoaderRoutes(app, { requireAuth, requireAdmin });
+registerChangeLogRoutes(app, { requireAuth, requireAdmin });
 registerNameTagRoutes(app, { requireAuth, requireAdmin });
 registerLicenseBotApiRoutes(app, { requireBotApiSignature });
 

@@ -1294,6 +1294,7 @@ function UsersPage({ users, reloadUsers, currentUser }) {
   const [releaseVersion, setReleaseVersion] = useState('');
   const [releaseLoading, setReleaseLoading] = useState(false);
   const [releaseProtection, setReleaseProtection] = useState(defaultLoaderProtection);
+  const [releaseChangeLog, setReleaseChangeLog] = useState({ title: 'Nexus Update', changes: '' });
   const [nameTags, setNameTags] = useState([]);
   const [tagSearch, setTagSearch] = useState('');
   const [tagForm, setTagForm] = useState(emptyNameTagForm);
@@ -1495,16 +1496,32 @@ function UsersPage({ users, reloadUsers, currentUser }) {
       const source = await file.text();
       if (!source.trim()) throw new Error('O arquivo Lua está vazio.');
       const version = releaseVersion.trim() || `v${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, '')}`;
+      const changes = releaseChangeLog.changes
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^[-•]\s*/, '').trim())
+        .filter(Boolean);
+      const changeLog = changes.length
+        ? { title: releaseChangeLog.title.trim() || 'Nexus Update', changes }
+        : undefined;
       const payload = await api('/loader/releases', {
         method: 'POST',
-        body: { version, fileName: file.name, source, protection: releaseProtection }
+        body: { version, fileName: file.name, source, protection: releaseProtection, changeLog }
       });
       setReleaseVersion('');
+      setReleaseChangeLog({ title: 'Nexus Update', changes: '' });
+      const changeLogStatus = payload.changeLogDelivery?.delivered
+        ? ' Change Log enviado ao Discord.'
+        : payload.changeLogDelivery?.skipped
+          ? ' Change Log salvo; configure o canal Discord para publicar automaticamente.'
+          : payload.changeLogWarning
+            ? ` ${payload.changeLogWarning}`
+            : '';
       setMessage(
         `Versão ${payload.release.version} processada: `
         + `${payload.release.originalBytes.toLocaleString('pt-BR')} → `
         + `${payload.release.protectedBytes.toLocaleString('pt-BR')} bytes. `
         + `${payload.release.active ? 'Ativada com sucesso.' : 'Salva como inativa.'}`
+        + changeLogStatus
       );
       await loadReleases();
     } catch (requestError) {
@@ -1818,9 +1835,25 @@ function UsersPage({ users, reloadUsers, currentUser }) {
                   <option value="strong">Forte</option>
                 </NexusSelect>
               </label>
+              <label className="loader-changelog-title">Titulo do Change Log
+                <input
+                  value={releaseChangeLog.title}
+                  onChange={(event) => setReleaseChangeLog((current) => ({ ...current, title: event.target.value }))}
+                  maxLength={96}
+                  placeholder="Nexus Update"
+                />
+              </label>
               <label className="upload-button loader-file-button">
                 <Upload size={17} /> {releaseLoading ? 'Publicando...' : 'Selecionar script .lua'}
                 <input type="file" accept=".lua,text/x-lua" onChange={uploadRelease} disabled={releaseLoading} />
+              </label>
+              <label className="loader-changelog-changes">Alteracoes do Change Log <span>uma por linha</span>
+                <textarea
+                  value={releaseChangeLog.changes}
+                  onChange={(event) => setReleaseChangeLog((current) => ({ ...current, changes: event.target.value }))}
+                  maxLength={2900}
+                  placeholder={'Nova interface do Verify\nQuick Actions reorganizado\nCorrecao no MainPart'}
+                />
               </label>
             </div>
             <div className="loader-protection-options">

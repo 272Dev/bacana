@@ -2121,6 +2121,67 @@ export async function startDefaultDiscordBot() {
   });
 }
 
+function cleanChangeLogLine(value, limit = 240) {
+  return cleanText(value)
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/@/g, '@\u200b')
+    .slice(0, limit);
+}
+
+function changeLogDate(value) {
+  const date = new Date(value || Date.now());
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+
+// Server-only bridge used by ChangeLogService. The channel ID and bot token
+// stay in the environment; public UI data never receives either value.
+export async function sendDiscordChangeLog(changeLog = {}) {
+  const configuredChannelId = cleanText(config.discordBot.changeLogChannelId);
+  if (!configuredChannelId) {
+    return { delivered: false, skipped: true, reason: 'channel_not_configured', channelId: null };
+  }
+  if (!config.discordBot.token || missingEnv(config.discordBot.token)) {
+    return { delivered: false, skipped: true, reason: 'bot_not_configured', channelId: configuredChannelId };
+  }
+
+  const channelId = assertSnowflake(configuredChannelId, 'Canal de Change Log ID');
+  const entry = await ensureClient({ status: 'online' });
+  const client = entry.client;
+  let channel = client.channels.cache.get(channelId) || null;
+  if (!channel) channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel?.isTextBased?.() || typeof channel.send !== 'function') {
+    throw makeHttpError('O canal configurado para Change Logs nao esta disponivel para o bot.', 400);
+  }
+
+  const version = cleanChangeLogLine(changeLog.version, 80) || 'unknown';
+  const title = cleanChangeLogLine(changeLog.title, 96) || 'Nexus Update';
+  const changes = (Array.isArray(changeLog.changes) ? changeLog.changes : [])
+    .map((change) => cleanChangeLogLine(change, 240))
+    .filter(Boolean)
+    .slice(0, 12);
+  const publishedAt = changeLogDate(changeLog.publishedAt || changeLog.published_at);
+  const date = new Intl.DateTimeFormat('pt-BR', {
+    timeZone: 'America/Sao_Paulo',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
+  }).format(publishedAt);
+  const description = [
+    `**Version ${version}**`,
+    `\`${date}\``,
+    '',
+    ...(changes.length ? changes.map((change) => `• ${change}`) : ['• Atualizacao publicada.'])
+  ].join('\n').slice(0, 4096);
+  const embed = new EmbedBuilder()
+    .setColor(0x121212)
+    .setTitle('NEXUS — CHANGE LOG')
+    .setDescription(description)
+    .setFooter({ text: title })
+    .setTimestamp(publishedAt);
+  const message = await channel.send({ embeds: [embed], allowedMentions: { parse: [] } });
+  return { delivered: true, channelId, messageId: message.id };
+}
+
 export async function notifyLivePixPaymentIntent(intent) {
   if (!config.discordBot.token || missingEnv(config.discordBot.token)) return false;
   const entry = clients.get(config.discordBot.token);

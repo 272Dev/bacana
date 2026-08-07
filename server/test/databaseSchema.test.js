@@ -44,6 +44,8 @@ test('schema cria tabelas persistentes de tickets, nonces e rate limits', () => 
     SELECT name FROM sqlite_master WHERE type = 'table'
   `).all().map((row) => row.name);
   assert.ok(tables.includes('loader_tickets'));
+  assert.ok(tables.includes('nexus_change_logs'));
+  assert.ok(tables.includes('nexus_change_log_deliveries'));
   assert.ok(tables.includes('bot_api_nonces'));
   assert.ok(tables.includes('nexus_rate_limits'));
   assert.ok(tables.includes('global_chat_messages'));

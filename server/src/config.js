@@ -121,6 +121,7 @@ export const config = {
   discordBot: {
     token: env('DISCORD_BOT_TOKEN'),
     defaultGuildId: env('DISCORD_DEFAULT_GUILD_ID'),
+    changeLogChannelId: env('NEXUS_CHANGELOG_CHANNEL_ID'),
     messageContentIntent: boolEnv('DISCORD_MESSAGE_CONTENT_INTENT', false),
     guildMembersIntent: boolEnv('DISCORD_GUILD_MEMBERS_INTENT', false),
     apiId: env('NEXUS_BOT_API_ID', 'nexus-discord-bot'),

@@ -5063,6 +5063,25 @@ label {
   font-weight: 800;
 }
 
+.loader-publish-form .loader-changelog-title {
+  grid-column: span 1;
+}
+
+.loader-publish-form .loader-changelog-changes {
+  grid-column: 1 / -1;
+}
+
+.loader-changelog-changes > span {
+  color: rgba(236, 241, 232, 0.42);
+  font-size: 0.68rem;
+  font-weight: 650;
+}
+
+.loader-changelog-changes textarea {
+  min-height: 94px;
+  line-height: 1.45;
+}
+
 .loader-protection-options {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
