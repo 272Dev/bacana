@@ -47,6 +47,16 @@ import {
   releaseRobloxSalesDelivery,
   reserveRandomRobloxSalesAccount
 } from './robloxGenerator.js';
+import {
+  buildTextStockDmPages,
+  claimTextStockDeliveryLease,
+  completeTextStockDelivery,
+  getTextStockDeliveryByPaymentReference,
+  recordTextStockDeliveryMessage,
+  releaseTextStockDeliveryLease,
+  renewTextStockDeliveryLease,
+  reserveTextStock
+} from './textStock.js';
 
 const GENERATOR_COMMAND_NAMES = new Set(['nexus', 'conta', 'pix']);
 const GENERATOR_PREFIX = 'nexus:';
@@ -486,6 +496,116 @@ async function createPixCharge(interaction) {
   }
 }
 
+async function fulfillTextStockPaymentIntent(client, claimed) {
+  const quantity = Number(claimed.metadata?.itemsPerPurchase);
+  const agreedPrice = Number(claimed.metadata?.productPriceCents);
+  if (!claimed.buyerDiscordId || !claimed.productId) {
+    throw new Error('Pagamento de texto sem comprador ou produto vinculado.');
+  }
+  if (
+    claimed.currency !== 'BRL'
+    || !Number.isSafeInteger(quantity)
+    || quantity < 1
+    || !Number.isSafeInteger(agreedPrice)
+    || agreedPrice !== claimed.amountCents
+  ) {
+    throw new Error('O valor ou a quantidade da compra de texto não corresponde ao pedido original.');
+  }
+
+  const reservation = await reserveTextStock({
+    paymentReference: claimed.reference,
+    productId: claimed.productId,
+    buyerDiscordId: claimed.buyerDiscordId,
+    quantity,
+    paymentProvider: 'livepix'
+  });
+  if (reservation.status === 'queued') {
+    const error = new Error('A compra está confirmada e aguarda reposição do stock na fila.');
+    error.code = 'TEXT_STOCK_AWAITING_STOCK';
+    throw error;
+  }
+
+  const delivery = reservation.delivery
+    || await getTextStockDeliveryByPaymentReference(claimed.reference, { includeContents: true });
+  if (!delivery) throw new Error('Não foi possível recuperar a reserva de stock da compra.');
+
+  const lease = await claimTextStockDeliveryLease({ paymentReference: claimed.reference });
+  const leaseDelivery = lease.delivery || delivery;
+  const priorMessageIds = (leaseDelivery?.pages || [])
+    .map((page) => cleanText(page.discordMessageId))
+    .filter(Boolean);
+  if (lease.reason === 'delivered') {
+    return {
+      delivery: leaseDelivery,
+      deliveryMessageId: priorMessageIds.at(-1) || null
+    };
+  }
+  if (!lease.claimed) {
+    if (lease.reason === 'queued') {
+      const error = new Error('A compra confirmada ainda aguarda reposicao do stock.');
+      error.code = 'TEXT_STOCK_AWAITING_STOCK';
+      throw error;
+    }
+    return {
+      delivery: leaseDelivery,
+      deliveryMessageId: priorMessageIds.at(-1) || null,
+      deliveryInProgress: true
+    };
+  }
+
+  const leaseToken = lease.leaseToken;
+  let deliveryMayHaveUnrecordedMessage = false;
+  try {
+    const buyer = await client.users.fetch(claimed.buyerDiscordId);
+    const pages = await buildTextStockDmPages(delivery, { leaseToken });
+    let lastMessageId = null;
+    for (const page of pages) {
+      if (!cleanText(page?.content)) throw new Error('A entrega de texto contém uma página vazia.');
+      const renewed = await renewTextStockDeliveryLease({
+        paymentReference: claimed.reference,
+        leaseToken
+      });
+      if (!renewed.renewed) {
+        const error = new Error('A entrega de texto foi assumida por outra tentativa.');
+        error.code = 'TEXT_STOCK_DELIVERY_LEASE_LOST';
+        throw error;
+      }
+      // Discord and the database cannot share one transaction. From the
+      // moment a DM is attempted until its page id is persisted, retain the
+      // lease so a concurrent retry cannot immediately duplicate that page.
+      deliveryMayHaveUnrecordedMessage = true;
+      const message = await buyer.send({
+        content: page.content,
+        allowedMentions: { parse: [] }
+      });
+      lastMessageId = message.id;
+      await recordTextStockDeliveryMessage({
+        paymentReference: claimed.reference,
+        pageId: page.id,
+        discordMessageId: message.id,
+        leaseToken
+      });
+      deliveryMayHaveUnrecordedMessage = false;
+    }
+
+    const completedDelivery = await completeTextStockDelivery(claimed.reference, { leaseToken });
+    const allMessageIds = (completedDelivery?.pages || delivery.pages || [])
+      .map((page) => cleanText(page.discordMessageId))
+      .filter(Boolean);
+    return {
+      delivery: completedDelivery || delivery,
+      deliveryMessageId: lastMessageId || allMessageIds.at(-1) || null
+    };
+  } finally {
+    if (!deliveryMayHaveUnrecordedMessage) {
+      await releaseTextStockDeliveryLease({
+        paymentReference: claimed.reference,
+        leaseToken
+      }).catch(() => {});
+    }
+  }
+}
+
 export async function fulfillLivePixPaymentIntent(client, intent) {
   if (!intent?.reference || intent.status !== 'paid') return intent;
   if (intent.productType === 'manual' || intent.fulfillmentStatus === 'not_required') return intent;
@@ -495,6 +615,28 @@ export async function fulfillLivePixPaymentIntent(client, intent) {
   if (!claimed) return getLivePixPaymentIntent(intent.reference);
 
   try {
+    if (claimed.productType === 'text_stock') {
+      const result = await fulfillTextStockPaymentIntent(client, claimed);
+      if (result.deliveryInProgress) return getLivePixPaymentIntent(claimed.reference);
+      const completed = await completeLivePixPaymentFulfillment(claimed.reference, {
+        resourceId: result.delivery.id,
+        deliveryMessageId: result.deliveryMessageId
+      });
+      await logAudit({
+        actorDiscordId: claimed.createdByDiscordId,
+        action: 'text_stock.pix_delivered',
+        targetType: 'text_stock_delivery',
+        targetId: result.delivery.id,
+        metadata: {
+          buyerDiscordId: claimed.buyerDiscordId,
+          productId: claimed.productId,
+          quantity: result.delivery.quantity,
+          paymentReference: claimed.reference,
+          deliveryMessageId: result.deliveryMessageId
+        }
+      }).catch(() => {});
+      return completed;
+    }
     if (!['generator_plan', 'license_plan'].includes(claimed.productType)) {
       throw new Error(`Produto automatico nao suportado: ${claimed.productType}`);
     }
@@ -582,6 +724,9 @@ export async function fulfillLivePixPaymentIntent(client, intent) {
     }).catch(() => {});
     return completed;
   } catch (error) {
+    if (['TEXT_STOCK_DELIVERY_LEASE_LOST', 'TEXT_STOCK_LEASE_NOT_OWNER', 'TEXT_STOCK_LEASE_EXPIRED'].includes(error?.code)) {
+      return getLivePixPaymentIntent(claimed.reference);
+    }
     await failLivePixPaymentFulfillment(claimed.reference, error);
     console.warn(`[nexus] Falha ao entregar compra Pix ${claimed.reference}: ${error.message}`);
     return getLivePixPaymentIntent(claimed.reference);
@@ -602,23 +747,35 @@ export async function updateLivePixPaymentMessage(client, intent) {
   const embed = current
     ? EmbedBuilder.from(current)
     : new EmbedBuilder().setTitle('Pagamento Pix').setColor(BRAND_COLOR);
-  const automaticDelivery = ['generator_plan', 'license_plan'].includes(intent.productType);
+  const textStockDelivery = intent.productType === 'text_stock';
+  const automaticDelivery = ['generator_plan', 'license_plan', 'text_stock'].includes(intent.productType);
   const delivered = intent.fulfillmentStatus === 'completed';
   const deliveryFailed = intent.fulfillmentStatus === 'failed';
-  const statusText = automaticDelivery
+  let statusText = automaticDelivery
     ? delivered
       ? 'Confirmado • key enviada no privado'
       : deliveryFailed
         ? 'Confirmado • abra seu privado para receber'
         : 'Confirmado • preparando sua key'
     : 'Pagamento confirmado';
+  if (textStockDelivery) {
+    statusText = delivered
+      ? 'Confirmado • itens enviados no privado'
+      : deliveryFailed
+        ? 'Confirmado • aguardando stock ou privado'
+        : 'Confirmado • preparando seus itens';
+  }
   embed
     .setDescription([
       '**Pagamento confirmado pela LivePix.**',
       automaticDelivery
-        ? delivered
-          ? 'A key foi gerada e entregue automaticamente no privado do comprador.'
-          : 'A key esta segura. O bot tentara entrega-la novamente assim que o privado estiver aberto.'
+        ? textStockDelivery
+          ? delivered
+            ? 'Os itens foram reservados em ordem e entregues automaticamente no privado do comprador.'
+            : 'A posição da compra está guardada. O bot tentará entregar os mesmos itens assim que houver stock e o privado estiver aberto.'
+          : delivered
+            ? 'A key foi gerada e entregue automaticamente no privado do comprador.'
+            : 'A key esta segura. O bot tentara entrega-la novamente assim que o privado estiver aberto.'
         : 'A referencia, o valor e o comprovante foram validados diretamente na API.',
       '',
       '━━━━━━━━━━━━━━━━━━━━'
@@ -628,7 +785,16 @@ export async function updateLivePixPaymentMessage(client, intent) {
       { name: 'Status', value: statusText, inline: true },
       ...(automaticDelivery
         ? [
-            { name: 'Plano', value: safeText(intent.metadata?.planName || intent.productId, 80), inline: true },
+            {
+              name: textStockDelivery ? 'Produto' : 'Plano',
+              value: safeText(
+                textStockDelivery
+                  ? intent.metadata?.productName || intent.productId
+                  : intent.metadata?.planName || intent.productId,
+                80
+              ),
+              inline: true
+            },
             { name: 'Comprador', value: `<@${intent.buyerDiscordId}>`, inline: true }
           ]
         : []),
@@ -639,7 +805,7 @@ export async function updateLivePixPaymentMessage(client, intent) {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`nexus:pix:paid:${intent.reference}`)
-      .setLabel(delivered ? 'Key entregue' : 'Pagamento confirmado')
+      .setLabel(delivered ? (textStockDelivery ? 'Itens entregues' : 'Key entregue') : 'Pagamento confirmado')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(true)
   );

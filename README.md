@@ -228,10 +228,49 @@ executa-lo. O bot:
 - recupera reservas abandonadas e mostra estoque, compradores e historico recente
   na area administrativa.
 
-O banco ja guarda referencia e estado do pagamento por entrega. A cobranca
-LivePix ainda fica desativada: ela deve ser conectada depois com webhook assinado
-e confirmacao server-to-server antes de liberar a DM. Nunca confie apenas no
-retorno do navegador para aprovar um PIX.
+O banco guarda a referencia e o estado de cada pagamento. A confirmacao Pix
+e validada server-to-server pela LivePix antes de liberar qualquer DM; nunca
+confie apenas no retorno do navegador para aprovar um PIX.
+
+### Stock de texto em fila
+
+O mesmo bot também vende textos, keys ou qualquer item textual com entrega
+automática no privado. Cada parágrafo separado por uma linha vazia vira um item
+individual da fila. Por exemplo:
+
+```text
+Primeiro
+
+Segundo
+
+Terceiro
+```
+
+é importado como as posições 1, 2 e 3. Depois de uma compra Pix confirmada, o
+bot reserva a menor posição disponível e manda o conteúdo por DM. Uma compra de
+mais de um item recebe os próximos itens juntos, preservando a mesma ordem.
+
+Defina `DISCORD_DEFAULT_GUILD_ID` para o ID do servidor que vai operar as vendas.
+O comando so funciona nesse servidor e somente no `DISCORD_BOT_TOKEN` principal;
+isso impede que outro servidor onde o bot esteja presente altere a fila global.
+
+Use os comandos abaixo dentro desse servidor:
+
+- `/stock criar` — cria um produto, preço e quantidade de itens por compra
+  (requer **Gerenciar servidor**);
+- `/stock adicionar` — adiciona o stock; cole um item por parágrafo vazio
+  (requer **Gerenciar servidor**);
+- `/stock status` — mostra disponíveis, reservados e entregues
+  (requer **Gerenciar servidor**);
+- `/stock catalogo`, `/stock comprar` e `/stock verificar` — compra e acompanha
+  uma cobrança.
+
+O conteúdo fica cifrado no banco. A reserva é feita numa transação por produto:
+se duas compras forem confirmadas juntas, uma recebe o primeiro item e a outra o
+segundo — a fila não escolhe nada ao acaso. Se a DM estiver fechada ou o processo
+reiniciar, os mesmos itens permanecem ligados à referência daquele pagamento;
+uma nova tentativa nunca consome o item seguinte. Para stock de venda em
+produção, configure `DATABASE_URL` com Postgres/Neon em vez de SQLite local.
 
 ## Autenticador de codigos
 

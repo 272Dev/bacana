@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { DatabaseSync } from 'node:sqlite';
 import pg from 'pg';
 import { config } from './config.js';
@@ -8,6 +9,8 @@ const { Pool } = pg;
 
 let sqlite = null;
 let postgres = null;
+let sqliteWorkTail = Promise.resolve();
+const sqliteTransactionContext = new AsyncLocalStorage();
 
 const schemaSql = `
   CREATE TABLE IF NOT EXISTS authorized_users (
@@ -556,6 +559,91 @@ const schemaSql = `
     updated_at TEXT NOT NULL
   );
 
+  -- Text stock is deliberately modeled as immutable FIFO entries instead of a
+  -- single counter.  Each imported paragraph receives a queue position and is
+  -- encrypted at rest; deliveries only hold references to those entries.
+  CREATE TABLE IF NOT EXISTS text_stock_products (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    description TEXT,
+    price_cents INTEGER NOT NULL DEFAULT 0 CHECK (price_cents >= 0),
+    items_per_purchase INTEGER NOT NULL DEFAULT 1 CHECK (items_per_purchase > 0),
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  -- A paid purchase enters this queue before it gets stock.  This is what
+  -- prevents a later, smaller purchase from bypassing an earlier purchase
+  -- that is waiting for more entries to be imported.
+  CREATE TABLE IF NOT EXISTS text_stock_deliveries (
+    id TEXT PRIMARY KEY,
+    payment_reference TEXT NOT NULL UNIQUE,
+    payment_provider TEXT,
+    product_id TEXT NOT NULL,
+    buyer_discord_id TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    queue_position INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'reserved', 'delivered')),
+    reserved_at TEXT,
+    delivered_at TEXT,
+    delivery_lease_token TEXT,
+    delivery_lease_acquired_at TEXT,
+    delivery_lease_expires_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (product_id, queue_position),
+    FOREIGN KEY (product_id) REFERENCES text_stock_products(id) ON DELETE RESTRICT
+  );
+
+  CREATE TABLE IF NOT EXISTS text_stock_items (
+    id TEXT PRIMARY KEY,
+    product_id TEXT NOT NULL,
+    queue_position INTEGER NOT NULL,
+    content_encrypted TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available', 'reserved', 'delivered')),
+    reserved_delivery_id TEXT,
+    reserved_at TEXT,
+    delivered_at TEXT,
+    imported_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (product_id, queue_position),
+    FOREIGN KEY (product_id) REFERENCES text_stock_products(id) ON DELETE RESTRICT
+  );
+
+  CREATE TABLE IF NOT EXISTS text_stock_delivery_items (
+    delivery_id TEXT NOT NULL,
+    stock_item_id TEXT NOT NULL,
+    item_position INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved', 'delivered')),
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    PRIMARY KEY (delivery_id, stock_item_id),
+    UNIQUE (delivery_id, item_position),
+    FOREIGN KEY (delivery_id) REFERENCES text_stock_deliveries(id) ON DELETE CASCADE,
+    FOREIGN KEY (stock_item_id) REFERENCES text_stock_items(id) ON DELETE RESTRICT
+  );
+
+  -- Pages are persisted (and encrypted) so a successful Discord DM can be
+  -- recorded page-by-page and a retry resumes at the first unsent page.
+  CREATE TABLE IF NOT EXISTS text_stock_delivery_pages (
+    id TEXT PRIMARY KEY,
+    delivery_id TEXT NOT NULL,
+    page_position INTEGER NOT NULL,
+    item_ids_json TEXT NOT NULL DEFAULT '[]',
+    content_encrypted TEXT NOT NULL,
+    discord_message_id TEXT,
+    sent_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (delivery_id, page_position),
+    FOREIGN KEY (delivery_id) REFERENCES text_stock_deliveries(id) ON DELETE CASCADE
+  );
+
   CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_discord_id);
   CREATE INDEX IF NOT EXISTS idx_accounts_platform ON accounts(platform);
   CREATE INDEX IF NOT EXISTS idx_shares_user ON account_shares(shared_with_discord_id);
@@ -605,6 +693,13 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_discord_protection_events_detector ON discord_protection_events(detector_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_discord_voice_guild ON discord_voice_configs(guild_id);
   CREATE INDEX IF NOT EXISTS idx_discord_voice_enabled ON discord_voice_configs(enabled);
+  CREATE INDEX IF NOT EXISTS idx_text_stock_products_active ON text_stock_products(active, name);
+  CREATE INDEX IF NOT EXISTS idx_text_stock_items_fifo ON text_stock_items(product_id, status, queue_position);
+  CREATE INDEX IF NOT EXISTS idx_text_stock_items_delivery ON text_stock_items(reserved_delivery_id);
+  CREATE INDEX IF NOT EXISTS idx_text_stock_deliveries_fifo ON text_stock_deliveries(product_id, status, queue_position);
+  CREATE INDEX IF NOT EXISTS idx_text_stock_deliveries_buyer ON text_stock_deliveries(buyer_discord_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_text_stock_delivery_items_delivery ON text_stock_delivery_items(delivery_id, item_position);
+  CREATE INDEX IF NOT EXISTS idx_text_stock_delivery_pages_unsent ON text_stock_delivery_pages(delivery_id, sent_at, page_position);
 `;
 
 function toPostgresSql(sql) {
@@ -618,6 +713,39 @@ function assertReady() {
   }
 }
 
+function activeSqliteTransaction() {
+  const context = sqliteTransactionContext.getStore();
+  return context?.active ? context : null;
+}
+
+// DatabaseSync has one shared connection.  Put every SQLite operation behind
+// one queue, while an active transaction owner executes directly through its
+// tx object.  Otherwise an unrelated read could silently join an open async
+// transaction, or a second BEGIN could throw "transaction within a transaction".
+function enqueueSqliteWork(work) {
+  const run = sqliteWorkTail.then(work, work);
+  sqliteWorkTail = run.catch(() => {});
+  return run;
+}
+
+function runSqliteWork(work) {
+  return activeSqliteTransaction() ? Promise.resolve().then(work) : enqueueSqliteWork(work);
+}
+
+function sqlitePrepared(sql) {
+  return {
+    async get(...params) {
+      return runSqliteWork(() => sqlite.prepare(sql).get(...params));
+    },
+    async all(...params) {
+      return runSqliteWork(() => sqlite.prepare(sql).all(...params));
+    },
+    async run(...params) {
+      return runSqliteWork(() => sqlite.prepare(sql).run(...params));
+    }
+  };
+}
+
 export const db = {
   get type() {
     return postgres ? 'postgres' : 'sqlite';
@@ -629,7 +757,7 @@ export const db = {
       await postgres.query(sql);
       return;
     }
-    sqlite.exec(sql);
+    await runSqliteWork(() => sqlite.exec(sql));
   },
 
   prepare(sql) {
@@ -652,18 +780,7 @@ export const db = {
       };
     }
 
-    const statement = sqlite.prepare(sql);
-    return {
-      async get(...params) {
-        return statement.get(...params);
-      },
-      async all(...params) {
-        return statement.all(...params);
-      },
-      async run(...params) {
-        return statement.run(...params);
-      }
-    };
+    return sqlitePrepared(sql);
   },
 
   async transaction(handler) {
@@ -706,34 +823,42 @@ export const db = {
       }
     }
 
-    const tx = {
-      async exec(sql) {
-        sqlite.exec(sql);
-      },
-      prepare(sql) {
-        const statement = sqlite.prepare(sql);
-        return {
-          async get(...params) {
-            return statement.get(...params);
-          },
-          async all(...params) {
-            return statement.all(...params);
-          },
-          async run(...params) {
-            return statement.run(...params);
-          }
-        };
+    const parent = activeSqliteTransaction();
+    if (parent) return handler(parent.tx);
+
+    return enqueueSqliteWork(async () => {
+      const tx = {
+        async exec(sql) {
+          sqlite.exec(sql);
+        },
+        prepare(sql) {
+          const statement = sqlite.prepare(sql);
+          return {
+            async get(...params) {
+              return statement.get(...params);
+            },
+            async all(...params) {
+              return statement.all(...params);
+            },
+            async run(...params) {
+              return statement.run(...params);
+            }
+          };
+        }
+      };
+      const context = { tx, active: true };
+      await tx.exec('BEGIN IMMEDIATE');
+      try {
+        const result = await sqliteTransactionContext.run(context, () => handler(tx));
+        await tx.exec('COMMIT');
+        return result;
+      } catch (error) {
+        await tx.exec('ROLLBACK').catch(() => {});
+        throw error;
+      } finally {
+        context.active = false;
       }
-    };
-    await tx.exec('BEGIN IMMEDIATE');
-    try {
-      const result = await handler(tx);
-      await tx.exec('COMMIT');
-      return result;
-    } catch (error) {
-      await tx.exec('ROLLBACK').catch(() => {});
-      throw error;
-    }
+    });
   }
 };
 
@@ -764,6 +889,13 @@ const postgresNameTagMigrations = [
   "ALTER TABLE roblox_name_tags ADD COLUMN IF NOT EXISTS tag_color TEXT NOT NULL DEFAULT '#FFFFFF'"
 ];
 const sqliteNameTagMigrations = postgresNameTagMigrations.map((statement) => statement.replace(' IF NOT EXISTS', ''));
+const postgresTextStockMigrations = [
+  "ALTER TABLE text_stock_deliveries ADD COLUMN IF NOT EXISTS delivery_lease_token TEXT",
+  "ALTER TABLE text_stock_deliveries ADD COLUMN IF NOT EXISTS delivery_lease_acquired_at TEXT",
+  "ALTER TABLE text_stock_deliveries ADD COLUMN IF NOT EXISTS delivery_lease_expires_at TEXT"
+];
+const sqliteTextStockMigrations = postgresTextStockMigrations.map((statement) => statement.replace(' IF NOT EXISTS', ''));
+
 
 export async function initDatabase() {
   if (sqlite || postgres) return;
@@ -785,7 +917,9 @@ export async function initDatabase() {
     for (const migration of postgresLoaderMigrations) await db.exec(migration);
     for (const migration of postgresLicenseMigrations) await db.exec(migration);
     for (const migration of postgresNameTagMigrations) await db.exec(migration);
+    for (const migration of postgresTextStockMigrations) await db.exec(migration);
     await db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_license_events_nonce ON license_events(license_user_id, event_type, request_nonce_hash)");
+    await db.exec("CREATE INDEX IF NOT EXISTS idx_text_stock_deliveries_lease ON text_stock_deliveries(delivery_lease_expires_at)");
     return;
   }
 
@@ -836,7 +970,15 @@ export async function initDatabase() {
       if (!String(error?.message || '').toLowerCase().includes('duplicate column')) throw error;
     }
   }
+  for (const migration of sqliteTextStockMigrations) {
+    try {
+      await db.exec(migration);
+    } catch (error) {
+      if (!String(error?.message || '').toLowerCase().includes('duplicate column')) throw error;
+    }
+  }
   await db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_license_events_nonce ON license_events(license_user_id, event_type, request_nonce_hash)");
+  await db.exec("CREATE INDEX IF NOT EXISTS idx_text_stock_deliveries_lease ON text_stock_deliveries(delivery_lease_expires_at)");
 }
 
 export function nowIso() {
