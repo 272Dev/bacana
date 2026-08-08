@@ -559,6 +559,20 @@ const schemaSql = `
     updated_at TEXT NOT NULL
   );
 
+  -- The primary sales bot is configured by the owner from the dashboard.
+  -- Its token is encrypted at rest and never returned by the API. Keeping
+  -- this as a single row lets /stock survive a process restart without the
+  -- token ever living in browser storage.
+  CREATE TABLE IF NOT EXISTS discord_primary_bot_config (
+    id TEXT PRIMARY KEY,
+    guild_id TEXT NOT NULL,
+    bot_user_id TEXT,
+    token_encrypted TEXT NOT NULL,
+    configured_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
   -- Text stock is deliberately modeled as immutable FIFO entries instead of a
   -- single counter.  Each imported paragraph receives a queue position and is
   -- encrypted at rest; deliveries only hold references to those entries.
@@ -693,6 +707,7 @@ const schemaSql = `
   CREATE INDEX IF NOT EXISTS idx_discord_protection_events_detector ON discord_protection_events(detector_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_discord_voice_guild ON discord_voice_configs(guild_id);
   CREATE INDEX IF NOT EXISTS idx_discord_voice_enabled ON discord_voice_configs(enabled);
+  CREATE INDEX IF NOT EXISTS idx_discord_primary_bot_updated ON discord_primary_bot_config(updated_at DESC);
   CREATE INDEX IF NOT EXISTS idx_text_stock_products_active ON text_stock_products(active, name);
   CREATE INDEX IF NOT EXISTS idx_text_stock_items_fifo ON text_stock_items(product_id, status, queue_position);
   CREATE INDEX IF NOT EXISTS idx_text_stock_items_delivery ON text_stock_items(reserved_delivery_id);

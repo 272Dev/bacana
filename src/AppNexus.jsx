@@ -3777,6 +3777,7 @@ function MediaPage({ user }) {
 }
 
 const discordSections = [
+  { id: 'stock-bot', label: 'Bot de vendas', icon: Bot, ownerOnly: true },
   { id: 'overview', label: 'Control Center', icon: LayoutDashboard },
   { id: 'runtime', label: 'Online e Agenda', icon: Activity },
   { id: 'voice', label: 'Voz', icon: Volume2 },
@@ -4087,7 +4088,7 @@ function DiscordFieldEditor({ embed, setEmbed }) {
   );
 }
 
-function DiscordToolsPage() {
+function DiscordToolsPage({ user }) {
   const savedSettings = useMemo(() => {
     try {
       return JSON.parse(localStorage.getItem('nexus-discord-tools-settings') || 'null');
@@ -4109,7 +4110,7 @@ function DiscordToolsPage() {
       return null;
     }
   }, []);
-  const [section, setSection] = useState('overview');
+  const [section, setSection] = useState(user?.role === 'owner' ? 'stock-bot' : 'overview');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState('');
   const [webhook, setWebhook] = useState({ webhookUrl: '', content: '', username: '', avatarUrl: '' });
@@ -4119,6 +4120,8 @@ function DiscordToolsPage() {
   const [embed, setEmbed] = useState(defaultDiscordEmbed);
   const [botConfig, setBotConfig] = useState({ botToken: '', guildId: savedSettings?.guildId || '' });
   const [botStatus, setBotStatus] = useState(null);
+  const [stockBotConfig, setStockBotConfig] = useState(null);
+  const [stockBotForm, setStockBotForm] = useState({ botToken: '', guildId: '' });
   const [channelForm, setChannelForm] = useState({ name: '', type: 0, parentId: '', channelId: '', position: '' });
   const [roleForm, setRoleForm] = useState({ name: '', color: '#ff4058', permissions: '0', roleId: '', userId: '', action: 'add' });
   const [antiNuke, setAntiNuke] = useState({
@@ -4196,6 +4199,20 @@ function DiscordToolsPage() {
   useEffect(() => () => {
     repeatStopRef.current = true;
   }, []);
+
+  useEffect(() => {
+    if (user?.role !== 'owner') return undefined;
+    let active = true;
+    api('/discord-tools/stock-bot/config')
+      .then((payload) => {
+        if (!active) return;
+        setStockBotConfig(payload);
+        setStockBotForm((current) => ({ ...current, guildId: current.guildId || payload.guildId || '' }));
+        if (payload.guildId) setBotConfig((current) => ({ ...current, guildId: current.guildId || payload.guildId }));
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [user?.role]);
 
   useEffect(() => {
     sessionStorage.setItem('nexus-discord-session-tokens', JSON.stringify(botTokens));
@@ -4716,6 +4733,42 @@ function DiscordToolsPage() {
     }
   }
 
+  async function saveStockBotConnection() {
+    if (!stockBotForm.botToken.trim()) {
+      showNotice('Cole o token do bot para conectar o bot de vendas.');
+      return;
+    }
+    if (!stockBotForm.guildId.trim()) {
+      showNotice('Informe o ID do servidor onde o /stock vai aparecer.');
+      return;
+    }
+    await runAction('stock-bot-save', async () => {
+      const result = await api('/discord-tools/stock-bot/config', {
+        method: 'PUT',
+        body: stockBotForm
+      });
+      setStockBotConfig(result);
+      setStockBotForm({ botToken: '', guildId: result.guildId || stockBotForm.guildId.trim() });
+      setBotConfig({ botToken: '', guildId: result.guildId || stockBotForm.guildId.trim() });
+      const status = await api('/discord-tools/bot/status', {
+        method: 'POST',
+        body: { guildId: result.guildId || stockBotForm.guildId.trim() }
+      });
+      setBotStatus(status);
+      setLastBotRefresh(new Date().toISOString());
+      showNotice(`/stock publicado em ${status.guild?.name || 'seu servidor'}.`);
+    });
+  }
+
+  async function syncStockBotCommands() {
+    await runAction('stock-bot-sync', async () => {
+      const result = await api('/discord-tools/stock-bot/sync', { method: 'POST', body: {} });
+      setStockBotConfig(result);
+      setLastBotRefresh(new Date().toISOString());
+      showNotice(`/stock sincronizado${result.guildId ? ' no servidor configurado' : ''}.`);
+    });
+  }
+
   async function saveBotProfile() {
     if (!botConfig.guildId && control.profileDisplayName) return showNotice('Informe o ID do servidor para trocar o nome do bot no servidor.');
     await runAction('profile', async () => {
@@ -4951,6 +5004,84 @@ function DiscordToolsPage() {
     updateSettings(settings);
     pushLog('settings', 'Configuracoes do bot salvas');
     showNotice('Configuracoes salvas.');
+  }
+
+  function renderStockBotConnection() {
+    const configured = Boolean(stockBotConfig?.configured);
+    const runtime = stockBotConfig?.runtime;
+    const botName = stockBotConfig?.bot?.username || runtime?.user?.username || 'Bot de vendas';
+    const sourceLabel = stockBotConfig?.source === 'dashboard'
+      ? 'Conexao salva no painel'
+      : stockBotConfig?.source === 'environment'
+        ? 'Conexao carregada da hospedagem'
+        : 'Ainda nao conectado';
+    return (
+      <div className="discord-section-grid">
+        <section className="panel discord-tool-card">
+          <div className="panel-title">
+            <div>
+              <p className="eyebrow">Venda por DM</p>
+              <h3>Conectar bot de vendas</h3>
+              <p className="muted">Salve o token e o servidor uma vez. O painel cifra o token, conecta o bot e publica o comando <strong>/stock</strong> no mesmo momento.</p>
+            </div>
+            <Bot size={21} />
+          </div>
+          <div className="discord-form-grid">
+            <label className="wide">
+              Token do bot
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={stockBotForm.botToken}
+                onChange={(event) => setStockBotForm((current) => ({ ...current, botToken: event.target.value }))}
+                placeholder={configured ? 'Cole um token novo apenas para trocar o bot' : 'Cole o token do seu bot Discord'}
+              />
+            </label>
+            <label className="wide">
+              ID do servidor de vendas
+              <input
+                inputMode="numeric"
+                value={stockBotForm.guildId}
+                onChange={(event) => setStockBotForm((current) => ({ ...current, guildId: event.target.value.replace(/[^\d]/g, '') }))}
+                placeholder="Ex.: 123456789012345678"
+              />
+            </label>
+          </div>
+          <div className="card-actions">
+            <button className="primary-button" type="button" onClick={saveStockBotConnection} disabled={loading === 'stock-bot-save'}>
+              <Bot size={17} />
+              {loading === 'stock-bot-save' ? 'Conectando' : configured ? 'Trocar e publicar /stock' : 'Salvar e publicar /stock'}
+            </button>
+            <button className="ghost-button" type="button" onClick={syncStockBotCommands} disabled={!configured || loading === 'stock-bot-sync'}>
+              <RefreshCw className={loading === 'stock-bot-sync' ? 'spin' : ''} size={17} />
+              {loading === 'stock-bot-sync' ? 'Sincronizando' : 'Sincronizar /stock'}
+            </button>
+          </div>
+          <div className="notice subtle">O bot precisa estar nesse servidor com os escopos <strong>bot</strong> e <strong>applications.commands</strong>. O token nunca volta para o navegador.</div>
+        </section>
+
+        <section className="panel discord-tool-card">
+          <div className="panel-title"><h3>Estado da conexao</h3>{configured && runtime?.online ? <Check size={19} /> : <AlertTriangle size={19} />}</div>
+          <div className="discord-check-grid">
+            <article className={configured ? 'ok' : 'warn'}>
+              {configured ? <Check size={18} /> : <AlertTriangle size={18} />}
+              <span><strong>{sourceLabel}</strong><small>{stockBotConfig?.guildId ? `Servidor ${stockBotConfig.guildId}` : 'Informe o ID do servidor'}</small></span>
+            </article>
+            <article className={runtime?.online ? 'ok' : 'warn'}>
+              {runtime?.online ? <Check size={18} /> : <AlertTriangle size={18} />}
+              <span><strong>{runtime?.online ? `${botName} online` : 'Aguardando conexao'}</strong><small>{runtime?.online ? 'Pronto para receber compras e enviar DMs' : 'Salve a conexao ou use Sincronizar /stock'}</small></span>
+            </article>
+            {stockBotConfig?.unreadable && (
+              <article className="warn">
+                <AlertTriangle size={18} />
+                <span><strong>Token salvo nao pode ser lido</strong><small>Cole o token atual novamente para restaurar a conexao.</small></span>
+              </article>
+            )}
+          </div>
+          <p className="muted">Quando o estado ficar online, digite <strong>/stock</strong> no servidor. Ele aparece somente no ID configurado aqui.</p>
+        </section>
+      </div>
+    );
   }
 
   function renderControlOverview() {
@@ -6373,6 +6504,7 @@ function DiscordToolsPage() {
   }
 
   const renderers = {
+    'stock-bot': renderStockBotConnection,
     overview: renderControlOverview,
     runtime: renderRuntimeControl,
     voice: renderVoiceControl,
@@ -6424,7 +6556,7 @@ function DiscordToolsPage() {
       )}
       <div className="discord-tools-layout">
         <aside className="discord-tools-sidebar">
-          {discordSections.map((item) => {
+          {discordSections.filter((item) => !item.ownerOnly || user?.role === 'owner').map((item) => {
             const Icon = item.icon;
             return (
               <button key={item.id} className={section === item.id ? 'active' : ''} onClick={() => setSection(item.id)}>
@@ -6753,7 +6885,7 @@ export default function App() {
       {view === 'authenticator' && <AuthenticatorPage />}
       {view === 'temp-email' && <TempEmailPage />}
       {view === 'images' && userCan(session.user, 'media.view') && <MediaPage user={session.user} />}
-      {view === 'discord-tools' && <DiscordToolsPage />}
+      {view === 'discord-tools' && <DiscordToolsPage user={session.user} />}
       {view === 'users' && <UsersPage users={authorizedUsers} reloadUsers={loadAuthorizedUsers} currentUser={session.user} />}
       {view === 'settings' && <SettingsPage theme={theme} resolvedTheme={resolvedTheme} setTheme={setTheme} onBackup={exportBackup} />}
       {view === 'profile' && <ProfilePage user={session.user} />}

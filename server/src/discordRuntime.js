@@ -19,7 +19,7 @@ import {
   joinVoiceChannel
 } from '@discordjs/voice';
 import { config, missingEnv } from './config.js';
-import { decryptSecret, encryptSecret } from './crypto.js';
+import { decryptSecret, encryptSecret, tryDecryptSecret } from './crypto.js';
 import { db, nowIso } from './db.js';
 import { logAudit } from './audit.js';
 import {
@@ -69,6 +69,13 @@ const resourceSnapshots = new Map();
 const inviteSnapshots = new Map();
 const commandPolicies = new Map();
 const commandCooldowns = new Map();
+const PRIMARY_DISCORD_BOT_CONFIG_ID = 'primary';
+const environmentPrimaryBotConfig = Object.freeze({
+  token: String(config.discordBot.token || '').trim(),
+  guildId: String(config.discordBot.defaultGuildId || '').trim()
+});
+let primaryDiscordBotConfigSource = environmentPrimaryBotConfig.token ? 'environment' : 'none';
+let primaryDiscordBotConfigUnreadable = false;
 
 const DASHBOARD_COMMAND_DEFINITIONS = [
   {
@@ -200,6 +207,31 @@ function isDefaultBotToken(token) {
   return Boolean(config.discordBot.token)
     && !missingEnv(config.discordBot.token)
     && token === config.discordBot.token;
+}
+
+function applyPrimaryDiscordBotRuntimeConfig({ token, guildId }, source = 'dashboard') {
+  config.discordBot.token = cleanText(token);
+  config.discordBot.defaultGuildId = cleanText(guildId);
+  primaryDiscordBotConfigSource = source;
+  primaryDiscordBotConfigUnreadable = false;
+}
+
+function primaryDiscordBotConfigurationSummary(row = null) {
+  const token = cleanText(config.discordBot.token);
+  const guildId = cleanText(config.discordBot.defaultGuildId);
+  const entry = token ? clients.get(token) : null;
+  const runtime = clientState(entry);
+  return {
+    configured: Boolean(token && !missingEnv(token) && guildId),
+    source: primaryDiscordBotConfigSource,
+    persisted: Boolean(row),
+    unreadable: primaryDiscordBotConfigUnreadable,
+    guildId: guildId || null,
+    bot: runtime.user || (row?.bot_user_id ? { id: row.bot_user_id } : null),
+    runtime,
+    configuredAt: row?.created_at || null,
+    updatedAt: row?.updated_at || null
+  };
 }
 
 function commandPolicyKey(token, guildId = '') {
@@ -1635,6 +1667,120 @@ async function ensureClient({ botToken, status, activityType, activityMessage } 
     client.destroy();
     throw makeHttpError(error?.message || 'Nao foi possivel conectar o bot ao Gateway.', 400);
   }
+}
+
+async function getStoredPrimaryDiscordBotConfig() {
+  return db.prepare(`
+    SELECT id, guild_id, bot_user_id, token_encrypted, configured_by, created_at, updated_at
+    FROM discord_primary_bot_config
+    WHERE id = ?
+  `).get(PRIMARY_DISCORD_BOT_CONFIG_ID);
+}
+
+async function persistPrimaryDiscordBotConfig({ token, guildId, botUserId, configuredBy }) {
+  const now = nowIso();
+  await db.prepare(`
+    INSERT INTO discord_primary_bot_config (
+      id, guild_id, bot_user_id, token_encrypted, configured_by, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      guild_id = excluded.guild_id,
+      bot_user_id = excluded.bot_user_id,
+      token_encrypted = excluded.token_encrypted,
+      configured_by = excluded.configured_by,
+      updated_at = excluded.updated_at
+  `).run(
+    PRIMARY_DISCORD_BOT_CONFIG_ID,
+    guildId,
+    botUserId || null,
+    encryptSecret(token),
+    configuredBy || null,
+    now,
+    now
+  );
+}
+
+export async function hydratePrimaryDiscordBotConfig() {
+  const row = await getStoredPrimaryDiscordBotConfig();
+  if (!row) {
+    primaryDiscordBotConfigSource = environmentPrimaryBotConfig.token ? 'environment' : 'none';
+    primaryDiscordBotConfigUnreadable = false;
+    return primaryDiscordBotConfigurationSummary(null);
+  }
+
+  const decrypted = tryDecryptSecret(row.token_encrypted);
+  if (!decrypted.ok || missingEnv(decrypted.value)) {
+    primaryDiscordBotConfigSource = environmentPrimaryBotConfig.token ? 'environment' : 'none';
+    primaryDiscordBotConfigUnreadable = true;
+    console.warn('[nexus] Configuracao salva do bot de vendas nao pode ser lida; usando a configuracao de ambiente, se existir.');
+    return primaryDiscordBotConfigurationSummary(row);
+  }
+
+  applyPrimaryDiscordBotRuntimeConfig({ token: decrypted.value, guildId: row.guild_id }, 'dashboard');
+  return primaryDiscordBotConfigurationSummary(row);
+}
+
+export async function getPrimaryDiscordBotConfig() {
+  const row = await getStoredPrimaryDiscordBotConfig();
+  return primaryDiscordBotConfigurationSummary(row);
+}
+
+export async function configurePrimaryDiscordBot({ botToken, guildId, configuredBy } = {}) {
+  const token = cleanText(botToken);
+  if (!token || missingEnv(token)) throw makeHttpError('Informe um token valido do bot.', 400);
+  const cleanGuildId = assertSnowflake(guildId, 'Servidor ID');
+
+  // Validate both credentials before replacing the active primary bot. This
+  // means a typo cannot wipe a working connection already stored in the DB.
+  const candidate = await ensureClient({ botToken: token, status: 'online' });
+  const guild = await candidate.client.guilds.fetch(cleanGuildId).catch(() => null);
+  if (!guild) {
+    throw makeHttpError('Esse bot nao esta dentro do servidor informado. Convide-o com bot e applications.commands.', 400);
+  }
+
+  const previousToken = cleanText(config.discordBot.token);
+  await persistPrimaryDiscordBotConfig({
+    token,
+    guildId: cleanGuildId,
+    botUserId: candidate.client.user?.id,
+    configuredBy
+  });
+  applyPrimaryDiscordBotRuntimeConfig({ token, guildId: cleanGuildId }, 'dashboard');
+
+  if (previousToken && previousToken !== token) {
+    await runDiscordBotLifecycle({ botToken: previousToken, action: 'stop' }).catch(() => {});
+  }
+
+  // The candidate could have connected before it became the primary bot. A
+  // restart reruns the standard command registration with /stock enabled.
+  const started = await runDiscordBotLifecycle({
+    botToken: token,
+    action: 'restart',
+    status: 'online',
+    activityType: 'Watching',
+    activityMessage: 'Nexus vendas'
+  });
+  const sync = await syncDiscordCommands({ botToken: token, guildId: cleanGuildId });
+  const row = await getStoredPrimaryDiscordBotConfig();
+  return {
+    ...primaryDiscordBotConfigurationSummary(row),
+    runtime: started.runtime,
+    commands: sync.commands
+  };
+}
+
+export async function syncPrimaryDiscordBotCommands() {
+  const token = cleanText(config.discordBot.token);
+  const guildId = cleanText(config.discordBot.defaultGuildId);
+  if (!token || missingEnv(token) || !guildId) {
+    throw makeHttpError('Conecte o bot de vendas antes de sincronizar o /stock.', 400);
+  }
+  const sync = await syncDiscordCommands({ botToken: token, guildId });
+  const row = await getStoredPrimaryDiscordBotConfig();
+  return {
+    ...primaryDiscordBotConfigurationSummary(row),
+    commands: sync.commands
+  };
 }
 
 export async function getDiscordRuntimeState({ botToken } = {}) {

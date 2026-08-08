@@ -55,17 +55,21 @@ import {
 } from './discordTools.js';
 import {
   applyDiscordBotProfile,
+  configurePrimaryDiscordBot,
   configureDiscordProtection,
   closeExpiredLivePixPurchaseTicket,
+  getPrimaryDiscordBotConfig,
   getDiscordProtectionCatalog,
   getDiscordProtectionStats,
   getDiscordRuntimeState,
+  hydratePrimaryDiscordBotConfig,
   notifyLivePixPaymentIntent,
   restoreDiscordProtections,
   restoreDiscordVoiceConnections,
   runDiscordBotLifecycle,
   runDiscordVoiceAction,
   startDefaultDiscordBot,
+  syncPrimaryDiscordBotCommands,
   syncDiscordCommands
 } from './discordRuntime.js';
 import { lookupRobloxUsername } from './roblox.js';
@@ -133,6 +137,7 @@ import {
 
 requireRuntimeConfig();
 await initDatabase();
+await hydratePrimaryDiscordBotConfig();
 await seedAuthorizedUsers();
 await seedLicensePlans();
 await seedGeneratorPlans();
@@ -653,6 +658,11 @@ const discordWebhookSchema = z.object({
 const discordBotRequestSchema = z.object({
   botToken: z.string().trim().max(300).optional().or(z.literal('')),
   guildId: z.string().trim().max(32).optional().or(z.literal(''))
+});
+
+const primaryDiscordBotConfigSchema = z.object({
+  botToken: z.string().trim().min(20).max(300),
+  guildId: z.string().trim().regex(/^\d{5,32}$/, 'ID do servidor invalido.')
 });
 
 const discordChannelSchema = discordBotRequestSchema.extend({
@@ -1682,6 +1692,48 @@ app.post('/api/discord-tools/user-lookup', requireAuth, async (req, res) => {
     ip: req.ip
   });
   res.json({ user });
+});
+
+// This is deliberately separate from the temporary multi-bot tools below.
+// The token becomes the runtime's primary sales bot, so only the dashboard
+// owner can write it and the API never sends it back to the browser.
+app.get('/api/discord-tools/stock-bot/config', requireAuth, requireOwner, async (_req, res) => {
+  res.json(await getPrimaryDiscordBotConfig());
+});
+
+app.put('/api/discord-tools/stock-bot/config', requireAuth, requireOwner, async (req, res) => {
+  const payload = primaryDiscordBotConfigSchema.parse(req.body);
+  const result = await configurePrimaryDiscordBot({
+    botToken: payload.botToken,
+    guildId: payload.guildId,
+    configuredBy: req.user.discordId
+  });
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.stock_bot_configured',
+    targetType: 'discord_guild',
+    targetId: result.guildId,
+    metadata: {
+      botUserId: result.bot?.id || null,
+      source: result.source,
+      commands: (result.commands || []).map((command) => command.name)
+    },
+    ip: req.ip
+  });
+  res.json(result);
+});
+
+app.post('/api/discord-tools/stock-bot/sync', requireAuth, requireOwner, async (req, res) => {
+  const result = await syncPrimaryDiscordBotCommands();
+  await logAudit({
+    actorDiscordId: req.user.discordId,
+    action: 'discord_tools.stock_bot_commands_synced',
+    targetType: 'discord_guild',
+    targetId: result.guildId,
+    metadata: { commands: (result.commands || []).map((command) => command.name) },
+    ip: req.ip
+  });
+  res.json(result);
 });
 
 app.post('/api/discord-tools/bot/status', requireAuth, async (req, res) => {
