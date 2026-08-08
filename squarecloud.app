@@ -1,6 +1,7 @@
 MAIN=server/src/index.js
 MEMORY=512
 VERSION=recommended
+AUTORESTART=true
 SUBDOMAIN=nexus-zks
 START=npm run build && npm run server:start
 DISPLAY_NAME=Nexus

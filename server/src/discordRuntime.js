@@ -37,6 +37,12 @@ import {
   licenseCommandNames
 } from './licenseBot.js';
 import {
+  handleTextStockInteraction,
+  isTextStockInteraction,
+  textStockCommandDefinitions,
+  textStockCommandNames
+} from './textStockBot.js';
+import {
   detectorCatalogResponse,
   detectorConfig,
   detectorDefinition,
@@ -234,17 +240,19 @@ async function removeManagedCommands(manager, managedNames) {
 
 async function registerGeneratorCommands(entry) {
   if (!entry?.client?.isReady?.() || !isDefaultBotToken(entry.token)) return;
+  const configuredGuildId = cleanText(config.discordBot.defaultGuildId);
   const definitions = [
     ...DASHBOARD_COMMAND_DEFINITIONS,
     ...licenseCommandDefinitions(),
-    ...generatorCommandDefinitions()
+    ...generatorCommandDefinitions(),
+    ...(configuredGuildId ? textStockCommandDefinitions() : [])
   ];
   const managedNames = new Set([
     ...DASHBOARD_COMMAND_NAMES,
     ...licenseCommandNames,
-    ...generatorCommandNames
+    ...generatorCommandNames,
+    ...textStockCommandNames
   ]);
-  const configuredGuildId = cleanText(config.discordBot.defaultGuildId);
   const guildIds = configuredGuildId
     ? [configuredGuildId]
     : [...entry.client.guilds.cache.keys()];
@@ -257,7 +265,8 @@ async function registerGeneratorCommands(entry) {
   }
 
   // Substituir a lista inteira evita sobras de deploys antigos e publica
-  // /nexus, /conta e /pix de forma atomica no servidor.
+  // /nexus, /conta e /pix de forma atomica no servidor. /stock so e
+  // publicado depois que o servidor de vendas foi configurado explicitamente.
   const targets = guildIds.length ? guildIds : [''];
   const results = [];
   for (const guildId of targets) {
@@ -1351,6 +1360,8 @@ function attachProtectionHandlers(entry) {
       ? handleLicenseInteraction(entry, interaction)
       : isGeneratorInteraction(interaction)
         ? handleGeneratorInteraction(entry, interaction)
+        : isTextStockInteraction(interaction)
+          ? handleTextStockInteraction(entry, interaction)
         : handleDashboardInteraction(entry, interaction);
     void handler.catch((error) => {
       console.warn(`[nexus] Falha no comando /${interaction.commandName || 'desconhecido'}: ${error.message}`);
@@ -1654,14 +1665,25 @@ export async function syncDiscordCommands({
   const enabledDefinitions = DASHBOARD_COMMAND_DEFINITIONS.filter((definition) => (
     hasExplicitConfiguration ? requested.get(definition.name)?.enabled === true : true
   ));
+  const stockGuildId = cleanText(config.discordBot.defaultGuildId);
+  const canPublishTextStock = Boolean(stockGuildId && cleanGuildId === stockGuildId);
   if (isDefaultBotToken(entry.token)) {
-    enabledDefinitions.push(...licenseCommandDefinitions(), ...generatorCommandDefinitions());
+    enabledDefinitions.push(
+      ...licenseCommandDefinitions(),
+      ...generatorCommandDefinitions()
+    );
+    if (canPublishTextStock) enabledDefinitions.push(...textStockCommandDefinitions());
   }
 
   const synced = await upsertCommands(
     manager,
     enabledDefinitions,
-    new Set([...DASHBOARD_COMMAND_NAMES, ...licenseCommandNames, ...generatorCommandNames])
+    new Set([
+      ...DASHBOARD_COMMAND_NAMES,
+      ...licenseCommandNames,
+      ...generatorCommandNames,
+      ...textStockCommandNames
+    ])
   );
   const normalizedPolicy = Object.fromEntries(DASHBOARD_COMMAND_DEFINITIONS.map((definition) => {
     const configured = requested.get(definition.name);
@@ -2189,8 +2211,7 @@ export async function notifyLivePixPaymentIntent(intent) {
   const fulfilledIntent = await fulfillLivePixPaymentIntent(entry.client, intent);
   const messageUpdated = await updateLivePixPaymentMessage(entry.client, fulfilledIntent);
   if (messageUpdated) return true;
-  return fulfilledIntent?.fulfillmentStatus === 'completed'
-    && Boolean(fulfilledIntent?.metadata?.ticketExpiredAt);
+  return fulfilledIntent?.fulfillmentStatus === 'completed';
 }
 
 export async function closeExpiredLivePixPurchaseTicket(intent) {

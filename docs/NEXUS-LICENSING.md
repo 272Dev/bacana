@@ -268,6 +268,7 @@ Na Square Cloud, mantenha:
 ```text
 MAIN=server/src/index.js
 START=npm run build && npm run server:start
+AUTORESTART=true
 ```
 
 Passos de atualização:

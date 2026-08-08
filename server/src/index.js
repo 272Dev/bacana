@@ -328,7 +328,16 @@ app.post('/api/webhooks/livepix', livePixWebhookLimiter, async (req, res) => {
         },
         ip: req.ip
       }).catch(() => {});
-      await notifyPaidLivePixIntent(result.intent);
+      // A confirmação do pagamento já foi validada e persistida acima. A
+      // entrega pode exigir várias DMs e sofrer rate limit do Discord; deixar
+      // isso pendurado na resposta do webhook incentiva reenvios da LivePix.
+      // O reconciliador persistente cobre qualquer reinício entre a resposta e
+      // esta tarefa em segundo plano.
+      setImmediate(() => {
+        void notifyPaidLivePixIntent(result.intent).catch((error) => {
+          console.warn(`[nexus] Falha ao iniciar entrega Pix ${result.intent.reference}: ${error.message}`);
+        });
+      });
     }
     return res.status(200).json({
       received: true,
