@@ -76,6 +76,7 @@ const environmentPrimaryBotConfig = Object.freeze({
 });
 let primaryDiscordBotConfigSource = environmentPrimaryBotConfig.token ? 'environment' : 'none';
 let primaryDiscordBotConfigUnreadable = false;
+let autoDetectedPrimaryStockGuildId = '';
 
 const DASHBOARD_COMMAND_DEFINITIONS = [
   {
@@ -209,11 +210,113 @@ function isDefaultBotToken(token) {
     && token === config.discordBot.token;
 }
 
+function primaryStockOwnerIds() {
+  return new Set([
+    ...config.discordBot.ownerIds,
+    ...config.authorizedUsers
+      .filter((user) => user.role === 'owner')
+      .map((user) => String(user.discordId || '').trim())
+      .filter(Boolean)
+  ]);
+}
+
+async function canAutoSelectPrimaryStockGuild(guild) {
+  const guildId = cleanText(guild?.id);
+  if (!guildId) return false;
+  if (config.discordBot.allowedGuildIds.length) {
+    return config.discordBot.allowedGuildIds.includes(guildId);
+  }
+  const ownerId = cleanText(guild?.ownerId);
+  if (!ownerId) return false;
+  // Dashboard owners can be promoted or revoked after deployment. A database
+  // row takes precedence over the static list so a live revocation closes
+  // this authorization boundary immediately.
+  try {
+    const owner = await db.prepare(`
+      SELECT role, active
+      FROM authorized_users
+      WHERE discord_id = ?
+      LIMIT 1
+    `).get(ownerId);
+    if (owner) return owner.role === 'owner' && Number(owner.active) === 1;
+    return primaryStockOwnerIds().has(ownerId);
+  } catch {
+    return false;
+  }
+}
+
+async function resolvePrimaryStockGuildId(entry) {
+  const configuredGuildId = cleanText(config.discordBot.defaultGuildId);
+  if (configuredGuildId || !entry?.client?.isReady?.() || !isDefaultBotToken(entry.token)) {
+    return configuredGuildId;
+  }
+
+  const guilds = [...entry.client.guilds.cache.values()];
+  // A single existing sales server is unambiguous. Reuse it directly instead
+  // of making the owner configure the same bot and guild again in the panel.
+  // It still needs to be a server explicitly allowed for the bot, or owned by
+  // the Nexus dashboard owner, so a lone third-party guild cannot take over
+  // the global sales stock.
+  if (guilds.length !== 1 || !await canAutoSelectPrimaryStockGuild(guilds[0])) return '';
+
+  const guildId = guilds[0].id;
+  config.discordBot.defaultGuildId = guildId;
+  autoDetectedPrimaryStockGuildId = guildId;
+  console.log(`[nexus] Servidor unico detectado para o bot de vendas: ${guildId}.`);
+  return guildId;
+}
+
+async function fetchReachableGuild(entry, guildId) {
+  try {
+    // GuildManager.fetch is cache-first by default. Force a gateway/API check
+    // here because this is the recovery path for a guild the bot may have left.
+    return await entry.client.guilds.fetch({ guild: guildId, force: true });
+  } catch (error) {
+    if (Number(error?.code) === 10004 || Number(error?.status) === 404) return null;
+    throw makeHttpError('Nao foi possivel confirmar o servidor de vendas agora. Tente sincronizar novamente.', 503);
+  }
+}
+
+async function resolveReachablePrimaryStockGuildId(entry) {
+  let guildId = await resolvePrimaryStockGuildId(entry);
+  if (!guildId) return '';
+
+  let guild = await fetchReachableGuild(entry, guildId);
+  if (guild) return guildId;
+
+  if (autoDetectedPrimaryStockGuildId !== guildId) {
+    throw makeHttpError('O servidor de vendas configurado nao esta mais acessivel ao bot. Atualize o servidor padrao na hospedagem.', 400);
+  }
+
+  // The automatically selected guild disappeared while the process was
+  // running. Forget it and give a current, authorized sole guild one chance.
+  entry.client.guilds.cache.delete(guildId);
+  config.discordBot.defaultGuildId = '';
+  autoDetectedPrimaryStockGuildId = '';
+  guildId = await resolvePrimaryStockGuildId(entry);
+  if (!guildId) return '';
+  guild = await fetchReachableGuild(entry, guildId);
+  if (guild) return guildId;
+  return '';
+}
+
+function primaryStockGuildSetupError(entry) {
+  const guilds = [...(entry?.client?.guilds?.cache?.values?.() || [])];
+  if (!guilds.length) {
+    return makeHttpError('O bot atual ainda nao esta em nenhum servidor. Convide-o com bot e applications.commands.', 400);
+  }
+  if (guilds.length > 1) {
+    return makeHttpError('O bot atual esta em mais de um servidor. Defina o servidor de vendas como DISCORD_DEFAULT_GUILD_ID na hospedagem.', 400);
+  }
+  return makeHttpError('O unico servidor do bot nao esta autorizado para integrar o stock. Adicione-o a NEXUS_BOT_ALLOWED_GUILD_IDS ou entre no servidor com a conta dona do painel.', 400);
+}
+
 function applyPrimaryDiscordBotRuntimeConfig({ token, guildId }, source = 'dashboard') {
   config.discordBot.token = cleanText(token);
   config.discordBot.defaultGuildId = cleanText(guildId);
   primaryDiscordBotConfigSource = source;
   primaryDiscordBotConfigUnreadable = false;
+  autoDetectedPrimaryStockGuildId = '';
 }
 
 function primaryDiscordBotConfigurationSummary(row = null) {
@@ -221,16 +324,17 @@ function primaryDiscordBotConfigurationSummary(row = null) {
   const guildId = cleanText(config.discordBot.defaultGuildId);
   const entry = token ? clients.get(token) : null;
   const runtime = clientState(entry);
+  const usesPersistedConfig = primaryDiscordBotConfigSource === 'dashboard' && Boolean(row);
   return {
     configured: Boolean(token && !missingEnv(token) && guildId),
     source: primaryDiscordBotConfigSource,
-    persisted: Boolean(row),
+    persisted: usesPersistedConfig,
     unreadable: primaryDiscordBotConfigUnreadable,
     guildId: guildId || null,
-    bot: runtime.user || (row?.bot_user_id ? { id: row.bot_user_id } : null),
+    bot: runtime.user || (usesPersistedConfig && row?.bot_user_id ? { id: row.bot_user_id } : null),
     runtime,
-    configuredAt: row?.created_at || null,
-    updatedAt: row?.updated_at || null
+    configuredAt: usesPersistedConfig ? row?.created_at || null : null,
+    updatedAt: usesPersistedConfig ? row?.updated_at || null : null
   };
 }
 
@@ -272,7 +376,7 @@ async function removeManagedCommands(manager, managedNames) {
 
 async function registerGeneratorCommands(entry) {
   if (!entry?.client?.isReady?.() || !isDefaultBotToken(entry.token)) return;
-  const configuredGuildId = cleanText(config.discordBot.defaultGuildId);
+  const configuredGuildId = await resolvePrimaryStockGuildId(entry);
   const definitions = [
     ...DASHBOARD_COMMAND_DEFINITIONS,
     ...licenseCommandDefinitions(),
@@ -1702,17 +1806,25 @@ async function persistPrimaryDiscordBotConfig({ token, guildId, botUserId, confi
 
 export async function hydratePrimaryDiscordBotConfig() {
   const row = await getStoredPrimaryDiscordBotConfig();
+  // The hosting configuration is the source of truth for the existing sales
+  // bot. An old dashboard row must never silently replace it after a restart.
+  if (environmentPrimaryBotConfig.token && !missingEnv(environmentPrimaryBotConfig.token)) {
+    applyPrimaryDiscordBotRuntimeConfig(environmentPrimaryBotConfig, 'environment');
+    if (row) console.log('[nexus] Configuracao antiga do painel ignorada; usando o bot de vendas da hospedagem.');
+    return primaryDiscordBotConfigurationSummary(null);
+  }
+
   if (!row) {
-    primaryDiscordBotConfigSource = environmentPrimaryBotConfig.token ? 'environment' : 'none';
+    primaryDiscordBotConfigSource = 'none';
     primaryDiscordBotConfigUnreadable = false;
     return primaryDiscordBotConfigurationSummary(null);
   }
 
   const decrypted = tryDecryptSecret(row.token_encrypted);
   if (!decrypted.ok || missingEnv(decrypted.value)) {
-    primaryDiscordBotConfigSource = environmentPrimaryBotConfig.token ? 'environment' : 'none';
+    primaryDiscordBotConfigSource = 'none';
     primaryDiscordBotConfigUnreadable = true;
-    console.warn('[nexus] Configuracao salva do bot de vendas nao pode ser lida; usando a configuracao de ambiente, se existir.');
+    console.warn('[nexus] Configuracao salva do bot de vendas nao pode ser lida.');
     return primaryDiscordBotConfigurationSummary(row);
   }
 
@@ -1771,10 +1883,16 @@ export async function configurePrimaryDiscordBot({ botToken, guildId, configured
 
 export async function syncPrimaryDiscordBotCommands() {
   const token = cleanText(config.discordBot.token);
-  const guildId = cleanText(config.discordBot.defaultGuildId);
-  if (!token || missingEnv(token) || !guildId) {
-    throw makeHttpError('Conecte o bot de vendas antes de sincronizar o /stock.', 400);
+  if (!token || missingEnv(token)) {
+    throw makeHttpError('O bot de vendas ainda nao esta conectado na hospedagem.', 400);
   }
+
+  const entry = await ensureClient({ botToken: token, status: 'online' });
+  const guildId = await resolveReachablePrimaryStockGuildId(entry);
+  if (!guildId) {
+    throw primaryStockGuildSetupError(entry);
+  }
+
   const sync = await syncDiscordCommands({ botToken: token, guildId });
   const row = await getStoredPrimaryDiscordBotConfig();
   return {

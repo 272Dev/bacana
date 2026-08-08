@@ -4121,7 +4121,6 @@ function DiscordToolsPage({ user }) {
   const [botConfig, setBotConfig] = useState({ botToken: '', guildId: savedSettings?.guildId || '' });
   const [botStatus, setBotStatus] = useState(null);
   const [stockBotConfig, setStockBotConfig] = useState(null);
-  const [stockBotForm, setStockBotForm] = useState({ botToken: '', guildId: '' });
   const [channelForm, setChannelForm] = useState({ name: '', type: 0, parentId: '', channelId: '', position: '' });
   const [roleForm, setRoleForm] = useState({ name: '', color: '#ff4058', permissions: '0', roleId: '', userId: '', action: 'add' });
   const [antiNuke, setAntiNuke] = useState({
@@ -4207,7 +4206,6 @@ function DiscordToolsPage({ user }) {
       .then((payload) => {
         if (!active) return;
         setStockBotConfig(payload);
-        setStockBotForm((current) => ({ ...current, guildId: current.guildId || payload.guildId || '' }));
         if (payload.guildId) setBotConfig((current) => ({ ...current, guildId: current.guildId || payload.guildId }));
       })
       .catch(() => {});
@@ -4733,39 +4731,13 @@ function DiscordToolsPage({ user }) {
     }
   }
 
-  async function saveStockBotConnection() {
-    if (!stockBotForm.botToken.trim()) {
-      showNotice('Cole o token do bot para conectar o bot de vendas.');
-      return;
-    }
-    if (!stockBotForm.guildId.trim()) {
-      showNotice('Informe o ID do servidor onde o /stock vai aparecer.');
-      return;
-    }
-    await runAction('stock-bot-save', async () => {
-      const result = await api('/discord-tools/stock-bot/config', {
-        method: 'PUT',
-        body: stockBotForm
-      });
-      setStockBotConfig(result);
-      setStockBotForm({ botToken: '', guildId: result.guildId || stockBotForm.guildId.trim() });
-      setBotConfig({ botToken: '', guildId: result.guildId || stockBotForm.guildId.trim() });
-      const status = await api('/discord-tools/bot/status', {
-        method: 'POST',
-        body: { guildId: result.guildId || stockBotForm.guildId.trim() }
-      });
-      setBotStatus(status);
-      setLastBotRefresh(new Date().toISOString());
-      showNotice(`/stock publicado em ${status.guild?.name || 'seu servidor'}.`);
-    });
-  }
-
   async function syncStockBotCommands() {
     await runAction('stock-bot-sync', async () => {
       const result = await api('/discord-tools/stock-bot/sync', { method: 'POST', body: {} });
       setStockBotConfig(result);
+      if (result.guildId) setBotConfig((current) => ({ ...current, guildId: current.guildId || result.guildId }));
       setLastBotRefresh(new Date().toISOString());
-      showNotice(`/stock sincronizado${result.guildId ? ' no servidor configurado' : ''}.`);
+      showNotice(`/stock integrado ao bot atual${result.guildId ? ' no servidor dele' : ''}.`);
     });
   }
 
@@ -5011,53 +4983,30 @@ function DiscordToolsPage({ user }) {
     const runtime = stockBotConfig?.runtime;
     const botName = stockBotConfig?.bot?.username || runtime?.user?.username || 'Bot de vendas';
     const sourceLabel = stockBotConfig?.source === 'dashboard'
-      ? 'Conexao salva no painel'
+      ? 'Bot principal salvo no painel'
       : stockBotConfig?.source === 'environment'
-        ? 'Conexao carregada da hospedagem'
-        : 'Ainda nao conectado';
+        ? 'Bot atual da hospedagem'
+        : stockBotConfig
+          ? 'Aguardando o bot atual'
+          : 'Verificando o bot atual';
     return (
       <div className="discord-section-grid">
         <section className="panel discord-tool-card">
           <div className="panel-title">
             <div>
               <p className="eyebrow">Venda por DM</p>
-              <h3>Conectar bot de vendas</h3>
-              <p className="muted">Salve o token e o servidor uma vez. O painel cifra o token, conecta o bot e publica o comando <strong>/stock</strong> no mesmo momento.</p>
+              <h3>Integrar o bot de vendas atual</h3>
+              <p className="muted">O <strong>/stock</strong> usa o mesmo bot que ja esta online. Em um unico servidor autorizado, o Nexus encontra esse servidor e publica o comando sozinho.</p>
             </div>
             <Bot size={21} />
           </div>
-          <div className="discord-form-grid">
-            <label className="wide">
-              Token do bot
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={stockBotForm.botToken}
-                onChange={(event) => setStockBotForm((current) => ({ ...current, botToken: event.target.value }))}
-                placeholder={configured ? 'Cole um token novo apenas para trocar o bot' : 'Cole o token do seu bot Discord'}
-              />
-            </label>
-            <label className="wide">
-              ID do servidor de vendas
-              <input
-                inputMode="numeric"
-                value={stockBotForm.guildId}
-                onChange={(event) => setStockBotForm((current) => ({ ...current, guildId: event.target.value.replace(/[^\d]/g, '') }))}
-                placeholder="Ex.: 123456789012345678"
-              />
-            </label>
-          </div>
           <div className="card-actions">
-            <button className="primary-button" type="button" onClick={saveStockBotConnection} disabled={loading === 'stock-bot-save'}>
+            <button className="primary-button" type="button" onClick={syncStockBotCommands} disabled={loading === 'stock-bot-sync'}>
               <Bot size={17} />
-              {loading === 'stock-bot-save' ? 'Conectando' : configured ? 'Trocar e publicar /stock' : 'Salvar e publicar /stock'}
-            </button>
-            <button className="ghost-button" type="button" onClick={syncStockBotCommands} disabled={!configured || loading === 'stock-bot-sync'}>
-              <RefreshCw className={loading === 'stock-bot-sync' ? 'spin' : ''} size={17} />
-              {loading === 'stock-bot-sync' ? 'Sincronizando' : 'Sincronizar /stock'}
+              {loading === 'stock-bot-sync' ? 'Integrando' : configured ? 'Sincronizar /stock' : 'Integrar /stock ao bot atual'}
             </button>
           </div>
-          <div className="notice subtle">O bot precisa estar nesse servidor com os escopos <strong>bot</strong> e <strong>applications.commands</strong>. O token nunca volta para o navegador.</div>
+          <div className="notice subtle">Nao precisa colar token nem ID aqui. O bot atual precisa estar no servidor com os escopos <strong>bot</strong> e <strong>applications.commands</strong>. Se ele estiver em varios servidores, a hospedagem marca o servidor de vendas como padrao para manter o stock protegido.</div>
         </section>
 
         <section className="panel discord-tool-card">
@@ -5065,20 +5014,20 @@ function DiscordToolsPage({ user }) {
           <div className="discord-check-grid">
             <article className={configured ? 'ok' : 'warn'}>
               {configured ? <Check size={18} /> : <AlertTriangle size={18} />}
-              <span><strong>{sourceLabel}</strong><small>{stockBotConfig?.guildId ? `Servidor ${stockBotConfig.guildId}` : 'Informe o ID do servidor'}</small></span>
+              <span><strong>{sourceLabel}</strong><small>{stockBotConfig?.guildId ? `Servidor ${stockBotConfig.guildId}` : 'O servidor sera reconhecido automaticamente'}</small></span>
             </article>
             <article className={runtime?.online ? 'ok' : 'warn'}>
               {runtime?.online ? <Check size={18} /> : <AlertTriangle size={18} />}
-              <span><strong>{runtime?.online ? `${botName} online` : 'Aguardando conexao'}</strong><small>{runtime?.online ? 'Pronto para receber compras e enviar DMs' : 'Salve a conexao ou use Sincronizar /stock'}</small></span>
+              <span><strong>{runtime?.online ? `${botName} online` : 'Aguardando conexao'}</strong><small>{runtime?.online ? 'Pronto para receber compras e enviar DMs' : 'Use Integrar /stock ao bot atual'}</small></span>
             </article>
             {stockBotConfig?.unreadable && (
               <article className="warn">
                 <AlertTriangle size={18} />
-                <span><strong>Token salvo nao pode ser lido</strong><small>Cole o token atual novamente para restaurar a conexao.</small></span>
+                <span><strong>Configuracao antiga nao pode ser lida</strong><small>O Nexus vai usar o bot atual da hospedagem para esta integracao.</small></span>
               </article>
             )}
           </div>
-          <p className="muted">Quando o estado ficar online, digite <strong>/stock</strong> no servidor. Ele aparece somente no ID configurado aqui.</p>
+          <p className="muted">Quando o estado ficar online, digite <strong>/stock</strong> no servidor do bot atual. Ele entrega os itens por DM na ordem do stock.</p>
         </section>
       </div>
     );
